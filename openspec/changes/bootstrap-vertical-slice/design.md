@@ -3,7 +3,7 @@
 ## Context
 
 This is the first change in the repo. The overarching architecture is fixed by
-`agentic-assistant-bootstrap-v4.1.md`; the design choices recorded here are the
+`docs/agentic-assistant-bootstrap-v4.1.md`; the design choices recorded here are the
 ones specific to landing a working vertical slice in a single change.
 
 ## Architectural Seams Exercised
