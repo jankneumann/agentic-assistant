@@ -34,6 +34,15 @@ jobs:
       - name: Sync dependencies
         run: uv sync --all-extras --dev
 
+      # Submodule is private and CI lacks credentials. We ship a
+      # self-contained fixture under tests/fixtures/personas/personal/ and
+      # overlay it onto the submodule mount point so tests can discover and
+      # load the personal persona. See docs/gotchas.md G2.
+      - name: Populate personas/personal from test fixture
+        run: |
+          mkdir -p personas/personal
+          cp -R tests/fixtures/personas/personal/. personas/personal/
+
       - name: Ruff
         run: uv run ruff check .
 

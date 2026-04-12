@@ -1,0 +1,10 @@
+prompt_append: |
+  ### Personal Context Additions
+  - Tone can be more exploratory and speculative
+  - Include "things to try" and hands-on experiment suggestions
+  - Connect findings to personal projects and learning goals
+  - It's fine to go deep into rabbit holes if the topic is interesting
+  - Emphasize practical takeaways and implementation ideas
+
+context_overrides:
+  output_format: "conversational"

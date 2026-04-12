@@ -1,0 +1,67 @@
+# Test fixture mirroring the real personas/personal/persona.yaml.
+# Used by CI (via .github/workflows/ci.yml populate step) because the real
+# submodule cannot be checked out on public CI. Keep in sync when the real
+# persona config changes shape.
+
+name: personal
+display_name: "Personal"
+
+database:
+  url_env: PERSONAL_DATABASE_URL
+
+graphiti:
+  url_env: PERSONAL_GRAPHITI_URL
+
+auth:
+  provider: google
+  config:
+    client_id_env: PERSONAL_GOOGLE_CLIENT_ID
+    client_secret_env: PERSONAL_GOOGLE_CLIENT_SECRET
+    refresh_token_env: PERSONAL_GOOGLE_REFRESH_TOKEN
+
+harnesses:
+  deep_agents:
+    enabled: true
+    model: "anthropic:claude-sonnet-4-20250514"
+    memory_files:
+      - "./AGENTS.md"
+      - "./personas/personal/memory.md"
+    skills_dir: "./src/assistant/skills"
+
+  ms_agent_framework:
+    enabled: false
+
+  claude_code:
+    enabled: true
+
+  codex:
+    enabled: true
+
+default_role: chief_of_staff
+disabled_roles: []
+
+tool_sources:
+  content_analyzer:
+    base_url_env: CONTENT_ANALYZER_URL
+    allowed_tools: []
+
+  coding_tools:
+    base_url_env: CODING_TOOLS_URL
+    allowed_tools: []
+
+extensions:
+  - name: gmail
+    module: gmail
+    config:
+      scopes:
+        - "https://www.googleapis.com/auth/gmail.modify"
+  - name: gcal
+    module: gcal
+    config:
+      scopes:
+        - "https://www.googleapis.com/auth/calendar"
+  - name: gdrive
+    module: gdrive
+    config:
+      scopes:
+        - "https://www.googleapis.com/auth/drive"

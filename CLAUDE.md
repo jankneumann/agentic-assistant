@@ -78,6 +78,14 @@ Common commands:
 - Tests run against real `roles/` + `personas/` directories (no filesystem
   mocking); see `tests/conftest.py`
 
+## Known gotchas
+
+See `docs/gotchas.md` for traps we've hit and how to avoid them
+(workflow-YAML `on:` boolean coercion, submodule+CI interaction, `uv_build`
+`__init__.py` requirement, `mock.patch` vs lazy imports, OpenSpec SHALL
+placement). Read this before adding new proposals, CI steps, or spec
+deltas.
+
 ## What's Not Yet Wired
 
 See `openspec/roadmap.md` for the full sequence. Notable gaps:
