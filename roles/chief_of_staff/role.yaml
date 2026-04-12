@@ -1,0 +1,28 @@
+name: chief_of_staff
+display_name: "Chief of Staff"
+description: "Executive assistant — triage, briefings, delegation, communications"
+
+preferred_tools:
+  - content_analyzer:daily_digest
+  - content_analyzer:weekly_digest
+  - content_analyzer:knowledge_graph
+
+delegation:
+  can_spawn_sub_agents: true
+  max_concurrent: 5
+  allowed_sub_roles:
+    - researcher
+    - writer
+    - planner
+    - coder
+
+planning:
+  always_plan: false
+  decomposition_style: "priority_first"
+
+context:
+  prioritize_sources: false
+  output_format: "brief"
+
+skills_dir: "./roles/chief_of_staff/skills"
+prompt_position: "after_persona"

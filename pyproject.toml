@@ -1,0 +1,65 @@
+[project]
+name = "assistant"
+version = "0.1.0"
+description = "Personal AI assistant with plugin-based persona system and composable roles"
+readme = "README.md"
+authors = [
+    { name = "Jan Neumann", email = "349330+jankneumann@users.noreply.github.com" }
+]
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+    "click>=8.1",
+    "httpx>=0.27",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "pyyaml>=6.0",
+    "sqlalchemy>=2.0",
+    "asyncpg>=0.29",
+    "deepagents>=0.0.12",
+    "langchain>=0.3",
+    "langchain-anthropic>=0.2",
+    "langchain-core>=0.3",
+]
+
+[project.optional-dependencies]
+ms = [
+    "agent-framework>=0.1.0b1",
+]
+
+[project.scripts]
+assistant = "assistant.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.9.18,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "types-pyyaml>=6.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [".venv", "dist", "build", ".agents", ".claude", ".codex", ".gemini", "openspec/changes/archive", "agentic-assistant-bootstrap-v4.1.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "RUF"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = false
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_untyped_defs = false
+check_untyped_defs = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

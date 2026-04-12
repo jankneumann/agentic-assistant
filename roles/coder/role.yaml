@@ -1,0 +1,27 @@
+name: coder
+display_name: "Coder"
+description: "Code analysis, implementation, debugging, repo operations"
+
+preferred_tools:
+  - coding_tools:repo_status
+  - coding_tools:github_issues
+  - coding_tools:github_prs
+  - coding_tools:file_read
+  - coding_tools:agent_coordinate
+
+delegation:
+  can_spawn_sub_agents: false
+  max_concurrent: 0
+  allowed_sub_roles: []
+
+planning:
+  always_plan: true
+  decomposition_style: "task_oriented"
+
+context:
+  prioritize_sources: false
+  save_findings: true
+  output_format: "structured"
+
+skills_dir: "./roles/coder/skills"
+prompt_position: "after_persona"

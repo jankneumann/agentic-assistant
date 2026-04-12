@@ -1,0 +1,3 @@
+[submodule "personas/personal"]
+	path = personas/personal
+	url = https://github.com/jankneumann/agentic-assistant-config-personal

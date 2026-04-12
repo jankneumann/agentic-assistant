@@ -1,0 +1,62 @@
+# Persona definition template.
+# Copy this directory into a new private repo to create a persona config.
+
+name: template
+display_name: "Template Persona"
+
+# ── Database (each persona gets its own instance) ──
+database:
+  url_env: TEMPLATE_DATABASE_URL
+
+# ── Knowledge Graph ──
+graphiti:
+  url_env: TEMPLATE_GRAPHITI_URL
+
+# ── Authentication ──
+auth:
+  provider: custom                     # microsoft | google | custom
+  config: {}
+
+# ── Harnesses ──
+harnesses:
+  deep_agents:
+    enabled: true
+    model: "anthropic:claude-sonnet-4-20250514"
+    memory_files:
+      - "./AGENTS.md"
+    skills_dir: "./src/assistant/skills"
+
+  ms_agent_framework:
+    enabled: false
+    model: "anthropic:claude-sonnet-4-20250514"
+    foundry_endpoint_env: ""
+    extensions: []
+
+  claude_code:
+    enabled: true
+
+  codex:
+    enabled: true
+
+# ── Default role ──
+default_role: chief_of_staff
+
+# ── Roles disabled for this persona ──
+disabled_roles: []
+
+# ── HTTP Tool Sources (wired in P2 — http-tools-layer) ──
+tool_sources:
+  content_analyzer:
+    base_url_env: CONTENT_ANALYZER_URL
+    auth_header_env: ""
+    allowed_tools: []
+  coding_tools:
+    base_url_env: CODING_TOOLS_URL
+    auth_header_env: ""
+    allowed_tools: []
+
+# ── Extensions ──
+# Extensions are loaded from two locations:
+#   1. Private: personas/<name>/extensions/<module>.py (if present)
+#   2. Public:  src/assistant/extensions/<module>.py (generic stubs in P1)
+extensions: []
