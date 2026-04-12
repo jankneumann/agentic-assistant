@@ -1,6 +1,8 @@
 name: CI
 
-on:
+# Note: `"on"` is quoted because unquoted `on` is parsed as boolean true
+# by YAML 1.1, which breaks GitHub Actions workflow detection.
+"on":
   push:
     branches: [main]
   pull_request:
