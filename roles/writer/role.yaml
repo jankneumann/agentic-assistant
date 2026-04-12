@@ -1,0 +1,24 @@
+name: writer
+display_name: "Writer"
+description: "Content drafting — emails, reports, presentations, posts"
+
+preferred_tools:
+  - content_analyzer:knowledge_graph
+  - content_analyzer:search
+
+delegation:
+  can_spawn_sub_agents: false
+  max_concurrent: 0
+  allowed_sub_roles: []
+
+planning:
+  always_plan: false
+  decomposition_style: "outline_first"
+
+context:
+  prioritize_sources: true
+  save_findings: false
+  output_format: "conversational"
+
+skills_dir: "./roles/writer/skills"
+prompt_position: "after_persona"

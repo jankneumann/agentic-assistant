@@ -1,0 +1,23 @@
+name: template
+display_name: "Template Role"
+description: "Starting point for new roles — edit this file when cloning."
+
+preferred_tools: []
+
+delegation:
+  can_spawn_sub_agents: false
+  max_concurrent: 0
+  allowed_sub_roles: []
+
+planning:
+  always_plan: false
+  decomposition_style: "task_oriented"
+  max_depth: 2
+
+context:
+  prioritize_sources: false
+  save_findings: false
+  output_format: "conversational"
+
+skills_dir: "./roles/_template/skills"
+prompt_position: "after_persona"

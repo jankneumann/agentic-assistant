@@ -1,0 +1,28 @@
+name: planner
+display_name: "Planner"
+description: "Strategic planning, roadmap development, initiative structuring"
+
+preferred_tools:
+  - content_analyzer:knowledge_graph
+  - coding_tools:repo_status
+  - coding_tools:github_issues
+
+delegation:
+  can_spawn_sub_agents: true
+  max_concurrent: 2
+  allowed_sub_roles:
+    - researcher
+    - writer
+
+planning:
+  always_plan: true
+  decomposition_style: "goal_oriented"
+  max_depth: 4
+
+context:
+  prioritize_sources: false
+  save_findings: true
+  output_format: "structured"
+
+skills_dir: "./roles/planner/skills"
+prompt_position: "after_persona"

@@ -1,0 +1,28 @@
+name: researcher
+display_name: "Researcher"
+description: "Deep research and analysis with source synthesis"
+
+preferred_tools:
+  - content_analyzer:search
+  - content_analyzer:knowledge_graph
+  - content_analyzer:newsletter_archive
+
+delegation:
+  can_spawn_sub_agents: true
+  max_concurrent: 3
+  allowed_sub_roles:
+    - writer
+    - coder
+
+planning:
+  always_plan: true
+  decomposition_style: "breadth_first"
+  max_depth: 3
+
+context:
+  prioritize_sources: true
+  save_findings: true
+  output_format: "structured"
+
+skills_dir: "./roles/researcher/skills"
+prompt_position: "after_persona"
