@@ -1,6 +1,6 @@
 # agentic-assistant — OpenSpec Roadmap
 
-Derived from `agentic-assistant-bootstrap-v4.1.md`. The bootstrap spec is split
+Derived from `docs/agentic-assistant-bootstrap-v4.1.md`. The bootstrap spec is split
 into sequenced OpenSpec proposals so each change is independently reviewable,
 implementable, and validatable. One proposal per session to preserve context
 and let implementation feedback inform later designs.

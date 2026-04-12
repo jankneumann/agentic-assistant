@@ -2,7 +2,7 @@
 
 ## Why
 
-This repo is an empty scaffold. The `agentic-assistant-bootstrap-v4.1.md` spec
+This repo is an empty scaffold. The `docs/agentic-assistant-bootstrap-v4.1.md` spec
 describes a 15-phase design, but landing all of it in one change would ship a
 large surface area where most modules are `# TODO` stubs — making review nearly
 worthless and creating a long window of broken-state commits.

@@ -46,7 +46,7 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = [".venv", "dist", "build", ".agents", ".claude", ".codex", ".gemini", "openspec/changes/archive", "agentic-assistant-bootstrap-v4.1.md"]
+extend-exclude = [".venv", "dist", "build", ".agents", ".claude", ".codex", ".gemini", "docs", "openspec/changes/archive"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "RUF"]
