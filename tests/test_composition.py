@@ -109,14 +109,27 @@ def test_always_plan_includes_planning_line() -> None:
     assert "plan" in out.lower()
 
 
-def test_composition_against_real_configs(
+def test_composition_against_fixture_configs(
     personas_dir: Path, roles_dir: Path
 ) -> None:
-    """Integration: composes against the real personal + researcher configs."""
+    """Integration: composes against the FIXTURE personal + researcher configs.
+
+    Replaces the removed ``test_composition_against_real_configs`` (which
+    asserted on strings sourced from the real private submodule). The
+    fixture files under the personal-persona fixture tree carry
+    intentional, tests-only sentinels (``FIXTURE_PERSONA_SENTINEL_v1`` in
+    prompt.md, ``FIXTURE_ROLE_SENTINEL_v1`` in roles/researcher.yaml) so
+    we can prove end-to-end composition coverage without coupling the
+    assertion to any private content.
+    """
     persona = PersonaRegistry(personas_dir).load("personal")
     role = RoleRegistry(roles_dir, personas_dir).load("researcher", persona)
     out = compose_system_prompt(persona, role)
-    assert "Personal Persona Context" in out
+    # Base + role presence (base-role strings are public, in roles/).
     assert "Role: Researcher" in out
     assert "**Persona**: Personal" in out
     assert "**Role**: Researcher" in out
+    # Persona-layer fixture sentinel (sourced from fixture prompt.md).
+    assert "FIXTURE_PERSONA_SENTINEL_v1" in out
+    # Role-layer fixture sentinel (sourced from fixture role override).
+    assert "FIXTURE_ROLE_SENTINEL_v1" in out

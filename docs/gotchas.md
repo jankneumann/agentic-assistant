@@ -147,3 +147,133 @@ When a user requests X, the system SHALL do Y.
 # OK:
 The system SHALL do Y when a user requests X.
 ```
+
+---
+
+## G6. Private-persona content leakage via public test assertions
+
+**Symptom**: One of:
+1. CI passes locally but private content (prompt strings, role-override
+   phrasing) appears verbatim in public test code, or shows up in `git log`
+   diffs against the public repo.
+2. A test fails at collection with `_PrivacyBoundaryViolation` (subclass
+   of `pytest.UsageError`) naming a forbidden `personas/<name>/` path.
+3. CI passes but the fixture and the real submodule have diverged and
+   nobody noticed until local runs surface a shape mismatch.
+
+**Root cause**: two failure classes, both caught by the two-layer guard:
+
+1. **Literal-path leak** — a public test file contains the substring
+   `personas/personal/` or `personas/work/` (in an assertion, a path
+   literal, or even a docstring comment). Layer 1's collection-time
+   substring scan (`tests/conftest.py`) catches this.
+2. **Constructed-path leak** — a test builds a forbidden path via join
+   idioms like `Path("personas") / name / "persona.yaml"` where `name`
+   comes from a variable, parameter, or env lookup. The substring scan
+   cannot see this (no literal appears in source). Layer 2's runtime FS
+   guard (`tests/_privacy_guard_plugin.py`) catches it by patching
+   `pathlib.Path.open`, `Path.read_text`, `Path.read_bytes`,
+   `builtins.open`, `os.open`, and `subprocess.Popen.__init__` — any
+   read or subprocess argv that resolves under `personas/<forbidden>/`
+   raises `_PrivacyBoundaryViolation` at the moment of call.
+
+Common upstream cause: `personas_dir` fixture in `tests/conftest.py` was
+(re-)pointed at `REPO_ROOT / "personas"` instead of
+`REPO_ROOT / "tests" / "fixtures" / "personas"`, so every consumer of
+the fixture now reads the real submodule.
+
+**Fix**:
+
+```python
+# tests/conftest.py — correct:
+@pytest.fixture
+def personas_dir() -> Path:
+    return REPO_ROOT / "tests" / "fixtures" / "personas"
+
+# tests/conftest.py — WRONG (resurrects the leak):
+@pytest.fixture
+def personas_dir() -> Path:
+    return REPO_ROOT / "personas"
+```
+
+- Rewrite assertions to use fixture-defined values (e.g. the
+  `FIXTURE_PERSONA_SENTINEL_v1` marker in the fixture prompt) rather than
+  strings lifted from the real submodule.
+- If a test genuinely needs to validate real submodule data, it does not
+  belong in the public `tests/` tree — relocate it to
+  `personas/<name>/tests/` as a self-contained test (no imports from
+  `src/assistant/*`, YAML parsed via `yaml.safe_load`). See D3/D4 in
+  `openspec/changes/test-privacy-boundary/design.md`.
+
+**How to detect**: run `uv run pytest tests/` from a clean checkout with
+the submodule deinitialized (`git submodule deinit -f personas/personal`).
+If the suite passes, the boundary is intact. If anything fails with a
+missing `personas/<name>/persona.yaml`, you have a leak. The wrapper
+`scripts/verify-public-tests-standalone.sh` automates this safely (uses
+`trap` to restore the submodule on exit).
+
+**Prevention**: the two-layer guard in `tests/conftest.py` +
+`tests/_privacy_guard_plugin.py` catches both literal and
+constructed-path leaks at collection/runtime, reading its deny-list
+(`FORBIDDEN_PATH_NAMES = ("personal", "work")`) from
+`tests/_privacy_guard_config.py`. The guard also covers `work` from day
+one even though `personas/work/` is not yet populated.
+
+**Known out-of-coverage surface** (per design R2 —
+`openspec/changes/test-privacy-boundary/design.md`): the runtime guard
+does NOT see (a) `mmap.mmap` on an already-opened file descriptor, (b)
+`ctypes`-based I/O bypassing the stdlib entirely, (c) `os.system` on
+Windows (it dispatches through `cmd.exe`, not `subprocess.Popen`), or
+(d) deliberately-split subprocess argv where the forbidden substring is
+reconstructed only after `execve` (e.g. `['sh', '-c', f'cat
+personas/{name}/x']` with `name` obtained from an env var read at
+subprocess time). These are outside the documented threat model
+(deliberate evasion, not accidental Copilot idiom). Layer 1's substring
+scan is the only defense for any of these patterns, so keep forbidden
+literals out of test source entirely — use dynamic needle construction
+(`tuple(f"personas/{n}/" for n in FORBIDDEN_PATH_NAMES)`) in any file
+that legitimately needs to reference the deny-list as data.
+
+---
+
+## G7. Submodule test standalone mode silent-skip
+
+**Symptom**: A submodule maintainer runs
+`cd personas/personal && pytest tests/` in isolation (without a parent
+checkout), the suite reports green, and the maintainer pushes. Later, a
+full parent-checkout run fails: a role override in the submodule
+references a base role that does not exist in the parent `roles/`
+directory, breaking composition.
+
+**Root cause**: `personas/personal/tests/test_role_overrides.py` used to
+resolve the parent roles directory via
+`Path(__file__).resolve().parents[2] / "roles"`. When the submodule is
+checked out standalone (not inside a parent), that path does not exist,
+and an earlier draft silently skipped the existence check. Silent-skip
+converted a real invariant violation into a false green.
+
+**Fix**: the check now `pytest.fail`s by default with a message naming
+the required env var. Setting `ALLOW_STANDALONE_SUBMODULE_SKIP=1`
+converts the failure to an explicit `pytest.skip` with a loud message —
+an opt-in acknowledging "I know this run does not validate the cross-repo
+invariant":
+
+```bash
+# Default (strict): fails loudly if parent roles/ unreachable
+cd personas/personal && pytest tests/
+
+# Explicit opt-in for standalone runs (skip with loud message):
+ALLOW_STANDALONE_SUBMODULE_SKIP=1 pytest tests/
+```
+
+**How to detect**: if `pytest tests/` in the submodule reports
+`SKIPPED [1] test_role_overrides.py: parent roles/ not reachable...`
+**without** the env var set, the strict mode is broken — file a bug
+against the submodule. If the env var is set, that single skip line is
+expected and announces itself clearly.
+
+**Prevention**: default is strict; the env var is documented here (G7),
+in the submodule's own README, and in the failure message itself so
+maintainers always know the exact incantation to bypass. The parent-repo
+run never sets this env var, so the cross-repo invariant is exercised
+every time the full suite runs from a parent checkout.

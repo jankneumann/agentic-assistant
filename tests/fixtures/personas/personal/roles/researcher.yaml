@@ -1,5 +1,9 @@
+# FIXTURE_ROLE_SENTINEL_v1 (tests-only marker; not in real submodule).
+# Asserted by tests/test_role_registry.py to prove the role-override
+# prompt-append path is exercised against the fixture without leaking
+# private-submodule content into public tests.
 prompt_append: |
-  ### Personal Context Additions
+  ### Personal Context Additions (FIXTURE_ROLE_SENTINEL_v1)
   - Tone can be more exploratory and speculative
   - Include "things to try" and hands-on experiment suggestions
   - Connect findings to personal projects and learning goals

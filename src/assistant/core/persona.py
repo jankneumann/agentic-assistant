@@ -36,10 +36,23 @@ class PersonaConfig:
     raw: dict[str, Any] = field(default_factory=dict)
 
 
-class PersonaRegistry:
-    """Discover and load personas from submodule-mounted directories."""
+_DEFAULT_PERSONAS_DIR = Path("personas")
 
-    def __init__(self, personas_dir: Path | str = Path("personas")) -> None:
+
+class PersonaRegistry:
+    """Discover and load personas from submodule-mounted directories.
+
+    The root is resolved (in order): explicit ``personas_dir`` arg, the
+    ``ASSISTANT_PERSONAS_DIR`` environment variable, then ``Path("personas")``.
+    The env-var path lets tests and alternative harnesses redirect the
+    registry away from the production submodule mount without touching
+    callers — see docs/gotchas.md G6 for the privacy-boundary rationale.
+    """
+
+    def __init__(self, personas_dir: Path | str | None = None) -> None:
+        if personas_dir is None:
+            env = os.environ.get("ASSISTANT_PERSONAS_DIR")
+            personas_dir = Path(env) if env else _DEFAULT_PERSONAS_DIR
         self.personas_dir = Path(personas_dir)
         self._cache: dict[str, PersonaConfig] = {}
 

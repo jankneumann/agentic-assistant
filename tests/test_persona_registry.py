@@ -80,7 +80,9 @@ def test_loaded_result_is_cached(personas_dir: Path) -> None:
 def test_prompt_md_is_loaded(personas_dir: Path) -> None:
     registry = PersonaRegistry(personas_dir)
     cfg = registry.load("personal")
-    assert "Personal Persona Context" in cfg.prompt_augmentation
+    # Fixture-defined sentinel in the fixture's prompt.md -- proves
+    # prompt.md was loaded without asserting on private-submodule content.
+    assert "FIXTURE_PERSONA_SENTINEL_v1" in cfg.prompt_augmentation
 
 
 def test_memory_md_is_optional(tmp_path: Path) -> None:

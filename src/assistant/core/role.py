@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -37,9 +38,18 @@ class RoleRegistry:
 
     def __init__(
         self,
-        roles_dir: Path | str = Path("roles"),
-        personas_dir: Path | str = Path("personas"),
+        roles_dir: Path | str | None = None,
+        personas_dir: Path | str | None = None,
     ) -> None:
+        # Honor ASSISTANT_PERSONAS_DIR for test-privacy-boundary (see
+        # PersonaRegistry.__init__ and docs/gotchas.md G6). The env var
+        # redirects both the persona base config and its role overrides
+        # so tests never read from `personas/<name>/` at runtime.
+        if personas_dir is None:
+            env = os.environ.get("ASSISTANT_PERSONAS_DIR")
+            personas_dir = Path(env) if env else Path("personas")
+        if roles_dir is None:
+            roles_dir = Path("roles")
         self.roles_dir = Path(roles_dir)
         self.personas_dir = Path(personas_dir)
 

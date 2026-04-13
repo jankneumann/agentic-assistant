@@ -75,8 +75,16 @@ Common commands:
 - Python 3.12, type hints, Ruff, pytest
 - Extension code in public repo, activation config in private repos
 - Each persona gets its own database (ParadeDB Postgres) — wired in P3
-- Tests run against real `roles/` + `personas/` directories (no filesystem
-  mocking); see `tests/conftest.py`
+- Tests run against the in-repo `tests/fixtures/personas/` (public tests)
+  or the persona's own submodule (persona-specific tests), never against
+  the real `personas/<name>/` submodule from public code; see
+  `tests/conftest.py`.
+- Public tests use fixtures only (`tests/fixtures/personas/`);
+  persona-specific tests live in each persona's private submodule and
+  must be self-contained (no imports from `src/assistant/*`); the
+  two-layer privacy guard in `tests/conftest.py` +
+  `tests/_privacy_guard_plugin.py` enforces this at collection time
+  (substring scan) and at runtime (FS I/O patching).
 
 ## Known gotchas
 

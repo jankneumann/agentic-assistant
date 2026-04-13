@@ -52,7 +52,8 @@ def test_disabled_role_is_filtered_out(
 def test_base_role_loads_without_overrides(
     roles_dir: Path, personas_dir: Path
 ) -> None:
-    # planner has no override in personas/personal/roles/ → base values only
+    # planner has no override in the persona's role-overrides dir → base
+    # values only
     persona = PersonaRegistry(personas_dir).load("personal")
     role = RoleRegistry(roles_dir, personas_dir).load("planner", persona)
     assert "content_analyzer:knowledge_graph" in role.preferred_tools
@@ -64,9 +65,12 @@ def test_prompt_append_extends_base_prompt(
     persona = PersonaRegistry(personas_dir).load("personal")
     role = RoleRegistry(roles_dir, personas_dir).load("researcher", persona)
     assert "Role: Researcher" in role.prompt  # base content present
-    assert "Personal Context Additions" in role.prompt  # override appended
+    # Fixture-defined sentinel in the fixture's researcher role-override
+    # yaml prompt_append -- proves override was appended without asserting
+    # on private-submodule content.
+    assert "FIXTURE_ROLE_SENTINEL_v1" in role.prompt
     assert role.prompt.index("Role: Researcher") < role.prompt.index(
-        "Personal Context Additions"
+        "FIXTURE_ROLE_SENTINEL_v1"
     )
 
 
