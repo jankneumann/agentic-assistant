@@ -1,0 +1,162 @@
+# Work packages for test-privacy-boundary
+#
+# DAG:
+#   wp-contracts (root)
+#     ├─ wp-public-tests    (parallel)
+#     ├─ wp-submodule-tests (parallel; cross-repo — requires private-repo push)
+#     └─ wp-docs-ci         (parallel)
+#          └─ wp-integration (all three parallel packages merge here)
+
+packages:
+  - id: wp-contracts
+    name: "Contracts scaffold"
+    description: >-
+      Create contracts/README.md stub documenting that no API/DB/event
+      contract sub-types apply to this change.
+    tasks: ["1.1"]
+    priority: 1
+    dependencies: []
+    scope:
+      write_allow:
+        - "openspec/changes/test-privacy-boundary/contracts/**"
+      read_allow:
+        - "openspec/changes/test-privacy-boundary/**"
+    locks:
+      files:
+        - "openspec/changes/test-privacy-boundary/contracts/README.md"
+      keys:
+        - "docs:contracts:test-privacy-boundary"
+      ttl_minutes: 60
+      reason: "Contracts stub authoring"
+    verification: tier_c
+
+  - id: wp-public-tests
+    name: "Public test boundary — repoint + scrub + guard"
+    description: >-
+      Repoint the personas_dir fixture in tests/conftest.py to
+      tests/fixtures/personas/; scrub private-content assertions from public
+      tests; add pytest_collection_modifyitems guard. Includes Phase 2 tasks
+      (TDD ordering preserved: test tasks 2.1, 2.3 precede implementation
+      2.2, 2.4-2.8; verification 2.9 at end).
+    tasks: ["2.1", "2.2", "2.3", "2.4", "2.5", "2.6", "2.7", "2.8", "2.9"]
+    priority: 2
+    dependencies: ["wp-contracts"]
+    scope:
+      write_allow:
+        - "tests/**"
+      read_allow:
+        - "src/**"
+        - "roles/**"
+        - "personas/_template/**"
+        - "tests/fixtures/**"
+      deny:
+        - "personas/personal/**"
+        - "personas/work/**"
+        - ".github/**"
+    locks:
+      files:
+        - "tests/conftest.py"
+        - "tests/test_composition.py"
+        - "tests/test_role_registry.py"
+        - "tests/test_persona_registry.py"
+        - "tests/test_delegation.py"
+        - "tests/test_cli.py"
+      keys:
+        - "tests:boundary:public"
+      ttl_minutes: 180
+      reason: "Public test scrub + guard hook"
+    verification: tier_b
+
+  - id: wp-submodule-tests
+    name: "Self-contained persona-submodule test suite"
+    description: >-
+      Inside personas/personal/ (private submodule, separate git repo), add
+      tests/ directory + pyproject.toml + conftest. All tests must be
+      self-contained — no imports from src/assistant/. Includes Phase 3
+      tasks (TDD ordering preserved).
+    tasks: ["3.1", "3.2", "3.3", "3.4", "3.5", "3.6"]
+    priority: 2
+    dependencies: ["wp-contracts"]
+    scope:
+      write_allow:
+        - "personas/personal/**"
+      read_allow:
+        - "roles/**"
+        - "src/assistant/core/persona.py"
+        - "src/assistant/core/role.py"
+      deny:
+        - "tests/**"
+        - ".github/**"
+    locks:
+      files:
+        - "personas/personal/pyproject.toml"
+        - "personas/personal/tests/**"
+      keys:
+        - "tests:boundary:submodule:personal"
+      ttl_minutes: 180
+      reason: "Persona-submodule self-contained test authoring (requires private-repo push access)"
+    verification: tier_b
+    constraints:
+      # Non-standard field: implementation must have private-repo write access.
+      # Consuming skill (/implement-feature) should route this package to an
+      # agent that can authenticate to the private-repo remote.
+      requires_private_repo_write: true
+
+  - id: wp-docs-ci
+    name: "CI simplification + documentation"
+    description: >-
+      Remove the populate-personas step from .github/workflows/ci.yml; add
+      docs/gotchas.md entry; update CLAUDE.md Conventions section.
+    tasks: ["4.1", "4.2", "4.3"]
+    priority: 2
+    dependencies: ["wp-contracts"]
+    scope:
+      write_allow:
+        - ".github/workflows/ci.yml"
+        - "docs/gotchas.md"
+        - "CLAUDE.md"
+      read_allow:
+        - "tests/conftest.py"
+        - "openspec/changes/test-privacy-boundary/**"
+      deny:
+        - "tests/**"
+        - "personas/**"
+        - "src/**"
+    locks:
+      files:
+        - ".github/workflows/ci.yml"
+        - "docs/gotchas.md"
+        - "CLAUDE.md"
+      keys:
+        - "ci:workflow:main"
+        - "docs:gotchas"
+        - "docs:claude-md"
+      ttl_minutes: 90
+      reason: "CI cleanup + docs"
+    verification: tier_c
+
+  - id: wp-integration
+    name: "Merge and full-suite verification"
+    description: >-
+      Merge wp-public-tests, wp-submodule-tests, and wp-docs-ci branches.
+      Run openspec validate; run full pytest with submodule populated and
+      with submodule moved aside (standalone-proof); commit submodule SHA
+      bump; push branch and open PR.
+    tasks: ["5.1", "5.2", "5.3", "5.4"]
+    priority: 3
+    dependencies:
+      - "wp-public-tests"
+      - "wp-submodule-tests"
+      - "wp-docs-ci"
+    scope:
+      write_allow:
+        - "**"
+      read_allow:
+        - "**"
+    locks:
+      files: []
+      keys:
+        - "integration:test-privacy-boundary"
+      ttl_minutes: 60
+      reason: "Integration merge + verification"
+    verification: tier_a
