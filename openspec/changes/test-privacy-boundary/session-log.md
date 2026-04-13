@@ -424,3 +424,49 @@ fixture files updated), wp-submodule-tests (6 tasks + script authoring,
 wp-ci-cleanup (3 tasks, 3 files — 1 workflow + 2 hygiene tests) and
 wp-integration (quality gates). Net diff: ~30 files, ~2k LOC including
 spec/plan artifacts and test code.
+
+---
+
+## Phase: Validation (2026-04-13)
+
+**Agent**: claude-opus-4-6 (main + 1 spec-audit subagent) | **Session**: N/A
+
+### Decisions
+
+1. **Skipped non-applicable phases.** Deploy / Smoke / Security / E2E /
+   Gen-Eval / Log-Analysis / Architecture phases do not apply to a
+   test-infrastructure feature with no HTTP API, no new dependencies,
+   and no architecture-graph artifacts in this repo. The applicable
+   phases are Spec Compliance, Work-Package Evidence, and CI/CD Status.
+
+2. **Spec audit found 14/14 scenarios passing** — dispatched a
+   subagent to verify every SHALL/MUST scenario in
+   `specs/test-privacy-boundary/spec.md` against the actual
+   implementation code. No scenario is unimplemented, none is partial.
+
+3. **Identified 5 spec-drift items to address during `/cleanup-feature`
+   spec-sync.** The most material is the `ASSISTANT_PERSONAS_DIR`
+   env-var contract: it's implemented, unit-tested (6 tests in
+   `test_env_var_contract.py`), and documented in `docs/gotchas.md`
+   G6 — but not declared as a SHALL in `spec.md`. Other drift items
+   cover subprocess kwarg coverage broader than the spec, Layer 1
+   scan exclusions, submodule parents[3] vs parents[2] wording, and
+   the `push-with-submodule.sh` helper script. None represent missing
+   implementation; all are cases where implementation is stricter
+   than the spec and should be codified.
+
+4. **CI is green on PR #2** (`Lint + typecheck + test` passed in 45s).
+   Confirms the test suite runs cleanly in a fresh CI environment
+   without the private submodule cloned — proves goal G1 at the
+   deployment level, not just via the local
+   `verify-public-tests-standalone.sh` script.
+
+### Context
+
+Validation phase confirmed the feature is ready to merge. 14/14 spec
+scenarios pass, 126 parent-repo tests green, submodule standalone
+proof green (9/9 in fresh venv), CI green on the open PR, no
+regressions or waivers. Full audit JSON produced by the spec-compliance
+subagent; per-scenario evidence captured in `validation-report.md`.
+Remaining work is spec-sync during `/cleanup-feature` to absorb the 5
+drift items.
