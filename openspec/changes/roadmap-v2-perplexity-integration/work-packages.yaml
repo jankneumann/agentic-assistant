@@ -1,0 +1,49 @@
+# Sequential-tier work package — planning-only change.
+# A single wp-main encompasses the full scope per the /plan-feature
+# skill's sequential-tier template.
+
+schema_version: "1.0"
+
+packages:
+  - id: wp-main
+    name: "roadmap-v2-perplexity-integration — full scope"
+    description: >
+      Rewrite openspec/roadmap.md, add tooling-roadmap capability spec,
+      add docs/perplexity-feedback.md canonical reference. All tasks
+      from tasks.md phases 1–5.
+    tasks:
+      - "1.1"
+      - "1.2"
+      - "2.1"
+      - "2.2"
+      - "2.3"
+      - "3.1"
+      - "3.2"
+      - "4.1"
+      - "4.2"
+      - "4.3"
+      - "5.1"
+      - "5.2"
+    priority: 1
+    dependencies: []
+    scope:
+      write_allow:
+        - "openspec/roadmap.md"
+        - "openspec/changes/roadmap-v2-perplexity-integration/**"
+        - "docs/perplexity-feedback.md"
+        - "CLAUDE.md"
+      read_allow:
+        - "**"
+      deny:
+        - "src/**"
+        - "tests/**"
+        - "personas/**"
+    locks:
+      files:
+        - "openspec/roadmap.md"
+      keys:
+        - "docs:openspec/roadmap.md"
+        - "spec:tooling-roadmap"
+      ttl_minutes: 120
+      reason: "Roadmap rewrite + tooling-roadmap capability spec introduction"
+    verification: tier_b
