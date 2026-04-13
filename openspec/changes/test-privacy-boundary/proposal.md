@@ -208,3 +208,38 @@ Approaches 2 and 3 are not selected:
   `requires_private_repo_write`; `wp-ci-cleanup` now depends on
   `wp-public-tests`; `wp-integration` deny-lists submodule content so it
   cannot accidentally write there).
+
+### Changes from Round 2 review
+
+- **Extended Layer 2 patch surface** (finding B-N1, B-N2): the runtime
+  guard now also patches `os.open` (covers `io.FileIO`, `codecs.open`,
+  `io.open`) and `subprocess.Popen.__init__` (scans argv for forbidden
+  substrings, closing the `subprocess.run(['cat', path])` bypass class).
+- **Added plugin self-probe** (B-N8): at `pytest_configure`, the plugin
+  verifies its patches are active by attempting a canary forbidden read;
+  fails the session if the patches silently failed to install.
+- **Qualified the positive-import assertion** (B-N5): submodule tests
+  now assert `importlib.import_module("assistant.core.persona")` raises
+  ImportError — the qualified path avoids collision with the unrelated
+  PyPI package also named `assistant`.
+- **Added parent-workspace forward-compat guard** (B-N6): a new
+  `tests/test_workspace_hygiene.py` asserts the parent `pyproject.toml`
+  does NOT declare `personas/*` as a uv workspace member, preventing a
+  future dev-ergonomics change from silently defeating self-containment.
+- **Fresh-venv script now cd-before-pytest** (B-N7): eliminates the
+  rootdir-discovery ambiguity that would load parent `pytest_plugins`
+  against submodule tests.
+- **Hygiene tests use dynamic needle construction** (B-N4): the files
+  that need to reference `personas/<name>/` substrings as *data* import
+  `FORBIDDEN_PATH_NAMES` from the deny-list config instead of embedding
+  literals, so Layer 1 doesn't self-trip. Belt-and-suspenders: added to
+  the Layer 1 exclusion list as well.
+- **Added push-script authoring task** (B-N3): task 5.0 creates
+  `scripts/push-with-submodule.sh` with documented exit-code contract
+  (exit 47 for push failure after partial success) that 5.3-alt parses.
+- **Clarified task 5.3-alt trigger semantics** (A-N2): dispatch-time
+  constraint-driven quarantine + runtime exit-code-47 fallback, both
+  documented as the explicit dual contract.
+- **Removed 5.3b↔5.4 "subsumed" ambiguity** (A-N1): 5.3b pushes the
+  parent branch; 5.4 opens the PR via `gh pr create`. They are now
+  unambiguously distinct steps.

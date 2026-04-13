@@ -66,13 +66,30 @@ collection-time advisory + runtime filesystem guard as authoritative).
   before any test body runs.
 - **Layer 2 (authoritative, runtime)**: A pytest plugin (registered via
   `tests/_privacy_guard_plugin.py` and loaded via `pytest_plugins` in
-  `tests/conftest.py`) patches `pathlib.Path.open`, `pathlib.Path.read_text`,
-  `pathlib.Path.read_bytes`, and `builtins.open` for the duration of test
-  collection and execution. Any attempt to open a path that resolves under
-  `personas/<name>/` (where `<name>` is in `FORBIDDEN_PATH_NAMES`) raises
+  `tests/conftest.py`) patches the following I/O entry points for the
+  duration of test collection and execution:
+  - `pathlib.Path.open`, `pathlib.Path.read_text`, `pathlib.Path.read_bytes`
+  - `builtins.open`
+  - `os.open` (the canonical syscall choke point; `io.FileIO`,
+    `codecs.open`, `io.open`, and `open()` all route through it)
+  - `subprocess.Popen.__init__` (scans `args`/`argv` for forbidden path
+    substrings, closing the "Copilot writes `subprocess.run(['cat', ...])`"
+    bypass class — Round 2 finding B-N1)
+
+  Any attempt to open/read a path that resolves under `personas/<name>/`
+  (where `<name>` is in `FORBIDDEN_PATH_NAMES`), or to spawn a subprocess
+  whose argv contains such a path literal or a string constructible as
+  such (see Round 2 finding B-N1 for the bypass class this closes), raises
   `_PrivacyBoundaryViolation`, which inherits from `pytest.UsageError`.
   Allow-listed read paths under `tests/fixtures/` and `personas/_template/`
   are permitted.
+
+  **Plugin self-probe (B-N8)**: At `pytest_configure` time, after installing
+  the patches, the plugin opens a canary path under `personas/personal/`
+  and asserts `_PrivacyBoundaryViolation` is raised. If the patches failed
+  to install (e.g., future CPython refuses Python-level rebinding of a
+  C-slot method), the self-probe fails loudly via `pytest.UsageError`
+  before any real test runs. Prevents the silent-disable failure mode.
 
 **Why**: Layer 1 alone cannot stop the standard
 `Path("personas") / persona_name / "persona.yaml"` idiom — Copilot and
@@ -140,32 +157,56 @@ worse.
 
 **Decision**: `personas/personal/pyproject.toml` declares the minimum needed
 for its own test suite: `pytest`, `pyyaml`. It also declares
-`[tool.uv]` with `package = false` and an empty `workspace.members`, so
-`uv` invoked from inside the submodule does **not** walk up to the parent
-project and reuse its venv.
+`[tool.uv]` with `package = false` and an empty `workspace.members`, and
+pins `uv >= 0.5.0` in the fresh-venv verification script because the
+`[tool.uv].package` field semantics stabilized at that version (Round 2
+finding B-N6).
 
 The submodule's standalone-proof verification (task 3.6) creates a
-**fresh** venv (`uv venv` inside `/tmp/...` or `python -m venv`), installs
-only `pytest` and `pyyaml`, and runs the submodule suite there. It does
-**not** use `PYTHONPATH=/dev/null` (which has no effect on installed
-packages).
+**fresh** venv (`python -m venv` with the script's own Python
+interpreter), installs only `pytest` and `pyyaml` with pinned minimums,
+and runs the submodule suite there. The script `cd`s into
+`personas/personal/` before invoking pytest so the submodule's pyproject
+is pytest's rootdir, not the parent's — otherwise the parent's
+`pytest_plugins` (the privacy guard) would be loaded and could fire on
+legitimate submodule reads (Round 2 finding B-N7). It does **not** use
+`PYTHONPATH=/dev/null` (which has no effect on installed packages).
 
 The submodule suite includes a positive runtime check
 (`tests/test_no_assistant_import.py`) that calls
-`importlib.import_module('assistant')` inside `pytest.raises(ImportError)`.
-A pure-grep check is insufficient — `__import__('assistant')` and
-`importlib.import_module('assistant')` both bypass it.
+`importlib.import_module('assistant.core.persona')` — NOT just
+`importlib.import_module('assistant')` — inside `pytest.raises(ImportError)`.
+The qualified path is distinctive to this project and will not collide
+with the unrelated PyPI package named `assistant` that a contributor
+could have pip-installed for other work (Round 2 finding B-N5). A
+pure-grep check is insufficient — `__import__` and
+`importlib.import_module` both bypass it.
+
+**Forward-compatibility guard**: A parent-repo test
+(`tests/test_workspace_hygiene.py`, added alongside the workflow-hygiene
+test in Phase 4) asserts that the parent `pyproject.toml` does NOT
+declare `[tool.uv.workspace]` with `personas/*` as a member. If someone
+later adds `members = ['personas/*']` for dev ergonomics, the submodule's
+own `workspace.members = []` cannot override inclusion (membership is
+declared by the workspace root, not the member). The guard catches this
+regression class explicitly (Round 2 finding B-N6).
 
 **Why**: Earlier draft assumed that putting tests under `personas/personal/`
 with their own pyproject would isolate them. Round 1 review (A1) showed
-that `uv run pytest` invoked from inside the submodule will discover the
-parent project root and reuse its venv unless an explicit workspace
-boundary is declared. Without isolation, `import assistant` succeeds
-silently and the self-containment claim is unverifiable.
+`uv run pytest` from inside the submodule would reuse the parent venv
+without an explicit workspace boundary. Round 2 review (B-N5, B-N6, B-N7)
+further found that (a) the `assistant` PyPI package name could collide
+with an unrelated install and make the positive-import assertion
+misleading, (b) the workspace boundary is one-directional — parent-
+declared membership overrides member-declared `workspace.members = []`,
+so a future parent change could silently reintroduce the leak, and (c)
+pytest's rootdir discovery from parent cwd could load parent plugins
+against submodule tests.
 
-**Trade-off**: Adds two short config blocks (`[tool.uv]` boundary, fresh-venv
-verification step) to the submodule. Acceptable: the cost is small and the
-alternative — believing self-containment without proving it — is worthless.
+**Trade-off**: Adds several short config blocks (version pin, workspace
+forward-compat guard, cd-before-pytest in the verification script) to
+the submodule + parent. Acceptable: each one closes a concrete gap
+Round 1/2 surfaced, and the cost is small.
 
 ### D5: Parent-repo `roles/` resolved via `../../roles/` from submodule tests, with explicit standalone opt-in
 
@@ -258,17 +299,42 @@ It does **not** inspect:
 - `tests/_privacy_guard_plugin.py` (the runtime guard implementation).
 - Files under `tests/fixtures/`.
 
+**Additional rule (Round 2 finding B-N4)**: The test files that legitimately
+need to reference forbidden path substrings — specifically
+`tests/test_ci_workflow_hygiene.py` (which greps workflow YAML for
+leakage) and `tests/test_workspace_hygiene.py` (which greps the parent
+pyproject for `personas/*` workspace membership) — SHALL **not** use
+the substring as a literal in their source. Instead, they SHALL import
+`FORBIDDEN_PATH_NAMES` from `tests/_privacy_guard_config.py` and
+construct the needle dynamically:
+
+```python
+from tests._privacy_guard_config import FORBIDDEN_PATH_NAMES
+needles = tuple(f"personas/{name}/" for name in FORBIDDEN_PATH_NAMES)
+```
+
+This keeps the test file free of forbidden literals (so Layer 1 doesn't
+self-trip) and auto-extends when new persona names are added to the
+deny-list. Belt-and-suspenders: the hygiene-test filenames are **also**
+added to the Layer 1 exclusion list, so a literal substring slipping
+back in during future maintenance still doesn't cause a hard session
+failure — it fails the hygiene test's own assertion instead, with a
+better diagnostic.
+
 **Why**: Round 1 review (A3, A4) raised that conftest fixtures are imported,
 not collected, so a fixture returning a forbidden path bypasses a
 collection-only scan. Including conftest in the scan closes that gap.
-The two `_privacy_guard_*.py` files are explicitly excluded because they
-are the deny-list's own implementation; if they were scanned, the guard
-would self-trip on its own constants.
+Round 2 review (B-N4) raised that the hygiene-test files need the
+forbidden substring as *data* for their own scanning logic; a naive
+implementation would self-trip Layer 1. The dynamic-needle pattern
+resolves it cleanly.
 
-**Trade-off**: The exclusion list is now four files (two scanned, two
-not). Mitigation: the exclusion is hard-coded in
-`_privacy_guard_config.py` as a tuple, not configurable, so the surface
-for "exclusion drift" is small.
+**Trade-off**: The exclusion list is now six files (test_*.py and
+conftest.py scanned; `_privacy_guard_config.py`,
+`_privacy_guard_plugin.py`, `test_ci_workflow_hygiene.py`,
+`test_workspace_hygiene.py` excluded). Mitigation: the exclusion is
+hard-coded in `_privacy_guard_config.py` as a tuple, not configurable,
+so the surface for "exclusion drift" is small.
 
 ## Risks
 
@@ -290,15 +356,39 @@ removed.
 ### R2: Layer 2 monkey-patching has scope/timing risks
 
 The runtime FS guard patches `pathlib.Path.open`, `Path.read_text`,
-`Path.read_bytes`, and `builtins.open`. If a parent-repo dependency reads
-files using a non-stdlib I/O path (e.g. a C extension that bypasses
-`builtins.open`), the runtime guard cannot see those reads.
+`Path.read_bytes`, `builtins.open`, `os.open`, and
+`subprocess.Popen.__init__`. After Round 2 finding B-N2, `os.open` is
+the canonical syscall-level choke point covering `io.FileIO`,
+`codecs.open`, `io.open`, and higher-level wrappers. After Round 2
+finding B-N1, `subprocess.Popen.__init__` catches the
+`subprocess.run(['cat', path])` bypass class by scanning argv elements
+for forbidden substrings.
 
-**Mitigation**: For the consumer set we have (`yaml.safe_load`, `Path.open`,
-`open()`, `read_text`/`read_bytes`), the patch surface is sufficient.
-Document the limitation: tests that use mmap, ctypes-based I/O, or shell
-subprocesses are outside Layer 2's coverage; for those, Layer 1's
-substring scan is the only line of defense.
+**Remaining out-of-coverage surface**:
+- **mmap.mmap** on an already-opened file descriptor: if a test opens a
+  file (which Layer 2 would catch) and mmaps it, the mmap read is
+  invisible. Already-opened-then-mmap requires first getting past the
+  open patch, so this is low-risk.
+- **ctypes-based I/O** bypassing the stdlib entirely. Rare in tests.
+- **os.system** and **os.popen** (both use the shell). Layer 2 does
+  patch `subprocess.Popen` and `os.system` dispatches through it on
+  POSIX, but on Windows `os.system` calls `cmd.exe` directly. Document
+  this as a known gap; `os.system` is rare in modern test code.
+- **Subprocess argv with a forbidden path split across multiple argv
+  elements** (e.g. `cat personas/personal/persona.yaml` might be
+  `['cat', 'personas/personal/persona.yaml']` — caught — but a
+  sufficiently-motivated reconstruction like
+  `['sh', '-c', f'cat personas/{name}/x']` with `name = "personal"`
+  obtained via an environment variable at subprocess time is
+  uncatchable at argv-inspection time). Accepted: this crosses from
+  "accidental Copilot idiom" into "deliberate evasion", outside the
+  documented threat model.
+
+**Mitigation**: Document these gaps explicitly in
+`docs/gotchas.md` G6 so future contributors know which I/O patterns are
+structurally unsupervised. Layer 1's substring scan remains the only
+line of defense for those cases, and catches any literal
+`personas/personal/` appearance regardless of the I/O style.
 
 ### R3: Submodule push requires private-repo write access
 

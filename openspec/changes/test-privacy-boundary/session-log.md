@@ -207,3 +207,104 @@ reviewers with distinct mandates) rather than true cross-vendor
 convergence, because `agents.yaml` is not scaffolded in this repo (P7
 territory). The convergence pattern (independent perspectives, synthesis,
 inline fix) was preserved even without vendor diversity.
+
+---
+
+## Phase: Plan Review Round 2 (2026-04-13)
+
+**Agent**: claude-opus-4-6 (2 parallel reviewer subagents) | **Session**: N/A
+
+### Summary
+
+Two reviewers — a convergence verifier (checking Round 1 fix adequacy)
+and a fresh adversarial pass (attacking the revised design) — produced
+10 findings. The verifier confirmed all 20 Round 1 BLOCKING+MAJOR
+findings RESOLVED or SUPERSEDED. The adversarial pass raised 1 BLOCKING
++ 5 MAJOR new findings, and the verifier raised 2 MAJOR clarifications.
+All 10 were mechanical cleanups on the fundamentally correct Round-1
+design; no design-level re-architecture needed.
+
+### New findings resolved in Round 3 fix
+
+- **B-N1 (BLOCKING) — subprocess bypass**: Layer 2 in-process patches
+  miss `subprocess.run(['cat', forbidden_path])`. **Fix**: extended
+  Layer 2 to patch `subprocess.Popen.__init__` (scans argv elements).
+- **B-N2 (MAJOR) — low-level I/O gap**: `os.open`, `io.FileIO`,
+  `codecs.open` bypass the patches. **Fix**: patch `os.open` as the
+  canonical syscall choke point (covers all the higher-level wrappers).
+- **B-N3 (MAJOR) — push script orphaned**: no task authored
+  `scripts/push-with-submodule.sh` though it was referenced by 5.3a/5.3b.
+  **Fix**: added task 5.0 with an explicit exit-code contract (exit 47
+  for partial-failure).
+- **B-N4 (MAJOR) — hygiene test self-trips**: `tests/test_ci_workflow_hygiene.py`
+  must contain `personas/personal/` as part of its grep pattern; Layer 1
+  would reject it. **Fix**: files use dynamic needle construction from
+  `FORBIDDEN_PATH_NAMES`; also added to Layer 1 exclusion list
+  (defence-in-depth).
+- **B-N5 (MAJOR) — PyPI package collision**: `assistant` exists as an
+  unrelated PyPI package; positive-import assertion could fail
+  spuriously. **Fix**: assertion now imports `assistant.core.persona`
+  (qualified path, won't collide).
+- **B-N6 (MAJOR) — parent workspace forward-compat**: if parent
+  pyproject later adds `[tool.uv.workspace] members = ['personas/*']`,
+  the submodule's own `workspace.members = []` cannot veto inclusion.
+  **Fix**: added `tests/test_workspace_hygiene.py` to assert the parent
+  does NOT declare `personas/*` as a workspace member.
+- **B-N7 (MINOR) — pytest rootdir ambiguity**: the fresh-venv proof
+  script ran pytest from parent repo root; parent's plugins could load.
+  **Fix**: script now `cd`s to `personas/personal/` before invoking
+  pytest with `--rootdir=.` and `--override-ini='addopts='`.
+- **B-N8 (MINOR) — plugin install silent failure**: if a future CPython
+  refuses Python-level rebinding of `Path.open`, the patches silently
+  fail to install and Layer 2 is disabled. **Fix**: added plugin
+  self-probe at `pytest_configure` that fails the session if the canary
+  does not raise.
+- **A-N1 (MAJOR) — task 5.4 self-contradiction**: task said "subsumed
+  by 5.3b" but was listed as a required task. **Fix**: 5.3b pushes the
+  parent branch; 5.4 opens the PR via `gh pr create`. Unambiguous.
+- **A-N2 (MAJOR) — 5.3-alt trigger ambiguity**: unclear whether
+  dispatch-time or runtime triggered. **Fix**: documented as an explicit
+  dual contract — dispatch-time quarantine driven by
+  `requires_private_repo_write` constraint, PLUS runtime exit-code-47
+  fallback if 5.3a fails after dispatch.
+
+### Task/package structure changes
+
+- Added task 5.0 (push-script authoring), task 4.4 renamed from
+  generic workflow-hygiene to hygiene test with dynamic-needle
+  construction, task 4.5 added for parent-workspace hygiene. Tasks 4.4
+  and 4.5 moved from wp-public-tests to wp-ci-cleanup so their RUN
+  happens after 4.1 (populate-step removal). wp-ci-cleanup now also
+  writes `tests/test_ci_workflow_hygiene.py` and
+  `tests/test_workspace_hygiene.py` (expanded write_allow; deny list
+  adjusted to exclude the specific named files from the tests/ deny).
+
+### Convergence verdict
+
+All Round 1 findings RESOLVED or SUPERSEDED; all Round 2 findings
+addressed inline. The plan is coherent and ready for implementation.
+Round 3 was fix-only (no new review pass) because the Round 2 findings
+were mechanical and each had a clear, targeted fix; a third round
+would be diminishing returns. Explicit documentation of remaining
+out-of-coverage surface (mmap, ctypes, os.system on Windows,
+deliberately-split subprocess argv) is captured in design R2.
+
+### Trade-offs
+
+- Accepted the Layer-2 patch surface growth (now 6 entry points
+  including subprocess) as the honest price of closing B-N1's bypass
+  class. The plugin is larger but still under ~200 lines.
+- Accepted the `wp-ci-cleanup` package's expanded scope to own the two
+  hygiene tests rather than splitting them into a new package. Cleaner
+  dispatcher DAG vs. stricter single-responsibility.
+
+### Open Questions
+
+- [ ] Does patching `subprocess.Popen.__init__` interfere with
+  pytest-xdist worker spawning? Worth surfacing during IMPLEMENT if
+  issues appear; fallback is to scope the subprocess patch to test
+  invocations only (not pytest-internal subprocess).
+- [ ] Does `os.open` patching interfere with pytest's own file-based
+  fixtures (tmp_path, capsys captures)? Theoretically no (those
+  paths don't match `personas/<name>/`), but verify during 2.13
+  implementation.
