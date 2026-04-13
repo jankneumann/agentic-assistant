@@ -42,18 +42,22 @@ personal│  P+R        P+P      P+CoS           P+W     P+C
 - `roles/` — shared behavioral definitions (public)
 - `personas/<name>/` — private config submodules (DB URLs, auth, tone, etc.)
 - `src/assistant/core/` — harness-agnostic persona/role/composition library
-- `src/assistant/harnesses/` — adapters (Deep Agents today, MS Agent Framework in P5)
-- `src/assistant/extensions/` — generic extension stubs (real impls in P4/P5)
+- `src/assistant/harnesses/` — adapters (Deep Agents today, MS Agent
+  Framework lands in the `ms-graph-extension` phase)
+- `src/assistant/extensions/` — generic extension stubs (real impls in
+  the `ms-graph-extension` and `google-extensions` phases)
 
 See `CLAUDE.md` for more conventions and `openspec/roadmap.md` for the
 planned proposal sequence.
 
 ## Status
 
-P1 (bootstrap vertical slice): ships the core library, Deep Agents harness,
-CLI with REPL/role-switching/delegation, all 5 public roles, and the
-`personal` persona. Later proposals add HTTP tools, per-persona databases,
-and real Google/MS integrations.
+`bootstrap-vertical-slice` (archived, 2026-04-12): ships the core
+library, Deep Agents harness, CLI with REPL / role-switching /
+delegation, all 5 public roles, and the `personal` persona. See
+`openspec/roadmap.md` for the 18-phase sequence that builds on this
+foundation — HTTP tools, per-persona databases, observability, A2A
+server, Obsidian vault integration, and real Google / MS integrations.
 
 ## License
 

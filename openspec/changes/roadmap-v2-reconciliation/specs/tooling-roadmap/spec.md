@@ -14,10 +14,15 @@ satisfies at least one of the following:
 1. It introduces a new capability spec (adds a new directory under
    `openspec/specs/`), OR
 2. It implements an item enumerated in `docs/agentic-assistant-bootstrap-v4.1.md`
-   (a "bootstrap-v4.1 P-item") or in `docs/perplexity-feedback.md` §8
-   ("perplexity §8 item"), OR
-3. It represents a committed project milestone explicitly promoted by
-   authoring judgment and recorded in the roadmap table.
+   (a "bootstrap-v4.1 P-item") or an actionable item in any section
+   of `docs/perplexity-feedback.md` (a "perplexity item" — covering
+   §§1–§8: structural gaps, chief-of-staff additions, architecture
+   refinements, security, implementation completeness, A2A, minor
+   fixes, and ordering), OR
+3. It represents a committed project milestone promoted by authoring
+   judgment based on architectural or behavioral impact (used as a
+   residual for changes that don't fit criteria 1–2 but reach
+   milestone-level scope independently).
 
 All other OpenSpec changes (for example: spec-sync reconciliations that
 only MODIFY an existing spec's requirements to match shipped reality,

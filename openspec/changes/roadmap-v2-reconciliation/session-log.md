@@ -150,3 +150,138 @@ archive refs — accept, non-functional), F#7 (no automated drift
 detection — accept, inherited design choice), F#8 (archive-date format
 in scenario — accept), F#9 (scope.deny semantics — accept, resolved
 as a side-effect of F#1 path (a)). `openspec validate --strict` passes.
+
+---
+
+## Phase: Plan Iteration 2 (2026-04-13)
+
+**Agent**: claude-code (Opus 4.6) | **Session**: `/iterate-on-plan`
+(technical-review follow-up)
+
+### Context
+
+The Iteration 1 review was OpenSpec-consistency-focused. A user-directed
+second dispatch (`review-prompt-technical.md`) instructed vendors to
+apply the classification rule to every roadmap phase, evaluate DAG
+edges for functional correctness, check perplexity §§1–§8 coverage,
+and find stale P-numbering in live docs. Codex (6 findings) and
+Gemini (6 findings) converged on four substantive issues plus two
+minor ones.
+
+### Decisions
+
+1. **Broaden criterion 2** to cover all actionable items in
+   `docs/perplexity-feedback.md` §§1–§8, not just §8. Codex, Gemini,
+   and the primary reviewer agreed that P1.7 `bootstrap-fixes` (which
+   implements §7 hygiene, not §8) fell through to criterion 3 under
+   the iteration-1 wording — a weakness in the classification. The
+   broadened text ("an actionable item in any section of
+   `docs/perplexity-feedback.md` — covering §§1–§8") cleanly covers
+   P1.7 as a phase via criterion 2 and removes the need for criterion
+   3 to be load-bearing for that case.
+2. **Redraw the dependency graph as functional-only**. Iteration 1's
+   chain `P1 → P1.5 → P1.6 → P1.7 → everything below` encoded
+   chronology as hard prerequisites. The replacement graph shows
+   P1.5/P1.6 and P1.7 as sibling branches off P1, and P1.7 only gates
+   the phases that need its specific §7 fixes (P2 for §7.2, P3 for
+   §7.1/§7.4, P11 for §7.3, P16 for §7.1/§7.4). P4 and P10 are
+   independent of P1.7. Principle added to the guiding-principles
+   section: "edges represent functional prerequisites, not
+   chronological or stylistic preference."
+3. **Add `Kind` column to the phase-sequence table**. Separates
+   `phase` rows from `non-phase (spec-sync)` rows visually without
+   requiring a separate addenda section. P1.6 is now the only
+   `non-phase` row; all others are `phase`.
+4. **Expand P12 scope to include `delegation/router.py`**. Gemini and
+   Codex both flagged that §5's P1-priority router was silently
+   dropped from the v2 roadmap. P12's description now explicitly
+   mentions the router; its Perplexity § column adds "§5 P1".
+5. **Retire stale P-numbering in CLAUDE.md / README.md**. Replace
+   `P2`/`P3`/`P4`/`P5`/`P6`/`P1–P10` with stable change-ids in
+   `CLAUDE.md:39,42,64,77,101–111` and `README.md:45–46,53`. The
+   single remaining `P1` reference in CLAUDE.md:41 is a factual
+   historical note about the archived bootstrap phase — left as-is.
+6. **Decouple criterion 3 from self-reference** (Gemini F). Old
+   wording was "promoted by authoring judgment and recorded in the
+   roadmap table" — circular, since the requirement elsewhere asserts
+   that every phase change is in the table. New wording: "promoted by
+   authoring judgment based on architectural or behavioral impact"
+   — removes the recording-constitutes-classification loop.
+7. **Defer `Purpose` follow-up tracking to plan-roadmap run** (Codex
+   F, escalate). Codex flagged that the Purpose cleanup was filed as
+   "follow-up" without any tracking artifact. Rather than create a
+   stub OpenSpec change or a coordination-MCP issue now, defer the
+   decision to the `/plan-roadmap` run that follows iteration 2 —
+   which may legitimately absorb the Purpose cleanup into a generated
+   roadmap item.
+
+### Alternatives Considered
+
+- **Keep criterion 2 as `§8 only` and rely on criterion 3 for P1.7**:
+  rejected — criterion 3 is explicitly the "residual for edge cases
+  that don't fit 1–2"; having a documented priority-§7 phase like
+  P1.7 fall through to it weakens the classification for every later
+  reviewer who tries to apply the rule.
+- **Drop P1.6 from the roadmap entirely** (make non-phase changes
+  invisible): rejected — its chronological tie to P1.5 is load-bearing
+  for reviewers tracing "what reconciled the test-privacy-boundary
+  validation drift." The `Kind` column restores visibility-honesty
+  without removing the row.
+- **Split `delegation/router.py` into its own phase** (e.g., P11.5):
+  rejected — the router and delegation-context share enough
+  implementation surface (both depend on memory snippets, both touch
+  `DelegationSpawner`) that keeping them in one phase matches the
+  expected work boundary. If P12 grows too large later, splitting is
+  cheap.
+- **Create a P1.8 Purpose cleanup phase now**: rejected — Purpose
+  cleanup is admin tooling, not a roadmap phase; filing it into the
+  phase table inflates the phase count with non-project-work.
+
+### Trade-offs
+
+- Accepted **mixed-case DAG** (some edges are simple linear, others
+  branch) over **layered tier view** (pure graph with explicit layers).
+  The mixed form is easier to read as a text diagram; a layered view
+  would be more formally useful but harder to maintain in markdown.
+- Accepted **criterion 2 covers §§1–§8** (broad) over **enumerate
+  phase-eligible sections** (narrower, e.g., "§1–§5 and §8"). The
+  broad form absorbs edge cases like a future perplexity-style review
+  with different section structure; the narrow form is more precise
+  but brittle.
+- Accepted **postpone Purpose-cleanup tracking to plan-roadmap**
+  (escalate finding deferred) over **create concrete follow-up now**.
+  `/plan-roadmap` will read `docs/perplexity-feedback.md` and produce
+  a structured DAG; if Purpose cleanup appears there, no separate
+  artifact is needed.
+
+### Open Questions
+
+- [ ] `/plan-roadmap` may produce a `roadmap.yaml` whose DAG
+      contradicts this iteration's hand-redrawn markdown DAG. In that
+      case, the generated artifact should be considered authoritative
+      and the markdown DAG a derived view — but this isn't settled yet.
+- [ ] Whether the `Kind` column should be formally specified in the
+      `tooling-roadmap` spec or left as a roadmap-markdown convention.
+      Deferred; current spec doesn't mandate a column list.
+
+### Findings Addressed
+
+From the technical dispatch (codex + gemini, consolidated with primary
+reviewer):
+
+- F-T1 (HIGH/correctness): criterion 2 too narrow (§8 only) — **fixed**
+  via broadening to §§1–§8.
+- F-T2 (HIGH/correctness): DAG encodes chronology as hard edges — **fixed**
+  via functional-only DAG redraw with explicit principle.
+- F-T3 (MEDIUM/architecture): P1.6 visual mismatch — **fixed** via
+  `Kind` column.
+- F-T4 (HIGH/spec_gap): `delegation/router.py` dropped from coverage —
+  **fixed** via P12 scope expansion.
+- F-T5 (MEDIUM/compatibility): CLAUDE.md + README.md stale P-numbering
+  — **fixed** via change-id replacement.
+- F-T6 (MEDIUM/architecture, escalate): Purpose follow-up not tracked
+  — **deferred** to `/plan-roadmap` run.
+- F-T7 (LOW/correctness): criterion 3 circularity — **fixed** via
+  decoupled wording.
+
+`openspec validate --strict` passes after all edits.

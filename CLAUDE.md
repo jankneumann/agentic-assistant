@@ -36,10 +36,12 @@ uv run assistant -p personal
 - `personas/_template/` — template for creating new personas (public)
 - `src/assistant/core/` — harness-agnostic library (persona, role, composition)
 - `src/assistant/harnesses/` — harness adapters (Deep Agents implemented;
-  MS Agent Framework is a registered-but-stubbed placeholder until P5)
+  MS Agent Framework is a registered-but-stubbed placeholder until the
+  `ms-graph-extension` phase)
 - `src/assistant/extensions/` — extension implementations (P1 ships empty-tool
   stubs for `ms_graph`, `teams`, `sharepoint`, `outlook`, `gmail`, `gcal`,
-  `gdrive`; real impls land in P4 and P5)
+  `gdrive`; real impls land in `ms-graph-extension` and `google-extensions`
+  phases)
 - `src/assistant/delegation/` — sub-agent spawning
 - `src/assistant/cli.py` — `assistant` CLI entry point
 
@@ -60,8 +62,8 @@ uv run assistant -p personal
 ## OpenSpec Workflow
 
 This repo uses [OpenSpec](https://github.com/Fission-AI/OpenSpec) for
-spec-driven development. See `openspec/roadmap.md` for the sequence of
-planned changes (P1–P10). Each proposal lives in
+spec-driven development. See `openspec/roadmap.md` for the full phase
+sequence and dependency graph. Each proposal lives in
 `openspec/changes/<change-id>/`.
 
 Common commands:
@@ -74,7 +76,8 @@ Common commands:
 
 - Python 3.12, type hints, Ruff, pytest
 - Extension code in public repo, activation config in private repos
-- Each persona gets its own database (ParadeDB Postgres) — wired in P3
+- Each persona gets its own database (ParadeDB Postgres) — wired in
+  the `memory-architecture` phase
 - Tests run against the in-repo `tests/fixtures/personas/` (public tests)
   or the persona's own submodule (persona-specific tests), never against
   the real `personas/<name>/` submodule from public code; see
@@ -98,10 +101,12 @@ deltas.
 
 See `openspec/roadmap.md` for the full sequence. Notable gaps:
 
-- **P2 — HTTP tools**: `cli.py` does not yet call `discover_tools`; it
-  passes an empty tool list and logs a warning.
-- **P3 — DB layer**: no per-persona Postgres or Graphiti yet.
-- **P4/P5 — Google/MS extensions**: all stubs return `[]` from
+- **`http-tools-layer` phase — HTTP tools**: `cli.py` does not yet call
+  `discover_tools`; it passes an empty tool list and logs a warning.
+- **`memory-architecture` phase — memory layer**: no per-persona Postgres
+  or Graphiti yet.
+- **`ms-graph-extension` / `google-extensions` phases**: all stubs return
+  `[]` from
   `as_langchain_tools()`.
-- **P6 — Work persona**: submodule + role overrides come when the work
-  machine is available.
+- **`work-persona-config` phase**: submodule + role overrides come
+  when the work machine is available.
