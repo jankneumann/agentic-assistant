@@ -308,3 +308,119 @@ deliberately-split subprocess argv) is captured in design R2.
   fixtures (tmp_path, capsys captures)? Theoretically no (those
   paths don't match `personas/<name>/`), but verify during 2.13
   implementation.
+
+---
+
+## Phase: Implementation (2026-04-13)
+
+**Agent**: claude-opus-4-6 (main session + 3 parallel work-package subagents) | **Session**: N/A
+
+### Summary
+
+All 27 tasks executed across 5 work packages. Dispatched 3 parallel
+subagents for `wp-public-tests`, `wp-submodule-tests`, `wp-docs`; main
+session executed `wp-ci-cleanup` (CI workflow edit + 2 hygiene tests)
+and `wp-integration` (validations + quality gates). One scope expansion
+was required during execution (see Deviations).
+
+### Decisions
+
+1. **Added `ASSISTANT_PERSONAS_DIR` env-var to `PersonaRegistry` and
+   `RoleRegistry`.** The CLI in-process tests invoke `PersonaRegistry()`
+   with the default `Path("personas")`, which Layer 2 correctly rejects.
+   Options: (a) add `--personas-dir` CLI flag + test-side argv plumbing,
+   (b) monkey-patch the class defaults in conftest, (c) add an env var
+   the registries honor. Chose (c) — one-line change in each registry,
+   no CLI API surface growth, backward-compatible (unset env means
+   default `Path("personas")`). `tests/conftest.py` sets the env at
+   module-top via `os.environ.setdefault` so it's live for the whole
+   session.
+
+2. **Subprocess `wp-submodule-tests` output was wiped and reconstructed
+   inline.** My running of `scripts/verify-public-tests-standalone.sh`
+   did `git submodule deinit -f && git submodule update --init`, which
+   restored the submodule to its remote SHA and wiped the uncommitted
+   submodule files the subagent had written. Reconstructed the same 5
+   files (pyproject.toml + 4 test files) in the main session from the
+   subagent's report. Lesson: run the submodule-deinit standalone proof
+   BEFORE any writes to the submodule, not after.
+
+3. **`_PrivacyBoundaryViolation(pytest.UsageError)` suppressed with
+   `# type: ignore[misc]`.** pytest marks `UsageError` as `@final` in
+   its type stubs, but at runtime subclassing works. Accept the
+   suppression to preserve the "UsageError subclass" contract that
+   pytest's session-fail machinery recognizes.
+
+### Alternatives Considered
+
+- Moving task 2.9's public-test standalone verification to wp-integration
+  (later in the DAG, after all submodule writes landed): rejected
+  because 2.9's verification is scoped to wp-public-tests' own success
+  criterion; running it there is correct. The mistake was my execution
+  order, not the DAG design.
+- Adding a pytest `monkeypatch` autouse fixture to redirect
+  `PersonaRegistry.__init__` defaults at test-session scope: rejected
+  in favor of the env-var approach because the CLI tests spin up fresh
+  `PersonaRegistry` instances inside `click`'s runner invocation and
+  the fixture would need to be imported/used by every such test.
+
+### Trade-offs
+
+- Accepted the env-var approach expanding feature scope into `src/`
+  (2 files: `persona.py`, `role.py`). This was not in the original plan,
+  but the plan's "repoint personas_dir at fixtures" implicitly required
+  a way for the CLI's in-process registry to honor that repoint. The
+  change is small (~5 lines per file) and backward-compatible.
+- Accepted reconstructing the submodule files in the main session
+  rather than re-dispatching the subagent. Faster and keeps the context
+  within the main thread; subagent already reported what it wrote.
+
+### Deviations from plan
+
+- **Added files not listed in any task**: `src/assistant/core/persona.py`
+  and `src/assistant/core/role.py` gained ~5 lines each to honor
+  `ASSISTANT_PERSONAS_DIR`. This is a scope expansion required to make
+  the CLI tests pass. Should have been captured as a new task 2.X in
+  the plan but emerged from running the actual implementation.
+- **Submodule file authoring order**: task 2.9 (public tests without
+  submodule) landed before task 3.1-3.6 files were durably stored in
+  the submodule mount. Re-authored 3.1-3.5 + pyproject inline. Task
+  outputs are correct; the order-of-execution gap is documented here.
+- **Minor `test_privacy_guard.py` cleanup**: ruff auto-fix removed an
+  unused `pytest` import. No semantic change.
+
+### Verification evidence
+
+- `uv run pytest tests/` — **112 passed**, 0 failed.
+- `uv run mypy src tests` — **Success: no issues found in 37 source files**.
+- `uv run ruff check .` — **All checks passed**.
+- `bash scripts/verify-public-tests-standalone.sh` — **112 passed**
+  with personas/personal deinit'd (proves G1: public suite runs without
+  submodule).
+- `bash scripts/verify-submodule-standalone.sh` — **9 passed** in a
+  fresh `/tmp/spb-venv-$$` venv with only pytest+pyyaml installed,
+  rootdir resolved to submodule's own pyproject, positive
+  `importlib.import_module("assistant.core.persona")` raises ImportError.
+- `openspec validate test-privacy-boundary --strict` — **passes**.
+
+### Open Questions
+
+- [ ] The `ASSISTANT_PERSONAS_DIR` env-var scope expansion needs to be
+  folded into the spec as an implementation detail (not a new
+  requirement — it just makes the existing repoint requirement
+  testable). Deferred to spec-sync as part of `/cleanup-feature`.
+- [ ] Submodule's uncommitted files (pyproject.toml + tests/) need to
+  be committed inside the submodule's own repo and pushed to its
+  private remote before the parent can record the SHA bump. Will run
+  via `scripts/push-with-submodule.sh --submodule-only` in the PR
+  phase; requires private-repo credentials.
+
+### Context
+
+Full end-to-end implementation of the 5-package DAG. Parallel subagents
+for wp-public-tests (14 tasks, 4 files created + 6 files modified + 2
+fixture files updated), wp-submodule-tests (6 tasks + script authoring,
+7 files), wp-docs (2 tasks, 2 files); main session handled
+wp-ci-cleanup (3 tasks, 3 files — 1 workflow + 2 hygiene tests) and
+wp-integration (quality gates). Net diff: ~30 files, ~2k LOC including
+spec/plan artifacts and test code.
