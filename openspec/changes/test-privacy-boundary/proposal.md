@@ -53,27 +53,38 @@ yet populated.
 
 ## Approaches Considered
 
-### Approach 1: Minimal repoint + conftest guard + submodule-side pytest *(Recommended)*
+### Approach 1: Repoint + two-layer guard + self-contained submodule pytest *(Recommended)*
 
 **Description**: `tests/conftest.py` resolves `personas_dir` to
-`REPO_ROOT / "tests" / "fixtures" / "personas"`. Private-content assertions in
-public tests are rewritten against fixture values. Persona-specific integration
-tests (the ones that genuinely validate the real submodule's YAML shape) move
-to `personas/personal/tests/` with their own `pyproject.toml` (pytest + PyYAML)
-and no import from `src/assistant/*`. A `pytest_collection_modifyitems` hook in
-`tests/conftest.py` inspects each collected test file's source and fails if it
-references `personas/(personal|work)/` paths or private-content strings outside
-the allow-list.
+`REPO_ROOT / "tests" / "fixtures" / "personas"`. Public tests are scrubbed of
+any reference to real-submodule content and rewritten against fixture-defined
+values (including a `FIXTURE_PERSONA_SENTINEL` marker for end-to-end
+composition coverage). Persona-specific integration tests move to
+`personas/personal/tests/` with their own `pyproject.toml` (pytest + PyYAML,
+plus a `[tool.uv]` workspace boundary so `uv` does not reuse the parent
+venv) and no import from `src/assistant/*`. Self-containment is proven by a
+fresh-venv test run, not by `PYTHONPATH` tricks. A **two-layer** privacy
+guard is wired into `tests/conftest.py`:
+(1) a collection-time substring scan that rejects literal
+`personas/personal/` or `personas/work/` references in test files and
+conftests, and (2) a runtime filesystem guard (a pytest plugin patching
+`pathlib.Path.open`, `read_text`, `read_bytes`, and `builtins.open`) that
+rejects path-constructed reads into the same namespaces — closing the
+`Path("personas") / name / "x.yaml"` bypass that defeats substring-only
+matching.
 
 **Pros**:
 - Clean separation: public tests never need the submodule initialized
 - Submodule stays harness-agnostic — can be consumed by non-Python harnesses
+- Two-layer guard catches both literal and constructed-path leaks
 - Enforcement runs locally *and* in CI (single mechanism, single place)
 - Removes the CI populate step and its "keep in sync" maintenance burden
 - Matches the team's existing pytest ergonomics on both sides
 
 **Cons**:
-- Submodule grows a small `pyproject.toml` dev-dep section (pytest, PyYAML)
+- Layer 2 runtime guard monkey-patches `builtins.open` during pytest runs
+  (scoped to test lifecycle only; documented limitation for mmap / ctypes I/O)
+- Submodule grows a small `pyproject.toml` dev-dep + `[tool.uv]` block
 - Test writers must remember which conftest to target when touching either side
 
 **Effort**: S
@@ -93,12 +104,23 @@ integration tests run in CI against the fixture).
 - Single test tree is easier to navigate
 
 **Cons**:
-- **Leakage not actually fixed**: integration tests still live in the public
-  repo and still assert on private strings. Moving them to a subdirectory is
-  cosmetic; `git log` / `git blame` still show private content being asserted.
-- CI populate step + fixture sync burden persists
-- Submodule is not independently testable by a non-Python harness
-- Marker-gated tests are easy to forget about and decay
+- **Marker decay**: `@pytest.mark.integration` is trivially missed by new
+  contributors. A test added without the marker but asserting on private
+  content silently ships. Enforcement via a linter gate is possible but
+  reintroduces the complexity the marker was meant to avoid.
+- **Submodule stays harness-coupled**: the private repo still has no
+  independent test suite. A future non-Python harness (MS Agent Framework,
+  Go/Rust consumer) cannot validate the persona contract without re-
+  implementing the Python import path.
+- **CI populate step + fixture-sync burden persists**: every structural
+  change to the real submodule still requires a matching change to the
+  public fixture, and the divergence window (local passing / CI failing,
+  or vice versa) remains open.
+- **Integration tests still live in public `git log`**: while both Approach
+  1 and Approach 2 leave pre-change assertions in pre-change history, only
+  Approach 1 moves *new* private-coupled tests out of the public repo
+  going forward. Approach 2 keeps the public-repo history accumulating
+  private assertions under a differently-named directory.
 
 **Effort**: S
 
@@ -125,27 +147,64 @@ schema shape) — never on content.
 
 ## Selected Approach
 
-**Approach 1** — repoint + guard + submodule-side pytest.
+**Approach 1** — repoint + two-layer guard + self-contained submodule
+pytest.
 
-Confirmed during discovery (Gate 1, 2026-04-13):
+Confirmed during discovery (Gate 1, 2026-04-13) and refined by Round 1
+multi-reviewer convergence (also 2026-04-13):
 
-- **Enforcement mechanism**: pytest conftest collection hook (runs locally
-  *and* in CI; single enforcement point).
-- **Submodule toolchain**: pytest with a minimal `pyproject.toml` in
-  `personas/personal/` declaring pytest + PyYAML as dev deps.
-- **Scope**: covers both `personas/personal/` *and* `personas/work/` from day
-  one, future-proofing the guard for P6 (`work-persona-config`) even though
-  `personas/work/` is not yet populated.
+- **Enforcement mechanism**: two layers wired into pytest via
+  `tests/conftest.py`. Layer 1 is a collection-time substring scan; Layer 2
+  is a runtime filesystem guard that patches `Path.open` / `read_text` /
+  `read_bytes` / `builtins.open` to reject reads under
+  `personas/<forbidden-name>/`. Both layers read from a single deny-list
+  config in `tests/_privacy_guard_config.py`.
+- **Submodule toolchain**: pytest with a `pyproject.toml` in
+  `personas/personal/` declaring pytest + PyYAML as dev deps, plus a
+  `[tool.uv]` block declaring the directory as a non-package with empty
+  workspace members so `uv` does not reuse the parent venv.
+- **Self-containment proof**: a fresh-venv test run in
+  `scripts/verify-submodule-standalone.sh`, plus a positive runtime
+  assertion that `importlib.import_module("assistant")` raises
+  `ImportError` inside the submodule suite.
+- **Scope**: covers both `personas/personal/` *and* `personas/work/` from
+  day one, future-proofing for P6 (`work-persona-config`).
 - **CI cleanup**: the `populate personas/personal from test fixture` step
   introduced in `76a313e` is **removed** — the conftest repoint makes it
-  redundant.
+  redundant. A new workflow-hygiene test
+  (`tests/test_ci_workflow_hygiene.py`) prevents future workflows from
+  silently re-introducing the dependency.
+- **Cross-repo push**: a dedicated `scripts/push-with-submodule.sh` wrapper
+  handles the dual-commit sequence (submodule push → parent gitlink
+  update) atomically with a documented recovery story for partial-failure
+  states.
 
 Approaches 2 and 3 are not selected:
 
-- **Approach 2 (marker-based dual-mode)** — does not actually fix leakage;
-  private strings remain in the public repo's `git log`/`git blame` under a
-  different directory. Cosmetic, not structural.
+- **Approach 2 (marker-based dual-mode)** — markers decay, the submodule
+  stays harness-coupled, and the CI populate-step / fixture-sync burden
+  persists. See the approach's Cons section above for the full
+  (Round-1-corrected) reasoning.
 - **Approach 3 (env-var placeholders)** — over-engineered. Personas are
   private, not secret; refactoring every consumer of `PersonaRegistry` and
   `RoleRegistry` to load prompts from env vars is disproportionate to the
   problem.
+
+### Changes from Round 1 review
+
+- **Dropped**: the `FORBIDDEN_CONTENT_STRINGS` deny-list. Cross-confirmed
+  by three reviewers: the strings the public repo can enumerate are the
+  same strings that exist in the public fixture, so a content-based
+  deny-list is incoherent. The path-based check is the full closure.
+- **Added**: the Layer-2 runtime filesystem guard, the fresh-venv
+  submodule-isolation proof, `[tool.uv]` workspace boundary, workflow-
+  hygiene regression test, atomic push script, `ALLOW_STANDALONE_SUBMODULE_SKIP`
+  opt-in for submodule standalone runs, and a fixture-sentinel-based
+  replacement for the lost end-to-end composition test.
+- **Reordered**: Phase 2 scrubs public tests *before* enabling the guard,
+  otherwise the guard would fail collection on the unscrubbed baseline.
+- **Tightened**: work-package scopes, dependencies, and constraints to
+  close routing gaps (`wp-integration` now declares
+  `requires_private_repo_write`; `wp-ci-cleanup` now depends on
+  `wp-public-tests`; `wp-integration` deny-lists submodule content so it
+  cannot accidentally write there).
