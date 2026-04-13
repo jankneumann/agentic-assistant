@@ -97,24 +97,39 @@ case "$MODE" in
             git commit -m "chore(submodule): bump personas/personal to $SUB_SHA"
         fi
 
-        # Attempt parent push. If this fails after we have already pushed
-        # the submodule (via an earlier --submodule-only invocation),
-        # emit the dangling-SHA diagnostic and exit 47.
+        # Attempt parent push. Exit-47 is reserved specifically for the
+        # "submodule already pushed, parent failed" dangling-SHA case so
+        # the 5.3-alt dispatcher can distinguish operator-handoff from
+        # benign push failures (IR-B1). Check whether the submodule
+        # SHA is reachable on its remote BEFORE classifying the failure.
         if ! git push 2>&1; then
-            DANGLING_SHA="$(git -C "$SUBMODULE_DIR" rev-parse HEAD)"
+            SUB_SHA="$(git -C "$SUBMODULE_DIR" rev-parse HEAD)"
+            # Is the submodule SHA reachable on any remote ref?
+            if git -C "$SUBMODULE_DIR" fetch --quiet 2>/dev/null \
+                && git -C "$SUBMODULE_DIR" branch -r --contains "$SUB_SHA" 2>/dev/null \
+                | grep -q .; then
+                # Genuine dangling-SHA scenario: submodule push had
+                # succeeded; parent push failed. Route to 5.3-alt.
+                echo "" >&2
+                echo "ERROR: parent push FAILED after submodule push had succeeded" >&2
+                echo "Dangling submodule SHA: $SUB_SHA" >&2
+                echo "" >&2
+                echo "Recovery options:" >&2
+                echo "  1. Rebase the parent branch and re-run --parent-only:" >&2
+                echo "       git fetch origin main && git rebase origin/main" >&2
+                echo "       bash scripts/push-with-submodule.sh --parent-only" >&2
+                echo "  2. If the submodule SHA must be retracted, delete the" >&2
+                echo "     remote ref from the private submodule host:" >&2
+                echo "       git -C personas/personal push -d origin <branch-with-dangling-sha>" >&2
+                echo "  3. Or open an operator ticket with the SHA above." >&2
+                exit 47
+            fi
+            # Submodule SHA is NOT pushed yet: benign parent failure.
             echo "" >&2
-            echo "ERROR: parent push FAILED after submodule push had succeeded" >&2
-            echo "Dangling submodule SHA: $DANGLING_SHA" >&2
-            echo "" >&2
-            echo "Recovery options:" >&2
-            echo "  1. Rebase the parent branch and re-run --parent-only:" >&2
-            echo "       git fetch origin main && git rebase origin/main" >&2
-            echo "       bash scripts/push-with-submodule.sh --parent-only" >&2
-            echo "  2. If the submodule SHA must be retracted, delete the" >&2
-            echo "     remote ref from the private submodule host:" >&2
-            echo "       git -C personas/personal push -d origin <branch-with-dangling-sha>" >&2
-            echo "  3. Or open an operator ticket with the SHA above." >&2
-            exit 47
+            echo "ERROR: parent push failed (submodule SHA $SUB_SHA is not" >&2
+            echo "       yet on the submodule remote; not a dangling-SHA case)." >&2
+            echo "Run --submodule-only first, then retry --parent-only." >&2
+            exit 1
         fi
 
         echo "Parent pushed."

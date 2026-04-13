@@ -28,6 +28,7 @@ from __future__ import annotations
 import builtins
 import os
 import pathlib
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -116,18 +117,68 @@ def _normalize(path: Any) -> str:
 def _is_forbidden(path: Any) -> tuple[bool, str, str]:
     """Return ``(is_forbidden, needle, normalized_path)``.
 
-    A path is forbidden iff it contains a needle from
-    ``_forbidden_needles()`` AND does NOT start with any allow-list prefix.
+    Two-pass check. First the lexical pass (cheap, covers the common
+    case). Then, only if the lexical pass didn't already conclude the
+    path is forbidden/allowed unambiguously, a resolve pass (IR-A3)
+    catches symlink-based bypasses like
+    ``tests/fixtures/sneaky -> ../../personas/personal``.
     """
     normalized = _normalize(path)
-    # Allow-list short-circuit.
+    # Lexical allow-list short-circuit. If the lexical path is allow-
+    # listed AND a symlink resolution stays within an allow-listed
+    # prefix, the read proceeds; if resolution escapes to a forbidden
+    # location, we reject.
     for prefix in _allowed_prefixes():
         if normalized.startswith(prefix):
+            resolved_posix = _resolve_relative_to_root(path)
+            if resolved_posix is None:
+                return False, "", normalized
+            # If the resolved path is ALSO under an allow-listed prefix,
+            # it's fine even if the normalized form contains a
+            # sub-string match for a forbidden name (legitimate case:
+            # tests/fixtures/personas/personal/*).
+            for allowed in _allowed_prefixes():
+                if resolved_posix.startswith(allowed):
+                    return False, "", normalized
+            # Resolved out of allow-list -- check for forbidden needles.
+            for needle in _forbidden_needles():
+                if needle in resolved_posix:
+                    return True, needle, resolved_posix
             return False, "", normalized
+    # Lexical forbidden check.
     for needle in _forbidden_needles():
         if needle in normalized:
             return True, needle, normalized
+    # Final resolve pass: catches cases where the lexical path didn't
+    # hit any needle but a symlink redirects to forbidden territory.
+    resolved_posix = _resolve_relative_to_root(path)
+    if resolved_posix is not None and resolved_posix != normalized:
+        for allowed in _allowed_prefixes():
+            if resolved_posix.startswith(allowed):
+                return False, "", normalized
+        for needle in _forbidden_needles():
+            if needle in resolved_posix:
+                return True, needle, resolved_posix
     return False, "", normalized
+
+
+def _resolve_relative_to_root(path: Any) -> str | None:
+    """Best-effort resolve to a repo-relative POSIX string; None on failure."""
+    try:
+        if isinstance(path, (int, bytes, bytearray)):
+            return None
+        p = Path(path) if not isinstance(path, Path) else path
+        resolved = p.resolve(strict=False)
+    except (OSError, ValueError, RuntimeError):
+        return None
+    posix = str(resolved).replace("\\", "/")
+    if _REPO_ROOT is not None:
+        root_posix = str(_REPO_ROOT).replace("\\", "/")
+        if posix.startswith(root_posix + "/"):
+            posix = posix[len(root_posix) + 1 :]
+        elif posix == root_posix:
+            posix = ""
+    return posix
 
 
 def _violate(path: Any, needle: str, normalized: str) -> None:
@@ -182,50 +233,90 @@ def _patched_os_open(path: Any, *args: Any, **kwargs: Any) -> Any:
     return _ORIGINALS["os_open"](path, *args, **kwargs)
 
 
-def _patched_popen_init(self: subprocess.Popen, *args: Any, **kwargs: Any) -> Any:
-    # First positional arg is ``args`` (argv list or string) per Popen API.
-    argv: Any = None
-    if args:
-        argv = args[0]
-    else:
-        argv = kwargs.get("args")
+def _decode_candidate(element: Any) -> str:
+    if isinstance(element, (bytes, bytearray)):
+        try:
+            return element.decode("utf-8", errors="replace")
+        except Exception:
+            return str(element)
+    return str(element)
+
+
+def _subprocess_candidates(args: tuple, kwargs: dict) -> list[str]:
+    """Harvest every string the subprocess could plausibly resolve to a path.
+
+    Covers the positional ``args`` argv (list or string), and the
+    ``executable=``, ``cwd=`` kwargs (IR-A4). ``env=`` is intentionally
+    excluded -- its values are typically system paths, and scanning them
+    generates too many false positives vs threat-model value.
+    """
+    argv: Any = args[0] if args else kwargs.get("args")
     candidates: list[str] = []
     if isinstance(argv, (list, tuple)):
-        for element in argv:
-            if isinstance(element, (bytes, bytearray)):
-                try:
-                    candidates.append(
-                        element.decode("utf-8", errors="replace")
-                    )
-                except Exception:
-                    candidates.append(str(element))
-            else:
-                candidates.append(str(element))
+        candidates.extend(_decode_candidate(e) for e in argv)
     elif isinstance(argv, (str, bytes, bytearray)):
-        if isinstance(argv, (bytes, bytearray)):
-            try:
-                candidates.append(argv.decode("utf-8", errors="replace"))
-            except Exception:
-                candidates.append(str(argv))
-        else:
-            candidates.append(argv)
-    needles = _forbidden_needles()
+        candidates.append(_decode_candidate(argv))
+    for kw in ("executable", "cwd"):
+        v = kwargs.get(kw)
+        if v is not None:
+            candidates.append(_decode_candidate(v))
+    return candidates
+
+
+def _argv_element_is_forbidden(posix: str) -> tuple[str, str] | None:
+    """Return ``(matched_name, evidence)`` if this argv element references a
+    forbidden persona path, else None.
+
+    Uses component-aware matching (IR-A2): ``personas/<name>`` followed by
+    end-of-string OR a non-word boundary counts as a hit. This catches
+    ``git -C personas/personal log`` (bare-dir), ``cat personas/personal/x``
+    (child-path), and ``--config=personas/personal`` (embedded) alike,
+    while ignoring ``personas/personality`` (different name).
+
+    Allow-list (IR-A5): any occurrence of an allow-listed prefix elsewhere
+    in the element does NOT short-circuit -- we only skip if the
+    forbidden hit is LEXICALLY CONTAINED WITHIN an allow-listed path
+    (e.g. ``tests/fixtures/personas/_template/`` via the template
+    allow-list). This closes the
+    ``--config=tests/fixtures/x:personas/personal/y`` bypass class.
+    """
+    for name in FORBIDDEN_PATH_NAMES:
+        pattern = re.compile(
+            rf"(?:^|[^A-Za-z0-9_]|/){re.escape('personas/' + name)}(?=$|[^A-Za-z0-9_])"
+        )
+        m = pattern.search(posix)
+        if not m:
+            continue
+        hit_start = m.start() + (1 if m.group().startswith(("/",)) or not m.group().startswith("personas") else 0)
+        # A hit is allow-listed ONLY if the substring from hit_start back
+        # to the start of an allow-listed prefix is purely path-component
+        # characters. Cheap approximation: does any allow-listed prefix
+        # occur as a prefix of posix AND extend through the hit position?
+        allowed = False
+        for prefix in ALLOWED_READ_PREFIXES:
+            prefix_posix = prefix.replace("\\", "/")
+            if posix.startswith(prefix_posix) and hit_start >= len(prefix_posix):
+                allowed = True
+                break
+        if allowed:
+            continue
+        return name, m.group()
+    return None
+
+
+def _patched_popen_init(self: subprocess.Popen, *args: Any, **kwargs: Any) -> Any:
+    candidates = _subprocess_candidates(args, kwargs)
     for element in candidates:
         posix_element = element.replace("\\", "/")
-        # Allow-list: a subprocess arg explicitly targeting fixtures is fine.
-        allowlisted = any(
-            prefix in posix_element for prefix in _allowed_prefixes()
-        )
-        if allowlisted:
-            continue
-        for needle in needles:
-            if needle in posix_element:
-                raise _PrivacyBoundaryViolation(
-                    "Privacy-boundary violation: subprocess argv element "
-                    f"{element!r} contained forbidden path prefix "
-                    f"{needle!r}. Public tests must use tests/fixtures/ "
-                    "instead. See docs/gotchas.md G6."
-                )
+        hit = _argv_element_is_forbidden(posix_element)
+        if hit is not None:
+            matched_name, evidence = hit
+            raise _PrivacyBoundaryViolation(
+                "Privacy-boundary violation: subprocess argv or kwargs "
+                f"referenced persona {matched_name!r} "
+                f"(matched pattern {evidence!r}). Public tests must use "
+                "tests/fixtures/ instead. See docs/gotchas.md G6."
+            )
     return _ORIGINALS["popen_init"](self, *args, **kwargs)
 
 
@@ -233,6 +324,13 @@ def _patched_popen_init(self: subprocess.Popen, *args: Any, **kwargs: Any) -> An
 
 
 def _install_patches() -> None:
+    # Idempotent: a second pytest_configure (xdist bootstrap, plugin
+    # re-registration, or a self-test that triggers pytest_configure
+    # manually) MUST NOT overwrite _ORIGINALS with the already-patched
+    # callables -- that would turn every subsequent I/O call into
+    # infinite recursion (IR-A1).
+    if _ORIGINALS:
+        return
     _ORIGINALS["path_open"] = pathlib.Path.open
     _ORIGINALS["path_read_text"] = pathlib.Path.read_text
     _ORIGINALS["path_read_bytes"] = pathlib.Path.read_bytes
@@ -273,13 +371,21 @@ def _self_probe() -> None:
     # a forbidden literal.
     canary_name = FORBIDDEN_PATH_NAMES[0] if FORBIDDEN_PATH_NAMES else "personal"
     canary = Path("personas") / canary_name / "privacy-guard-canary-nonexistent"
+    probe_outcome: str
     try:
         canary.read_text()
     except _PrivacyBoundaryViolation:
         return  # Guard is live -- correct outcome.
-    except BaseException:  # pragma: no cover -- indicates patch missed
-        pass
-    raise pytest.UsageError("Layer 2 privacy guard failed to install")
+    except (FileNotFoundError, OSError, PermissionError) as exc:
+        # Patches didn't fire but the real I/O path did -- guard is off.
+        probe_outcome = f"raised {type(exc).__name__} instead of _PrivacyBoundaryViolation"
+    except Exception as exc:  # narrower than BaseException (IR-A7)
+        probe_outcome = f"raised unexpected {type(exc).__name__}: {exc!r}"
+    else:
+        probe_outcome = "no exception -- guard patches are inert"
+    raise pytest.UsageError(
+        f"Layer 2 privacy guard failed to install (canary read {probe_outcome})"
+    )
 
 
 # ── pytest hooks ────────────────────────────────────────────────────────

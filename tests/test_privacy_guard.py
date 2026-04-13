@@ -296,3 +296,211 @@ def test_layer2_self_probe_fires_when_install_is_noop(tmp_path: Path) -> None:
     assert result.returncode != 0
     combined = result.stdout + result.stderr
     assert "Layer 2 privacy guard failed to install" in combined
+
+
+# ── Additional Layer 2 coverage (IMPL_REVIEW IR-A6) ────────────────────
+
+
+def test_layer2_rejects_builtins_open_on_forbidden(tmp_path: Path) -> None:
+    root = _scaffold_synthetic_tree(tmp_path)
+    offender = root / "tests" / "test_builtins_open.py"
+    offender.write_text(
+        textwrap.dedent(
+            f"""
+            def test_builtins_open() -> None:
+                path = "{FORBIDDEN_DIR_SEGMENTS[0]}" + "/" + "{FORBIDDEN_DIR_SEGMENTS[1]}" + "/persona.yaml"
+                open(path, "r")
+            """
+        )
+    )
+    result = _run_pytest(root)
+    assert result.returncode != 0
+    assert "Privacy-boundary violation" in (result.stdout + result.stderr)
+
+
+def test_layer2_rejects_path_open_on_forbidden(tmp_path: Path) -> None:
+    root = _scaffold_synthetic_tree(tmp_path)
+    offender = root / "tests" / "test_path_open.py"
+    offender.write_text(
+        textwrap.dedent(
+            f"""
+            from pathlib import Path
+
+            def test_path_open() -> None:
+                p = Path({FORBIDDEN_DIR_SEGMENTS[0]!r}) / {FORBIDDEN_DIR_SEGMENTS[1]!r} / "persona.yaml"
+                p.open("r")
+            """
+        )
+    )
+    result = _run_pytest(root)
+    assert result.returncode != 0
+    assert "Privacy-boundary violation" in (result.stdout + result.stderr)
+
+
+def test_layer2_rejects_path_read_bytes_on_forbidden(tmp_path: Path) -> None:
+    root = _scaffold_synthetic_tree(tmp_path)
+    offender = root / "tests" / "test_read_bytes.py"
+    offender.write_text(
+        textwrap.dedent(
+            f"""
+            from pathlib import Path
+
+            def test_read_bytes() -> None:
+                p = Path({FORBIDDEN_DIR_SEGMENTS[0]!r}) / {FORBIDDEN_DIR_SEGMENTS[1]!r} / "persona.yaml"
+                p.read_bytes()
+            """
+        )
+    )
+    result = _run_pytest(root)
+    assert result.returncode != 0
+    assert "Privacy-boundary violation" in (result.stdout + result.stderr)
+
+
+# ── Additional bypass coverage (IMPL_REVIEW IR-A2, IR-A3, IR-A4) ──────
+
+
+def test_layer2_rejects_git_C_style_bare_directory_argv(tmp_path: Path) -> None:
+    """IR-A2: ``git -C personas/personal log`` — the directory argument
+    is the bare ``personas/<name>`` (no trailing slash). Substring match
+    on ``personas/<name>/`` would miss; component-aware match catches it."""
+    root = _scaffold_synthetic_tree(tmp_path)
+    offender = root / "tests" / "test_git_c.py"
+    offender.write_text(
+        textwrap.dedent(
+            f"""
+            import subprocess
+
+            def test_git_c() -> None:
+                bare_dir = "{FORBIDDEN_DIR_SEGMENTS[0]}" + "/" + "{FORBIDDEN_DIR_SEGMENTS[1]}"
+                subprocess.run(["git", "-C", bare_dir, "log"], check=False)
+            """
+        )
+    )
+    result = _run_pytest(root)
+    assert result.returncode != 0
+    assert "Privacy-boundary violation" in (result.stdout + result.stderr)
+
+
+def test_layer2_rejects_subprocess_executable_kwarg(tmp_path: Path) -> None:
+    """IR-A4: executable= kwarg with a forbidden path must be caught."""
+    root = _scaffold_synthetic_tree(tmp_path)
+    offender = root / "tests" / "test_exec_kwarg.py"
+    offender.write_text(
+        textwrap.dedent(
+            f"""
+            import subprocess
+
+            def test_exec_kwarg() -> None:
+                exe = "{FORBIDDEN_DIR_SEGMENTS[0]}" + "/" + "{FORBIDDEN_DIR_SEGMENTS[1]}" + "/secret.sh"
+                subprocess.Popen(args=["--help"], executable=exe)
+            """
+        )
+    )
+    result = _run_pytest(root)
+    assert result.returncode != 0
+    assert "Privacy-boundary violation" in (result.stdout + result.stderr)
+
+
+def test_layer2_rejects_subprocess_cwd_kwarg(tmp_path: Path) -> None:
+    """IR-A4: cwd= kwarg targeting a forbidden directory must be caught."""
+    root = _scaffold_synthetic_tree(tmp_path)
+    offender = root / "tests" / "test_cwd_kwarg.py"
+    offender.write_text(
+        textwrap.dedent(
+            f"""
+            import subprocess
+
+            def test_cwd_kwarg() -> None:
+                target = "{FORBIDDEN_DIR_SEGMENTS[0]}" + "/" + "{FORBIDDEN_DIR_SEGMENTS[1]}"
+                subprocess.run(["ls"], cwd=target, check=False)
+            """
+        )
+    )
+    result = _run_pytest(root)
+    assert result.returncode != 0
+    assert "Privacy-boundary violation" in (result.stdout + result.stderr)
+
+
+def test_layer2_rejects_symlink_escape_from_fixtures(tmp_path: Path) -> None:
+    """IR-A3: a symlink under tests/fixtures/ (allow-listed by prefix)
+    pointing into personas/<forbidden>/ must still be rejected on the
+    actual read attempt (resolve-pass catches the escape).
+
+    Setup happens INSIDE the subprocess session (via a conftest fixture
+    written dynamically) because the outer pytest session's Layer 2
+    guard would otherwise reject the test's own mkdir of the forbidden
+    tree -- the outer guard matches the literal substring
+    ``personas/<forbidden>`` in any absolute path.
+    """
+    root = _scaffold_synthetic_tree(tmp_path)
+    # A conftest fixture in the synthetic tree performs the forbidden-
+    # tree mkdir + symlink BEFORE any test collects; the subprocess's
+    # own Layer 2 plugin self-probe fires after pytest_configure but
+    # before the fixture runs, so setup uses os.makedirs / os.symlink
+    # via direct-install circumvention -- wait, the plugin patches
+    # os.open too. Use pytest's conftest-level pytest_configure hook
+    # to set up BEFORE the plugin installs its patches.
+    (root / "tests" / "conftest.py").write_text(
+        SRC_CONFTEST.read_text()
+        + textwrap.dedent(
+            f"""
+
+            # Test-setup hook that runs before the Layer 2 plugin patches
+            # (same conftest module is loaded before pytest_plugins list).
+            def _build_symlink_tree():
+                from pathlib import Path
+                repo = Path(__file__).resolve().parents[1]
+                tgt = repo / {FORBIDDEN_DIR_SEGMENTS[0]!r} / {FORBIDDEN_DIR_SEGMENTS[1]!r}
+                tgt.mkdir(parents=True, exist_ok=True)
+                (tgt / "secret.yaml").write_text("private: yes\\n")
+                fixtures_root = repo / "tests" / "fixtures"
+                fixtures_root.mkdir(parents=True, exist_ok=True)
+                sneaky = fixtures_root / "sneaky"
+                if not sneaky.exists():
+                    sneaky.symlink_to(tgt, target_is_directory=True)
+
+
+            _build_symlink_tree()
+            """
+        )
+    )
+    offender = root / "tests" / "test_sneaky.py"
+    offender.write_text(
+        textwrap.dedent(
+            """
+            from pathlib import Path
+
+            def test_sneaky() -> None:
+                here = Path(__file__).resolve().parent
+                sneaky = here / "fixtures" / "sneaky" / "secret.yaml"
+                sneaky.read_text()  # symlink resolves to forbidden dir
+            """
+        )
+    )
+    result = _run_pytest(root)
+    assert result.returncode != 0, (result.stdout, result.stderr)
+    assert "Privacy-boundary violation" in (result.stdout + result.stderr)
+
+
+# ── Idempotent install (IR-A1) ────────────────────────────────────────
+
+
+def test_install_patches_is_idempotent() -> None:
+    """Calling _install_patches twice must not overwrite _ORIGINALS with
+    already-patched callables (which would cause infinite recursion on
+    the first real I/O call)."""
+    import tests._privacy_guard_plugin as plugin
+
+    # Snapshot current originals (they were installed at pytest_configure
+    # time when this session started).
+    before = dict(plugin._ORIGINALS)
+    # Second install must be a no-op.
+    plugin._install_patches()
+    after = dict(plugin._ORIGINALS)
+    assert before == after, (
+        "Second _install_patches call mutated _ORIGINALS -- would cause "
+        "infinite recursion on any I/O call (IR-A1)."
+    )
+    # Confirm the patched callables are not stored as originals.
+    assert plugin._ORIGINALS["path_open"] is not plugin._patched_path_open
+    assert plugin._ORIGINALS["path_read_text"] is not plugin._patched_path_read_text

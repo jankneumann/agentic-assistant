@@ -15,6 +15,13 @@ jobs:
   test:
     name: Lint + typecheck + test
     runs-on: ubuntu-latest
+    env:
+      # Belt-and-suspenders: tests/conftest.py also sets this via
+      # os.environ.setdefault at module-top, but declaring it at job
+      # level means any future static-analysis step that inadvertently
+      # loads persona configs will see the fixture root, not an empty
+      # submodule mount. See docs/gotchas.md G6 (IR-C4).
+      ASSISTANT_PERSONAS_DIR: tests/fixtures/personas
     steps:
       - name: Checkout (public repo only — persona submodules are private)
         uses: actions/checkout@v4
