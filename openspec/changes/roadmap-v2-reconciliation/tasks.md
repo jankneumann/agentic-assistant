@@ -8,12 +8,15 @@ Docs + spec change. No production code or new tests. Validation is via
 - [ ] 1.1 Write delta: author
   `openspec/changes/roadmap-v2-reconciliation/specs/tooling-roadmap/spec.md`
   with a `## MODIFIED Requirements` section containing the fully-rewritten
-  "Roadmap Document Authoritative" requirement + 2 scenarios (narrowed
-  scope per D1). Update the `Purpose` per D5.
-  **Spec scenarios**: tooling-roadmap — "Every phase change has a roadmap
-  row", "Archived phase changes remain listed with archived status"
+  "Roadmap Document Authoritative" requirement. The rewrite SHALL (a)
+  define `phase change` via three operational criteria in the requirement
+  body (per D1), and (b) provide four scenarios: "Every phase change has
+  a roadmap row", "Listed non-phase change still follows row invariants",
+  "Every roadmap row references a real change-id" (using `YYYY-MM-DD-`
+  archive-date format), and "Archived phase changes remain listed".
+  **Spec scenarios**: see above
   **Contracts**: N/A
-  **Design decisions**: D1, D2, D5
+  **Design decisions**: D1, D2
   **Dependencies**: None
 
 - [ ] 1.2 Validate: `openspec validate roadmap-v2-reconciliation --strict`

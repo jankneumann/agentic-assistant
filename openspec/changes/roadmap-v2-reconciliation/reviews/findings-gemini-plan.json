@@ -1,0 +1,47 @@
+{
+  "review_type": "plan",
+  "target": "roadmap-v2-reconciliation",
+  "reviewer_vendor": "gemini",
+  "findings": [
+    {
+      "id": 1,
+      "type": "correctness",
+      "criticality": "high",
+      "description": "The plan's goal to replace the 'TBD' Purpose section in the tooling-roadmap spec (D5, task 1.1) is not reflected in the provided spec delta artifact at `openspec/changes/roadmap-v2-reconciliation/specs/tooling-roadmap/spec.md`. Even if the section were added to the delta, the OpenSpec `archive` tool typically only merges requirement-level ADDED/MODIFIED/REMOVED sections and lacks a mechanism to update the top-level Purpose field from a delta file. Without a manual edit task or a tool update, the Purpose will remain 'TBD' after archive.",
+      "resolution": "Add a manual task (e.g., task 2.4) to edit `openspec/specs/tooling-roadmap/spec.md` directly, update the `work-packages.yaml` scope to allow writes to `openspec/specs/tooling-roadmap/spec.md`, and document the intended Purpose paragraph in the task or design.",
+      "disposition": "fix"
+    },
+    {
+      "id": 2,
+      "type": "spec_gap",
+      "criticality": "medium",
+      "description": "The modified 'Roadmap Document Authoritative' requirement uses the term 'phase change' to delineate its scope ('Registry of phase changes'), but this term is not defined within the spec text. Design decision D1 accepts a reference-based definition ('a phase is what is in the table'), but this is tautological and doesn't provide future authors with an operational rule for deciding when a new change *must* be added to the roadmap vs. when it is *permitted* (D4).",
+      "resolution": "Incorporate a definition of 'phase change' into the requirement body or a glossary, distinguishing between work units that advance project milestones (e.g. bootstrap P-items, perplexity \u00a78 items) and those that support project hygiene or spec maintenance (meta/tooling/spec-sync).",
+      "disposition": "fix"
+    },
+    {
+      "id": 3,
+      "type": "correctness",
+      "criticality": "medium",
+      "description": "The scenario 'Non-phase changes are not required to have a row' uses permissive, negative phrasing ('SHALL NOT be required to appear', 'if the author chooses'). Scenarios in OpenSpec are typically used to define testable, positive obligations under WHEN/THEN. As written, this scenario describes the absence of a requirement rather than a verifiable property of the system.",
+      "resolution": "Reframe the scenario as a positive obligation for non-phase changes that *are* listed: 'WHEN a non-phase change is included in the roadmap table THEN it SHALL follow all row invariants (unique change-id, valid Status, row retained on archive).'",
+      "disposition": "fix"
+    },
+    {
+      "id": 4,
+      "type": "compatibility",
+      "criticality": "low",
+      "description": "Renumbering P1.5 (bootstrap-fixes) to P1.7 creates a referential discrepancy with the just-archived `roadmap-v2-perplexity-integration` change artifacts, which multiple times cite 'P1.5 bootstrap-fixes'. While the proposal correctly notes that change-ids are the stable identity source, the shift may confuse future readers auditing the archive history against the current roadmap.",
+      "resolution": "Add a brief note to the top of `openspec/roadmap.md` (e.g., in the Guiding Principles or a new 'Version History' section) clarifying that P-numbers were reshuffled by `roadmap-v2-reconciliation` to preserve chronological order, and that change-ids should be used for cross-referencing archives.",
+      "disposition": "accept"
+    },
+    {
+      "id": 5,
+      "type": "spec_gap",
+      "criticality": "low",
+      "description": "The scenario 'Every roadmap row references a real change-id' uses the token '<date-prefix>' but does not specify the required format (e.g. YYYY-MM-DD). The current project convention for archived changes is 'YYYY-MM-DD-<change-id>'. Without specifying the format, the scenario is insufficiently precise for automated validation tools.",
+      "resolution": "Update the scenario text to specify the date format: '...either openspec/changes/<change-id>/ or openspec/changes/archive/YYYY-MM-DD-<change-id>/ SHALL exist on disk.'",
+      "disposition": "fix"
+    }
+  ]
+}

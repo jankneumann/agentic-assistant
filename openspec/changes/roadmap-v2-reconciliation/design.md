@@ -5,34 +5,39 @@
 This is a **docs + spec** change. No production code, no new tests, no
 dependency updates. Artifacts touched:
 
-1. `openspec/specs/tooling-roadmap/spec.md` — MODIFY one requirement +
-   update Purpose (via `openspec/changes/roadmap-v2-reconciliation/specs/tooling-roadmap/spec.md`
+1. `openspec/specs/tooling-roadmap/spec.md` — MODIFY one requirement
+   (via `openspec/changes/roadmap-v2-reconciliation/specs/tooling-roadmap/spec.md`
    at archive time)
 2. `openspec/roadmap.md` — add two rows, renumber one, adjust DAG
 3. This change's own proposal / design / tasks / session-log
 
 ## Decisions
 
-### D1: Narrow by reference, not by exclusion list
+### D1: Classify by operational criteria, not by table membership
 
 **Decision**: The MODIFY of `Requirement: Roadmap Document Authoritative`
-phrases the invariant as "the roadmap table is the registry of phase
-changes; every row references a real change-id directory; every phase
-change has a row." It does *not* enumerate a list of exempt non-phase
-change-kinds (meta, tooling, spec-sync).
+defines `phase change` via three disjunctive criteria in the requirement
+body: (1) introduces a new capability spec, (2) implements a
+bootstrap-v4.1 P-item or perplexity §8 item, (3) represents a committed
+milestone explicitly promoted by authoring judgment. All other changes
+(spec-sync, meta, tooling) are non-phase.
 
-**Rationale**: Enumeration is brittle — new kinds of non-phase work
-(e.g., a future ADR-style change) would each require a spec edit. The
-reference-based definition (*phase = "in the roadmap table"*) lets the
-roadmap itself decide what is a phase. This matches how bootstrap-v4.1
-P-numbers and perplexity §8 items were promoted into the table: an
-authoring decision, not a spec-enforced classifier.
+**Rationale**: Earlier drafting considered a *reference-based* definition
+("a phase is whatever is in the roadmap table"), but iterate-on-plan
+feedback (F#2, F#4) and two of three vendor reviewers flagged the
+tautology: it gives no decision rule to the author, leaving classification
+ambiguous. The criterion-based definition is now testable — a reviewer
+reading the spec alone can classify any change without consulting prior
+context. Criterion 3 preserves authoring judgment for edge cases (a
+substantial hygiene change that doesn't fit 1 or 2 can still be
+promoted) without leaving the default undefined.
 
-**Counterpoint considered**: Reference-based definition has a
-tautological flavor ("a phase is what's in the table of phases"). We
-accept the tautology because it's load-bearing: the roadmap is the
-single source of truth for phase identity. Any secondary definition
-would drift.
+**Counterpoint considered**: Criterion enumeration is in tension with
+"don't enumerate kinds — new kinds drift the list." The rebuttal: we
+enumerate what *qualifies as* a phase (three relatively stable
+categories), not what is *exempt*. New change kinds default to
+non-phase unless authoring judgment promotes them via criterion 3;
+they don't require a spec edit.
 
 ### D2: Keep the "Archived remain listed" scenario unchanged
 
@@ -80,15 +85,26 @@ maximally-strict non-phase classification.
 *mandate*. Meta / tooling / spec-sync changes *may* be listed in the
 roadmap; they aren't *required* to be. Authoring judgment decides.
 
-### D5: Fix the `Purpose` placeholder inline
+### D5 (rejected): Fix the `Purpose` placeholder inline
 
-**Decision**: Include `Purpose` replacement in the same MODIFY delta,
-not a separate change.
+**Decision**: **Rejected** during iterate-on-plan. `Purpose` cleanup is
+removed from this change's scope.
 
-**Rationale**: Trivial cleanup bundled with the spec's first real edit
-after archival. The `TBD - created by archiving change...` text was
-inserted by `openspec archive` as a placeholder and should not persist
-past the first follow-up proposal that touches the spec.
+**Rationale for rejection**: Three of three vendor reviewers (this
+agent, codex, gemini) independently flagged that OpenSpec's delta
+format has no mechanism to update the `Purpose` section from a change
+delta — archive tooling only applies requirement-level ADDED / MODIFIED
+/ REMOVED operations. Evidence: 5+ specs in `openspec/specs/`
+(delegation-spawner, role-registry, extension-registry, cli-interface,
+tooling-roadmap) carry identical `TBD - created by archiving change...`
+placeholders that have survived multiple archival cycles. Spot-cleaning
+one spec's Purpose via a manual post-archive edit is out of proportion
+to the benefit and expands this change's write-scope across
+`openspec/specs/**` (otherwise in `scope.deny`).
+
+**Follow-up**: Filed as future work. A dedicated repo-wide cleanup
+proposal can (a) manually update all TBD placeholders in one pass, OR
+(b) extend the OpenSpec delta format to support `## Purpose` sections.
 
 ## Non-goals
 

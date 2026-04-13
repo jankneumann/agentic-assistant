@@ -27,25 +27,27 @@ adding the test-boundary rows would leave unfinished reconciliation;
 adding rows without narrowing the spec leaves the self-violation Codex
 flagged.
 
-Additionally, the `Purpose` field of `openspec/specs/tooling-roadmap/spec.md`
-is a `TBD - created by archiving...` placeholder inserted by
-`openspec archive`. Fixing it is natural alongside this MODIFY.
-
 ## What Changes
 
 ### 1. MODIFY `Requirement: Roadmap Document Authoritative`
 
-Narrow the scope so that only *phase changes* (the ones listed in the
-roadmap table) are governed by the row/status invariants. Meta, tooling,
-and spec-sync proposals — distinguished by not being a planned phase —
-are out of scope for this requirement.
+Rewrite the requirement body to include an **operational definition of
+"phase change"** — three classification criteria (introduces a new
+capability spec; implements a bootstrap-v4.1 P-item or perplexity §8
+item; represents a committed milestone promoted by authoring judgment).
+Every other OpenSpec change is a "non-phase change" and is non-normative
+with respect to the row/status invariants; non-phase changes MAY be
+listed in the roadmap table when chronological context helps reviewers.
 
-### 2. Update `Purpose` of `tooling-roadmap`
+This classification closes three review concerns at once: it addresses
+the Codex PR 3 P2 finding (spec was self-violating because every
+non-archived change required a row), it gives authors a reproducible
+decision rule (closes iterate-on-plan finding F#2 and F#4), and it
+reframes the former "Non-phase changes are not required to have a row"
+scenario as positive obligations ("listed non-phase change still
+follows row invariants" — closes iterate-on-plan finding F#3).
 
-Replace the auto-generated `TBD` placeholder with a one-paragraph
-statement of what the capability governs.
-
-### 3. Add roadmap rows + adjust numbering
+### 2. Add roadmap rows + adjust numbering
 
 - **P1.5** `test-privacy-boundary` (archived 2026-04-13) — hygiene
   follow-up to P1 that separated public tests from private persona data.
@@ -124,9 +126,17 @@ them creates an interim inconsistent state.
 - **P1.7 `bootstrap-fixes` implementation**: this change only renumbers
   the pending phase; the actual fixes (CLI `-h`, `sqlalchemy.text()`,
   etc.) are a separate downstream proposal to be created later.
+- **`Purpose` placeholder cleanup**: the `tooling-roadmap` spec still
+  carries the `TBD - created by archiving change...` placeholder that
+  `openspec archive` inserted. This is the repo-wide pattern (5+
+  synced specs in `openspec/specs/` carry the same placeholder).
+  Iterate-on-plan finding F#1 showed that OpenSpec's delta format has
+  no mechanism to update `Purpose` from a change delta, so fixing one
+  spec in isolation is spot cleaning when the systemic issue is a
+  separate concern. Filed as a follow-up.
 - **No code changes**: pure docs + spec reconciliation.
 - **No new tests**: the existing `openspec validate --strict` check
   covers spec consistency; manual review covers roadmap row accuracy.
 - **No changes to the Dependency Graph Representation, Phase Status
   Lifecycle, or Provenance Attribution requirements**: those three
-  requirements are unaffected by the phase-vs-non-phase narrowing.
+  requirements are unaffected by the phase-vs-non-phase classification.
