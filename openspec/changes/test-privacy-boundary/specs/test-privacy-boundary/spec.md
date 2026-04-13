@@ -6,97 +6,193 @@
 
 Public test code under `tests/` SHALL load persona configuration exclusively
 from the fixture root at `tests/fixtures/personas/`, and SHALL NOT read from
-the submodule mount points under `personas/<name>/` at runtime.
+the submodule mount points under `personas/<name>/` at runtime, except for
+`personas/_template/`.
 
 #### Scenario: Public personas_dir fixture resolves to fixtures root
 
-- **WHEN** a public test in `tests/` consumes the `personas_dir` pytest fixture
+- **WHEN** a public test in `tests/` consumes the `personas_dir` pytest
+  fixture
 - **THEN** the fixture SHALL resolve to `<repo_root>/tests/fixtures/personas/`
 - **AND** it SHALL NOT resolve to `<repo_root>/personas/`
 
 #### Scenario: Public test suite passes without submodule content
 
-- **WHEN** the private submodule `personas/personal/` is uninitialized, empty,
-  or git-removed
+- **WHEN** the private submodule `personas/personal/` is uninitialized,
+  empty, or `git submodule deinit`-ed
 - **AND** `uv run pytest tests/` is invoked from the repository root
 - **THEN** the command SHALL exit with status 0
-- **AND** no collected test SHALL require `personas/personal/persona.yaml` (or
-  any file under `personas/<name>/` for any persona name) to exist
+- **AND** no collected test SHALL require `personas/personal/persona.yaml`
+  (or any file under `personas/<name>/` for any forbidden name) to exist
 
-### Requirement: Collection-time boundary guard
+### Requirement: Two-layer collection-time and runtime boundary guard
 
-A `pytest_collection_modifyitems` hook registered in `tests/conftest.py` SHALL
-inspect the source text of every collected public test file and fail the
-session if the file references private persona paths or known private-content
-strings.
+The test suite SHALL enforce the privacy boundary at two layers, both
+configured from a single deny-list module `tests/_privacy_guard_config.py`:
 
-#### Scenario: Guard rejects a forbidden path reference
+- **Layer 1 (collection-time substring scan)**: a
+  `pytest_collection_modifyitems` hook in `tests/conftest.py` SHALL inspect
+  the source text of every collected test file and every conftest under
+  `tests/`, and SHALL fail the session if any inspected file contains a
+  forbidden path substring outside the documented exclusion list.
+- **Layer 2 (runtime filesystem guard)**: a pytest plugin SHALL patch
+  `pathlib.Path.open`, `pathlib.Path.read_text`, `pathlib.Path.read_bytes`,
+  and `builtins.open` for the duration of test collection and execution,
+  and SHALL raise a `pytest.UsageError` subclass when any of these is
+  called with a path that resolves under `personas/<name>/` for `<name>` in
+  the forbidden-names list, with allow-listed exceptions for paths under
+  `tests/fixtures/` and `personas/_template/`.
 
-- **WHEN** a public test file under `tests/` (excluding `tests/fixtures/`)
-  contains the literal substring `personas/personal/` or `personas/work/` in
-  its source
-- **THEN** the pytest collection phase SHALL emit an error identifying the
-  violating file and the matched substring
+#### Scenario: Layer 1 rejects a literal forbidden path substring
+
+- **WHEN** a public test file under `tests/test_*.py` or
+  `tests/**/conftest.py` contains the literal substring
+  `personas/personal/` or `personas/work/` in its source
+- **AND** the file is not in the Layer 1 exclusion list
+- **THEN** the pytest collection phase SHALL fail with an error identifying
+  the violating file, the matched substring, and a remediation hint
 - **AND** the session SHALL exit with a non-zero status before any test body
   executes
 
-#### Scenario: Guard rejects a private-content string
-
-- **WHEN** a public test file under `tests/` (excluding `tests/fixtures/`)
-  contains any string in the configured private-content deny-list (e.g.
-  `"Personal Persona Context"`, `"Personal Context Additions"`)
-- **THEN** the collection phase SHALL fail with a message naming the leaked
-  string and the violating file
-- **AND** remediation guidance SHALL direct the author to either move the test
-  into the persona's submodule suite or rewrite it against fixture values
-
-#### Scenario: Guard allows template and fixture references
+#### Scenario: Layer 1 allows template and fixture references
 
 - **WHEN** a test file references `personas/_template/` or paths under
   `tests/fixtures/`
-- **THEN** the collection guard SHALL NOT raise an error for those references
+- **THEN** Layer 1 SHALL NOT raise an error for those references
 
-#### Scenario: Guard covers both personal and work personas
+#### Scenario: Layer 1 covers both personal and work persona names
 
 - **WHEN** the guard is configured
-- **THEN** its deny-list SHALL include both `personas/personal/` and
-  `personas/work/` path prefixes
-- **AND** the guard SHALL reject references to either, regardless of whether
-  the corresponding submodule is currently populated
+- **THEN** the deny-list `FORBIDDEN_PATH_NAMES` SHALL include both
+  `"personal"` and `"work"`
+- **AND** Layer 1 SHALL reject substrings of the form `personas/personal/`
+  or `personas/work/`, regardless of whether the corresponding submodule
+  is currently populated
+
+#### Scenario: Layer 2 rejects a runtime-constructed forbidden read
+
+- **WHEN** any test code reads a file using `Path.open`, `Path.read_text`,
+  `Path.read_bytes`, or `builtins.open`
+- **AND** the resolved path is under `personas/<name>/` for `<name>` in
+  `FORBIDDEN_PATH_NAMES`
+- **AND** the resolved path is not under any prefix in
+  `ALLOWED_READ_PREFIXES`
+- **THEN** the call SHALL raise `_PrivacyBoundaryViolation`
+- **AND** the test SHALL fail with a stack trace identifying the test file,
+  the call site, and the resolved path
+
+#### Scenario: Layer 2 permits allow-listed reads
+
+- **WHEN** any test code reads a file under `tests/fixtures/` or
+  `personas/_template/`
+- **THEN** Layer 2 SHALL allow the read without raising
+
+#### Scenario: Guard scope excludes its own implementation files
+
+- **WHEN** Layer 1 inspects files under `tests/`
+- **THEN** it SHALL skip `tests/_privacy_guard_config.py` and
+  `tests/_privacy_guard_plugin.py`
+- **AND** it SHALL skip files under `tests/fixtures/`
+
+#### Scenario: Guard failure messages do not echo private payloads
+
+- **WHEN** Layer 1 or Layer 2 emits a failure message
+- **THEN** the message SHALL identify the violating file path and the
+  matched deny-list entry by name
+- **AND** the message SHALL NOT include the violating path's *file
+  contents*, so failure logs do not become a private-data exfiltration
+  vector
 
 ### Requirement: Self-contained persona-submodule test suite
 
 Each persona submodule that ships tests SHALL contain a self-contained test
-suite that runs without importing any symbol from the main repo's
-`src/assistant/` package or the public `tests/` directory.
+suite that runs without `assistant` being importable, and the
+self-containment SHALL be verifiable by a fresh-venv proof.
 
-#### Scenario: Submodule tests run standalone
+#### Scenario: Submodule pyproject declares an isolated workspace
 
-- **WHEN** pytest is invoked from inside `personas/personal/` with that
-  submodule's dev dependencies installed (e.g. `uv run pytest` after
-  `uv sync` inside the submodule)
-- **THEN** the test suite SHALL collect and execute successfully without the
-  parent repo's `src/assistant/` package being importable
-- **AND** no test in `personas/personal/tests/` SHALL contain the import
-  statement `import assistant` or `from assistant` or `from src.assistant`
+- **WHEN** `personas/personal/pyproject.toml` is read
+- **THEN** it SHALL contain a `[tool.uv]` section declaring this directory
+  as a non-package and SHALL NOT include the parent project as a workspace
+  member
+- **AND** `uv run pytest` invoked from inside `personas/personal/` SHALL NOT
+  reuse the parent project's venv
+
+#### Scenario: Submodule tests assert assistant import fails at runtime
+
+- **WHEN** the submodule test suite runs in its isolated venv
+- **THEN** the suite SHALL contain a positive runtime check that calls
+  `importlib.import_module("assistant")` and asserts that the call raises
+  `ImportError`
+- **AND** the suite SHALL include a static check (grep or AST) that no
+  test file under `personas/personal/tests/` contains the strings
+  `import assistant`, `from assistant`, `from src.assistant`,
+  `__import__("assistant")`, or `importlib.import_module("assistant")`
+  outside the dedicated negative-import test
+
+#### Scenario: Standalone-proof verification uses a fresh venv
+
+- **WHEN** the standalone-proof step (task 3.6) runs
+- **THEN** it SHALL create a freshly-provisioned virtual environment that
+  does not have `assistant` installed
+- **AND** it SHALL install only `pytest` and `pyyaml` (per
+  `personas/personal/pyproject.toml`'s dev deps)
+- **AND** it SHALL invoke `pytest personas/personal/tests/` from that fresh
+  venv
+- **AND** the run SHALL exit with status 0
+- **AND** `PYTHONPATH=/dev/null` SHALL NOT be relied upon as proof of
+  isolation (it does not affect installed packages)
 
 #### Scenario: Submodule suite validates YAML shape
 
 - **WHEN** the submodule test suite runs
-- **THEN** it SHALL assert that `personas/personal/persona.yaml` contains the
-  required top-level keys (`name`, `display_name`, `database`, `auth`,
+- **THEN** it SHALL assert that `personas/personal/persona.yaml` contains
+  the required top-level keys (`name`, `display_name`, `database`, `auth`,
   `harnesses`, `default_role`)
-- **AND** it SHALL assert that `database.url_env`, `graphiti.url_env`, and all
-  `auth.config.*_env` values follow the `PERSONAL_*` prefix convention
+- **AND** it SHALL assert that `database.url_env` starts with `PERSONAL_`
+- **AND** it SHALL assert that `graphiti.url_env` starts with `PERSONAL_`
+  if the `graphiti` block is present (or assert the block's intentional
+  absence per the persona's documented contract)
+- **AND** it SHALL assert that every value of `auth.config.*_env` starts
+  with `PERSONAL_`
 - **AND** for each role override file under `personas/personal/roles/`, it
-  SHALL assert that a base role of the same name exists in the parent repo's
-  `roles/` directory (the parent `roles/` path is resolved relative to the
-  submodule mount via `../..`)
+  SHALL assert that a base role of the same name exists in the parent
+  repo's `roles/` directory, resolved via `parents[2] / "roles"`
 
-### Requirement: CI simplification
+#### Scenario: Standalone mode requires explicit opt-in
+
+- **WHEN** the role-override-existence check runs and the parent `roles/`
+  directory is not reachable from the submodule
+- **AND** the env var `ALLOW_STANDALONE_SUBMODULE_SKIP=1` is NOT set
+- **THEN** the test SHALL `pytest.fail` with a message naming the env var
+  required to bypass the cross-repo check
+- **WHEN** the env var IS set
+- **THEN** the test SHALL `pytest.skip` with a clearly-flagged message
+
+### Requirement: Replacement integration coverage for compose_system_prompt
+
+The public test suite SHALL retain end-to-end coverage of
+`compose_system_prompt` against a real persona+role load, using the public
+fixture data, so that the composition pipeline is exercised end-to-end
+without depending on the private submodule.
+
+#### Scenario: Fixture-based composition test asserts on a fixture sentinel
+
+- **WHEN** a public test in `tests/test_composition.py` calls
+  `compose_system_prompt(persona, role)` against a persona+role loaded from
+  `tests/fixtures/personas/`
+- **THEN** the composed prompt SHALL contain a fixture-defined sentinel
+  string that is unique to the fixture (e.g. `FIXTURE_PERSONA_SENTINEL`),
+  not a string sourced from any real submodule's content
+- **AND** the test SHALL assert on that sentinel, proving the composition
+  pipeline traverses persona → role → output correctly
+
+### Requirement: CI simplification and forward-compatible hygiene check
 
 The `.github/workflows/ci.yml` workflow SHALL NOT contain any step that
-populates, copies, or rsyncs content into `personas/<name>/`.
+populates, copies, or rsyncs content into `personas/<name>/`. A regression
+guard SHALL prevent future workflows from silently re-introducing such a
+dependency.
 
 #### Scenario: CI omits the populate-personas step
 
@@ -105,6 +201,16 @@ populates, copies, or rsyncs content into `personas/<name>/`.
   write files into `personas/personal/` or `personas/work/`
 - **AND** the `pytest` step SHALL succeed using only `tests/fixtures/personas/`
   as its persona data source
+
+#### Scenario: Workflow-hygiene test rejects future leakage paths
+
+- **WHEN** any file under `.github/workflows/` references `personas/personal/`
+  or `personas/work/`
+- **AND** the reference is not paired with an explicit
+  copy-from-`tests/fixtures/` step
+- **THEN** `tests/test_ci_workflow_hygiene.py` SHALL fail at collection or
+  run time with a message identifying the workflow file and the violating
+  reference
 
 ### Requirement: Documentation of the privacy boundary rule
 
@@ -115,14 +221,19 @@ The repository SHALL document the public-vs-private test rule in both
 
 - **WHEN** `CLAUDE.md` is read
 - **THEN** the "Conventions" section SHALL contain a bullet stating that
-  public tests use fixtures only and that persona-specific tests live in the
-  persona's private submodule and are self-contained
+  public tests use fixtures only and that persona-specific tests live in
+  the persona's private submodule and are self-contained
 
 #### Scenario: docs/gotchas.md records the failure mode
 
 - **WHEN** `docs/gotchas.md` is read
 - **THEN** a new gotcha entry SHALL describe the private-content leakage
-  failure mode (symptom: CI passes locally but private strings appear in
-  public test assertions; root cause: `personas_dir` was pointed at the real
-  submodule; fix: repoint to fixtures + rely on the conftest guard;
-  prevention: let the collection guard catch new violations)
+  failure mode (symptom: CI passes locally but private content appears in
+  public test code or assertions; root cause: `personas_dir` was pointed
+  at the real submodule, OR a runtime path was constructed via path-join
+  to bypass substring matching; fix: repoint to fixtures + rely on the
+  two-layer guard; prevention: the runtime FS guard + the workflow-hygiene
+  test catch both classes of regression)
+- **AND** a separate entry SHALL document the
+  `ALLOW_STANDALONE_SUBMODULE_SKIP=1` opt-in for submodule maintainers
+  running tests outside a parent checkout

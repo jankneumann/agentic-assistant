@@ -1,11 +1,13 @@
 # Work packages for test-privacy-boundary
 #
-# DAG:
+# DAG (post-Round-1):
 #   wp-contracts (root)
-#     ├─ wp-public-tests    (parallel)
-#     ├─ wp-submodule-tests (parallel; cross-repo — requires private-repo push)
-#     └─ wp-docs-ci         (parallel)
-#          └─ wp-integration (all three parallel packages merge here)
+#     ├─ wp-public-tests       (parallel; Phase 2 — scrub + guard + workflow-hygiene test)
+#     ├─ wp-submodule-tests    (parallel; cross-repo — requires private-repo write for 5.3a)
+#     └─ wp-docs               (parallel; CLAUDE.md + docs/gotchas.md only)
+#          └─ wp-ci-cleanup    (depends on wp-public-tests — task 4.1 needs the fixture
+#                              repoint to land first so CI stays green)
+#                ├─ wp-integration (merges everything; runs 5.2a; runs 5.3b parent SHA bump)
 
 packages:
   - id: wp-contracts
@@ -31,26 +33,55 @@ packages:
     verification: tier_c
 
   - id: wp-public-tests
-    name: "Public test boundary — repoint + scrub + guard"
+    name: "Public test boundary — sentinel, scrub, then two-layer guard"
     description: >-
-      Repoint the personas_dir fixture in tests/conftest.py to
-      tests/fixtures/personas/; scrub private-content assertions from public
-      tests; add pytest_collection_modifyitems guard. Includes Phase 2 tasks
-      (TDD ordering preserved: test tasks 2.1, 2.3 precede implementation
-      2.2, 2.4-2.8; verification 2.9 at end).
-    tasks: ["2.1", "2.2", "2.3", "2.4", "2.5", "2.6", "2.7", "2.8", "2.9"]
+      TDD-ordered Phase 2: add fixture sentinel (2.1), repoint personas_dir
+      (2.2), add fixture-based composition test (2.3), scrub legacy
+      assertions (2.4-2.8), verify with submodule-deinit script (2.9),
+      add deny-list config (2.10), test guard (2.11), implement Layer 1
+      collection-time hook (2.12) and Layer 2 runtime FS plugin (2.13),
+      final verification (2.14). Scrub-before-guard ordering is mandatory
+      (Round 1 finding I1). Includes the new helper script
+      scripts/verify-public-tests-standalone.sh.
+    tasks:
+      - "2.1"
+      - "2.2"
+      - "2.3"
+      - "2.4"
+      - "2.5"
+      - "2.6"
+      - "2.7"
+      - "2.8"
+      - "2.9"
+      - "2.10"
+      - "2.11"
+      - "2.12"
+      - "2.13"
+      - "2.14"
     priority: 2
     dependencies: ["wp-contracts"]
     scope:
       write_allow:
         - "tests/**"
+        - "scripts/verify-public-tests-standalone.sh"
       read_allow:
         - "src/**"
         - "roles/**"
         - "personas/_template/**"
         - "tests/fixtures/**"
+        # Read-only inspection of the real submodule mount is not needed
+        # by Phase 2 tasks; the deny-listed write paths below also exclude
+        # writes. Task 2.9 manipulates the submodule via `git submodule
+        # deinit`, which is a git-plumbing operation, not a write to the
+        # submodule's working tree contents (which belong to
+        # wp-submodule-tests). The git-plumbing happens through the parent
+        # .gitmodules / .git/modules state and is permitted.
       deny:
-        - "personas/personal/**"
+        - "personas/personal/persona.yaml"
+        - "personas/personal/prompt.md"
+        - "personas/personal/memory.md"
+        - "personas/personal/roles/**"
+        - "personas/personal/tests/**"
         - "personas/work/**"
         - ".github/**"
     locks:
@@ -61,25 +92,37 @@ packages:
         - "tests/test_persona_registry.py"
         - "tests/test_delegation.py"
         - "tests/test_cli.py"
+        - "tests/test_privacy_guard.py"
+        - "tests/test_ci_workflow_hygiene.py"
+        - "tests/_privacy_guard_config.py"
+        - "tests/_privacy_guard_plugin.py"
+        - "tests/fixtures/personas/personal/prompt.md"
+        - "tests/fixtures/personas/personal/roles/researcher.yaml"
+        - "scripts/verify-public-tests-standalone.sh"
       keys:
         - "tests:boundary:public"
-      ttl_minutes: 180
-      reason: "Public test scrub + guard hook"
+        - "tests:fixture:sentinel"
+      ttl_minutes: 240
+      reason: "Public test scrub + two-layer guard + workflow-hygiene"
     verification: tier_b
 
   - id: wp-submodule-tests
     name: "Self-contained persona-submodule test suite"
     description: >-
-      Inside personas/personal/ (private submodule, separate git repo), add
-      tests/ directory + pyproject.toml + conftest. All tests must be
-      self-contained — no imports from src/assistant/. Includes Phase 3
-      tasks (TDD ordering preserved).
-    tasks: ["3.1", "3.2", "3.3", "3.4", "3.5", "3.6"]
+      Inside personas/personal/ (private submodule, separate git repo),
+      add tests/ directory + pyproject.toml (with [tool.uv] workspace
+      isolation per D4) + conftest. All tests must be self-contained — no
+      imports from src/assistant/ — and the standalone-proof must use a
+      fresh venv (not PYTHONPATH=/dev/null). Includes Phase 3 tasks plus
+      the submodule-side commit+push 5.3a.
+    tasks: ["3.1", "3.2", "3.3", "3.4", "3.5", "3.6", "5.2b", "5.3a", "5.3-alt"]
     priority: 2
     dependencies: ["wp-contracts"]
     scope:
       write_allow:
         - "personas/personal/**"
+        - "scripts/verify-submodule-standalone.sh"
+        - "scripts/push-with-submodule.sh"
       read_allow:
         - "roles/**"
         - "src/assistant/core/persona.py"
@@ -87,34 +130,71 @@ packages:
       deny:
         - "tests/**"
         - ".github/**"
+        - "personas/work/**"
     locks:
       files:
         - "personas/personal/pyproject.toml"
         - "personas/personal/tests/**"
+        - "scripts/verify-submodule-standalone.sh"
+        - "scripts/push-with-submodule.sh"
       keys:
         - "tests:boundary:submodule:personal"
-      ttl_minutes: 180
-      reason: "Persona-submodule self-contained test authoring (requires private-repo push access)"
+      ttl_minutes: 240
+      reason: "Persona-submodule self-contained test authoring + submodule-side push"
     verification: tier_b
     constraints:
-      # Non-standard field: implementation must have private-repo write access.
-      # Consuming skill (/implement-feature) should route this package to an
-      # agent that can authenticate to the private-repo remote.
+      # The work package writes to a path that is a git submodule mount.
+      # Implementer must `cd personas/personal` (or `git -C personas/personal
+      # ...`) for git operations; commits land in the submodule's own
+      # repo, not the parent. Task 5.3a pushes to the private remote.
+      cwd_for_git_ops: "personas/personal"
+      submodule_aware: true
       requires_private_repo_write: true
 
-  - id: wp-docs-ci
-    name: "CI simplification + documentation"
+  - id: wp-docs
+    name: "Documentation only"
     description: >-
-      Remove the populate-personas step from .github/workflows/ci.yml; add
-      docs/gotchas.md entry; update CLAUDE.md Conventions section.
-    tasks: ["4.1", "4.2", "4.3"]
+      Update CLAUDE.md Conventions section + add gotcha entries G6 and G7
+      to docs/gotchas.md. No CI changes (those are in wp-ci-cleanup).
+    tasks: ["4.2", "4.3"]
     priority: 2
     dependencies: ["wp-contracts"]
     scope:
       write_allow:
-        - ".github/workflows/ci.yml"
         - "docs/gotchas.md"
         - "CLAUDE.md"
+      read_allow:
+        - "openspec/changes/test-privacy-boundary/**"
+      deny:
+        - "tests/**"
+        - "personas/**"
+        - "src/**"
+        - ".github/**"
+    locks:
+      files:
+        - "docs/gotchas.md"
+        - "CLAUDE.md"
+      keys:
+        - "docs:gotchas"
+        - "docs:claude-md"
+      ttl_minutes: 60
+      reason: "Docs updates"
+    verification: tier_c
+
+  - id: wp-ci-cleanup
+    name: "CI workflow simplification"
+    description: >-
+      Remove the populate-personas step from .github/workflows/ci.yml
+      (task 4.1). Depends on wp-public-tests because task 4.1 requires
+      the fixture repoint (task 2.2) to have landed first, otherwise CI
+      breaks (Round 1 finding I4 — the dependency was previously hidden
+      inside tasks.md but not expressed at the package level).
+    tasks: ["4.1"]
+    priority: 3
+    dependencies: ["wp-public-tests"]
+    scope:
+      write_allow:
+        - ".github/workflows/ci.yml"
       read_allow:
         - "tests/conftest.py"
         - "openspec/changes/test-privacy-boundary/**"
@@ -122,41 +202,69 @@ packages:
         - "tests/**"
         - "personas/**"
         - "src/**"
+        - "docs/**"
+        - "CLAUDE.md"
     locks:
       files:
         - ".github/workflows/ci.yml"
-        - "docs/gotchas.md"
-        - "CLAUDE.md"
       keys:
         - "ci:workflow:main"
-        - "docs:gotchas"
-        - "docs:claude-md"
-      ttl_minutes: 90
-      reason: "CI cleanup + docs"
+      ttl_minutes: 60
+      reason: "CI cleanup, sequenced after fixture repoint"
     verification: tier_c
 
   - id: wp-integration
-    name: "Merge and full-suite verification"
+    name: "Merge, full-suite verification, parent push and PR"
     description: >-
-      Merge wp-public-tests, wp-submodule-tests, and wp-docs-ci branches.
-      Run openspec validate; run full pytest with submodule populated and
-      with submodule moved aside (standalone-proof); commit submodule SHA
-      bump; push branch and open PR.
-    tasks: ["5.1", "5.2", "5.3", "5.4"]
-    priority: 3
+      Validate, run full root-pytest (5.2a), run the openspec strict
+      check (5.1), update the parent's submodule SHA pointer (5.3b),
+      push the parent branch and open PR (5.4). The submodule-side
+      commit+push (5.3a) and standalone proof (5.2b) live in
+      wp-submodule-tests. wp-integration's role is parent-side glue.
+    tasks: ["5.1", "5.2a", "5.3b", "5.4"]
+    priority: 4
     dependencies:
       - "wp-public-tests"
       - "wp-submodule-tests"
-      - "wp-docs-ci"
+      - "wp-docs"
+      - "wp-ci-cleanup"
     scope:
+      # Tightened from "**" (Round 1 finding I8): wp-integration writes
+      # only to openspec/ for any --strict fixes, the parent .gitmodules
+      # state (via `git add personas/personal` for the gitlink), and any
+      # git history. It does NOT write submodule contents (those belong
+      # to wp-submodule-tests).
       write_allow:
-        - "**"
+        - "openspec/changes/test-privacy-boundary/**"
+        - ".gitmodules"
       read_allow:
         - "**"
+      deny:
+        - "personas/personal/persona.yaml"
+        - "personas/personal/prompt.md"
+        - "personas/personal/memory.md"
+        - "personas/personal/roles/**"
+        - "personas/personal/tests/**"
+        - "personas/personal/pyproject.toml"
+        - "tests/**"
+        - "src/**"
+        - ".github/**"
+        - "CLAUDE.md"
+        - "docs/**"
     locks:
       files: []
       keys:
         - "integration:test-privacy-boundary"
       ttl_minutes: 60
-      reason: "Integration merge + verification"
+      reason: "Integration merge + parent push"
     verification: tier_a
+    constraints:
+      # The parent push step (5.3b) updates the gitlink to the submodule
+      # SHA pushed by wp-submodule-tests. If that push hasn't completed
+      # (5.3-alt fallback fired), wp-integration must not run — declared
+      # via the wp-submodule-tests dependency above. Also: parent push
+      # may interact with branch protection on origin/openspec/* and
+      # requires write access to the parent remote (typically already
+      # available to any agent that cloned the parent).
+      requires_private_repo_write: true
+      requires_parent_push: true
