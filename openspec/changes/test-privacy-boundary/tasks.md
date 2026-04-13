@@ -114,13 +114,18 @@ scrub establishes a clean baseline; the guard then locks it in.
   **Dependencies**: 2.4, 2.5, 2.6, 2.7, 2.8
 
 - [ ] 2.10 Create `tests/_privacy_guard_config.py` defining
-  `FORBIDDEN_PATH_NAMES = ("personal", "work")` and
-  `ALLOWED_READ_PREFIXES = ("tests/fixtures/", "personas/_template/")`
-  plus the four-file exclusion list per D9.
+  `FORBIDDEN_PATH_NAMES = ("personal", "work")`,
+  `ALLOWED_READ_PREFIXES = ("tests/fixtures/", "personas/_template/")`,
+  and the **six-file** exclusion list per D9 (updated from four after
+  Round 2 B-N4): `_privacy_guard_config.py`, `_privacy_guard_plugin.py`,
+  `test_ci_workflow_hygiene.py`, `test_workspace_hygiene.py`, plus the
+  `tests/fixtures/` directory and `tests/_helpers/` directory (added per
+  D8's note that Python helpers relocate there).
   **Spec scenarios**: test-privacy-boundary/two-layer-collection-time-and-runtime-boundary-guard
   (guard-scope-excludes-its-own-implementation-files)
   **Contracts**: n/a
-  **Design decisions**: D2 (single source of truth), D9 (scope)
+  **Design decisions**: D2 (single source of truth), D9 (scope including
+  hygiene-test exclusions)
   **Dependencies**: 2.9
 
 - [ ] 2.11 Write `tests/test_privacy_guard.py` exercising both Layer 1 and
@@ -129,13 +134,26 @@ scrub establishes a clean baseline; the guard then locks it in.
   capture_output=True)`) rather than the `pytester` fixture — sidesteps
   the `pytest_plugins=["pytester"]` registration requirement (Round 1
   finding I6) and makes the tests independent of pytest plugin discovery.
-  Cover at minimum: Layer 1 substring rejection, Layer 1 allow-list, Layer
-  1 self-exclusion of `_privacy_guard_config.py`, Layer 2 runtime
-  rejection of `Path.read_text` on a forbidden path, Layer 2 allow-list,
-  Layer 2 rejection of `Path("personas") / "personal" / "x.yaml"`
-  constructed-path read.
+  Cover at minimum (expanded per Round 2 B-N1/B-N2/B-N8):
+  - Layer 1 substring rejection.
+  - Layer 1 allow-list.
+  - Layer 1 self-exclusion of `_privacy_guard_config.py` and
+    `_privacy_guard_plugin.py`, `test_ci_workflow_hygiene.py`,
+    `test_workspace_hygiene.py`.
+  - Layer 2 runtime rejection of `Path.read_text` on a forbidden path.
+  - Layer 2 runtime rejection of `os.open` on a forbidden path.
+  - Layer 2 runtime rejection of `io.FileIO` (transitively, via os.open).
+  - Layer 2 runtime rejection of `subprocess.run(['cat', forbidden_path])`
+    — both literal and split-argv cases.
+  - Layer 2 allow-list (reads under `tests/fixtures/` proceed).
+  - Layer 2 rejection of `Path("personas") / "personal" / "x.yaml"`
+    constructed-path read.
+  - Layer 2 self-probe fires when plugin fails to install (simulate by
+    monkey-patching the plugin's install function to no-op, assert
+    session fails).
   **Spec scenarios**: test-privacy-boundary/two-layer-collection-time-and-runtime-boundary-guard
-  (all six scenarios)
+  (all scenarios including layer-2-rejects-a-forbidden-subprocess-argv
+  and layer-2-self-probes-after-installation)
   **Contracts**: n/a
   **Design decisions**: D1, D9
   **Dependencies**: 2.10
@@ -153,23 +171,46 @@ scrub establishes a clean baseline; the guard then locks it in.
   **Dependencies**: 2.11
 
 - [ ] 2.13 Implement Layer 2 in `tests/_privacy_guard_plugin.py`. Patches
-  `pathlib.Path.open`, `pathlib.Path.read_text`,
-  `pathlib.Path.read_bytes`, and `builtins.open` for the duration of
-  pytest collection + run. Resolves each requested path, raises
-  `_PrivacyBoundaryViolation` (subclass of `pytest.UsageError`) if the
-  path resolves under `personas/<name>/` for `<name>` in
-  `FORBIDDEN_PATH_NAMES` and is not under any prefix in
-  `ALLOWED_READ_PREFIXES`. Wired in via `pytest_plugins =
-  ["_privacy_guard_plugin"]` at the top of `tests/conftest.py`.
+  **six** I/O entry points for the duration of pytest collection + run
+  (expanded per Round 2 B-N1/B-N2):
+  - `pathlib.Path.open`
+  - `pathlib.Path.read_text`
+  - `pathlib.Path.read_bytes`
+  - `builtins.open`
+  - `os.open` (canonical syscall choke point covering `io.FileIO`,
+    `codecs.open`, `io.open`)
+  - `subprocess.Popen.__init__` (scans argv elements for forbidden path
+    substrings, closing the `subprocess.run(['cat', 'personas/...'])`
+    bypass class)
+  Resolves each requested path, raises `_PrivacyBoundaryViolation`
+  (subclass of `pytest.UsageError`) if the path resolves under
+  `personas/<name>/` for `<name>` in `FORBIDDEN_PATH_NAMES` and is not
+  under any prefix in `ALLOWED_READ_PREFIXES`. For `subprocess.Popen`,
+  raises if any argv element contains `personas/<name>/` substring.
+  Wired in via `pytest_plugins = ["_privacy_guard_plugin"]` at the top
+  of `tests/conftest.py`.
+  **Plugin self-probe (B-N8)**: at `pytest_configure` time, after
+  installing patches, the plugin SHALL open a canary forbidden path
+  (under `personas/personal/`, non-allow-listed) and assert
+  `_PrivacyBoundaryViolation` is raised. If the probe does NOT raise,
+  the plugin fails the session via
+  `pytest.UsageError("Layer 2 privacy guard failed to install")`.
+  Prevents silent disable when future CPython changes break method-level
+  monkey-patching.
   **Spec scenarios**: test-privacy-boundary/two-layer-collection-time-and-runtime-boundary-guard
-  (Layer 2 scenarios)
+  (Layer 2 scenarios including layer-2-rejects-a-forbidden-subprocess-argv
+  and layer-2-self-probes-after-installation)
   **Contracts**: n/a
   **Design decisions**: D1
   **Dependencies**: 2.11
 
 - [ ] 2.14 Verification: run `uv run pytest tests/` — both guard tests
-  pass; full suite stays green. Confirms the guard does not produce false
-  positives on legitimate fixture-based tests.
+  pass; full suite stays green. Confirms the guard does not produce
+  false positives on legitimate fixture-based tests. Note that the two
+  hygiene tests (4.4, 4.5) are authored in `wp-ci-cleanup` (after the
+  populate-step removal in 4.1) rather than here, so this verification
+  does not attempt to run them — they are exercised in 5.2a after
+  wp-ci-cleanup lands.
   **Spec scenarios**: test-privacy-boundary/public-test-fixture-root
   (public-test-suite-passes-without-submodule-content)
   **Contracts**: n/a
@@ -229,15 +270,19 @@ scrub establishes a clean baseline; the guard then locks it in.
   **Dependencies**: none
 
 - [ ] 3.5 Write `personas/personal/tests/test_no_assistant_import.py` with
-  TWO checks (Round 1 finding A1):
+  TWO checks (Round 1 finding A1, refined per Round 2 B-N5):
   (a) **Static**: grep every `*.py` under `personas/personal/tests/` and
       fail if any contains `import assistant`, `from assistant`,
       `from src.assistant`, `__import__("assistant")`, or
       `importlib.import_module("assistant")` outside this very file.
   (b) **Runtime positive assertion**:
-      `with pytest.raises(ImportError): importlib.import_module("assistant")`.
-      This proves the venv truly does not have `assistant` installed; the
-      static check alone is bypassable via dynamic import idioms.
+      `with pytest.raises(ImportError): importlib.import_module("assistant.core.persona")`.
+      The **qualified path** (`.core.persona`) is distinctive to this
+      project and will NOT collide with the unrelated PyPI package also
+      named `assistant` (Round 2 B-N5). A bare
+      `importlib.import_module("assistant")` would spuriously succeed in
+      a venv where the PyPI squatter is installed and produce a misleading
+      failure unrelated to the privacy contract.
   **Spec scenarios**: test-privacy-boundary/self-contained-persona-submodule-test-suite
   (submodule-tests-assert-assistant-import-fails-at-runtime)
   **Contracts**: n/a
@@ -245,16 +290,23 @@ scrub establishes a clean baseline; the guard then locks it in.
   **Dependencies**: 3.3
 
 - [ ] 3.6 Verification — fresh-venv standalone proof. Replaces the
-  `PYTHONPATH=/dev/null` approach (Round 1 finding A1, also acknowledged
-  by F1 with regard to root-pytest testpaths). Create a script
-  `scripts/verify-submodule-standalone.sh` that:
+  `PYTHONPATH=/dev/null` approach (Round 1 finding A1, refined per
+  Round 2 B-N7). Create a script `scripts/verify-submodule-standalone.sh`
+  that:
   (1) creates a fresh venv: `python -m venv /tmp/spb-venv`,
-  (2) installs only pytest + pyyaml: `/tmp/spb-venv/bin/pip install pytest pyyaml`,
-  (3) runs `/tmp/spb-venv/bin/pytest personas/personal/tests/`,
-  (4) asserts exit status 0,
-  (5) cleans up via `trap`.
+  (2) installs only pytest + pyyaml with pinned minimums:
+      `/tmp/spb-venv/bin/pip install 'pytest>=8' 'pyyaml>=6'`,
+  (3) `cd personas/personal` **before** invoking pytest (Round 2 B-N7 —
+      this makes pytest's rootdir the submodule's pyproject, not the
+      parent's, so the parent's `pytest_plugins` do NOT load against
+      submodule tests),
+  (4) runs `/tmp/spb-venv/bin/pytest tests/ --rootdir=. --override-ini='addopts='`,
+  (5) asserts exit status 0,
+  (6) cleans up via `trap` on both EXIT and any interrupt signal.
   Also independently verify `cd personas/personal && uv run pytest tests/`
-  succeeds when the submodule is consumed in-place from a parent checkout.
+  succeeds when the submodule is consumed in-place from a parent checkout
+  (this exercises the `[tool.uv].package = false` boundary from D4 +
+  the workspace-forward-compat guard from task 4.5).
   **Spec scenarios**: test-privacy-boundary/self-contained-persona-submodule-test-suite
   (standalone-proof-verification-uses-a-fresh-venv,
   submodule-pyproject-declares-an-isolated-workspace)
@@ -298,19 +350,69 @@ scrub establishes a clean baseline; the guard then locks it in.
   **Dependencies**: none
 
 - [ ] 4.4 Write `tests/test_ci_workflow_hygiene.py` — scans every
-  `.github/workflows/*.yml` for references to `personas/personal/` or
-  `personas/work/`. Fails if any reference is not paired with an explicit
-  copy-from-`tests/fixtures/` step (or if any `.yml` mentions the
-  forbidden path at all, since after D6 there should be zero such
-  references). Catches the regression class flagged by Round 1 finding A7.
+  `.github/workflows/*.yml` (and `*.yaml`, and `.github/actions/**/action.yml`)
+  for references to forbidden persona paths. **Constructs its forbidden
+  needle dynamically** from
+  `tests._privacy_guard_config.FORBIDDEN_PATH_NAMES`
+  (per Round 2 B-N4):
+  ```python
+  from tests._privacy_guard_config import FORBIDDEN_PATH_NAMES
+  needles = tuple(f"personas/{name}/" for name in FORBIDDEN_PATH_NAMES)
+  ```
+  so the file's own source never contains the literal forbidden
+  substring and Layer 1 doesn't self-trip. (Belt-and-suspenders: this
+  file is ALSO in the Layer 1 exclusion list per 2.10.) Fails if any
+  matched reference is not paired with an explicit
+  copy-from-`tests/fixtures/` step — or, since D6 removes the populate
+  step entirely, if any `.yml`/`.yaml`/`action.yml` mentions the
+  forbidden path at all.
   **Spec scenarios**: test-privacy-boundary/ci-simplification-and-forward-compatible-hygiene-check
   (workflow-hygiene-test-rejects-future-leakage-paths)
   **Contracts**: n/a
-  **Design decisions**: R4
-  **Dependencies**: 2.10 (uses the same FORBIDDEN_PATH_NAMES constants),
-  4.1
+  **Design decisions**: R4, D9 (dynamic needle + exclusion)
+  **Dependencies**: 2.10 (uses the FORBIDDEN_PATH_NAMES constants + is
+  in the exclusion list), 4.1
+
+- [ ] 4.5 Write `tests/test_workspace_hygiene.py` — parses the parent
+  `pyproject.toml` (via `tomllib`) and asserts that either (a) no
+  `[tool.uv.workspace]` section exists, or (b) if it does, `members` does
+  NOT contain any glob matching `personas/personal/` or `personas/work/`
+  (e.g. `personas/*`, `personas/**`). Guards against a future
+  dev-ergonomics change drawing the submodule into the parent venv and
+  silently defeating self-containment (Round 2 B-N6). Like 4.4, this
+  file is in the Layer 1 exclusion list (per 2.10) and uses dynamic
+  needle construction.
+  **Spec scenarios**: test-privacy-boundary/self-contained-persona-submodule-test-suite
+  (parent-pyproject-does-not-include-submodule-in-a-uv-workspace)
+  **Contracts**: n/a
+  **Design decisions**: D4 (forward-compat guard)
+  **Dependencies**: 2.10
 
 ## Phase 5 — Integration
+
+- [ ] 5.0 Create `scripts/push-with-submodule.sh` (authoring task added per
+  Round 2 finding B-N3 — previously referenced by 5.3a/5.3b but not
+  authored by any task). The script SHALL support two invocation modes:
+  - `--submodule-only`: `cd personas/personal`, verify we're at
+    `origin/main` or a documented branch, `git push` to the private
+    remote, print the pushed SHA to stdout as the last line.
+  - `--parent-only`: verify the parent branch is rebased onto
+    `origin/main`, `git add personas/personal` (gitlink update), commit
+    with a message including the submodule SHA, push parent branch.
+    If push fails after submodule push had succeeded, log the
+    dangling-SHA diagnostic (submodule SHA + parent HEAD at failure +
+    suggested recovery command: `git -C personas/personal push -d
+    origin <branch-with-dangling-sha>` or open an operator ticket) and
+    exit with a distinctive non-zero code (e.g. 47) that the 5.3-alt
+    dispatcher recognizes.
+  The script SHALL be idempotent within a mode (re-invoking
+  `--parent-only` after a successful push is a no-op) and SHALL NOT
+  require `--submodule-only` and `--parent-only` to be invoked by the
+  same process. Exit-code contract documented inline.
+  **Spec scenarios**: n/a (ops tooling)
+  **Contracts**: n/a
+  **Design decisions**: D7 (atomic push wrapper)
+  **Dependencies**: none
 
 - [ ] 5.1 Run `openspec validate test-privacy-boundary --strict` and fix
   any validation errors.
@@ -359,22 +461,40 @@ scrub establishes a clean baseline; the guard then locks it in.
   **Design decisions**: D7
   **Dependencies**: 5.3a
 
-- [ ] 5.3-alt Fallback for missing private-repo write access (Round 1
-  finding I9): if 5.3a's push fails due to credential absence, the
-  dispatcher SHALL quarantine `wp-submodule-tests` with a clearly-flagged
-  status (`requires-private-repo-write`) and emit a handoff message
-  containing the exact `git -C personas/personal push <branch>` command
-  and the parent SHA-bump commit needed to follow up. The change is not
-  marked failed; it waits for an operator with credentials.
+- [ ] 5.3-alt Fallback for missing private-repo write access
+  (Round 1 finding I9, trigger semantics clarified per Round 2 A-N2).
+  This task is **dispatch-time-driven**, not runtime-driven: the
+  dispatcher inspects `wp-submodule-tests.constraints.requires_private_repo_write`
+  and, if credentials are not available in the execution environment,
+  the dispatcher SHALL quarantine `wp-submodule-tests` with a
+  clearly-flagged status (`requires-private-repo-write`) and emit a
+  handoff message containing (a) the exact
+  `git -C personas/personal push <branch>` command, (b) the parent
+  SHA-bump commit message template, and (c) the exit code 47 diagnostic
+  from `scripts/push-with-submodule.sh` if 5.3a had been attempted.
+  Additionally, if 5.3a is actually attempted (credentials looked
+  available but push failed at runtime due to auth error or drift), the
+  same quarantine path fires on receiving exit code 47. The change is
+  NOT marked failed in either case; it waits for an operator with
+  credentials. This dual trigger (dispatch-time + runtime exit-code 47)
+  is the explicit contract.
   **Spec scenarios**: n/a (ops)
   **Contracts**: n/a
-  **Design decisions**: R3
-  **Dependencies**: 5.3a (only fires on its failure)
+  **Design decisions**: R3 (private-repo write access)
+  **Dependencies**: none at dispatch time; 5.3a at runtime
 
-- [ ] 5.4 Push parent branch `openspec/test-privacy-boundary` to origin
-  and open PR. (Subsumed by 5.3b's `--parent-only` path; this task only
-  applies if 5.3b is split or skipped.)
+- [ ] 5.4 Open the pull request for the parent branch
+  `openspec/test-privacy-boundary` via `gh pr create`. Title:
+  `plan(test-privacy-boundary): privacy-boundary between public tests
+  and persona submodules`. Body: proposal summary + convergence trail
+  (rounds, findings resolved, remaining known gaps per design R2) +
+  the two-commit topology notice (parent PR references a specific
+  submodule SHA; reviewers must check out the submodule at that SHA to
+  review the submodule-side content, or be pointed at the private-repo
+  PR). This task is **not subsumed by 5.3b** (clarified per Round 2
+  A-N1); 5.3b pushes the parent branch, 5.4 opens the PR. They are
+  distinct steps.
   **Spec scenarios**: n/a (ops)
   **Contracts**: n/a
-  **Design decisions**: none
+  **Design decisions**: D7 (two-commit topology visibility)
   **Dependencies**: 5.3b

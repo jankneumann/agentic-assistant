@@ -37,11 +37,18 @@ configured from a single deny-list module `tests/_privacy_guard_config.py`:
   forbidden path substring outside the documented exclusion list.
 - **Layer 2 (runtime filesystem guard)**: a pytest plugin SHALL patch
   `pathlib.Path.open`, `pathlib.Path.read_text`, `pathlib.Path.read_bytes`,
-  and `builtins.open` for the duration of test collection and execution,
-  and SHALL raise a `pytest.UsageError` subclass when any of these is
-  called with a path that resolves under `personas/<name>/` for `<name>` in
-  the forbidden-names list, with allow-listed exceptions for paths under
-  `tests/fixtures/` and `personas/_template/`.
+  `builtins.open`, `os.open`, and `subprocess.Popen.__init__` for the
+  duration of test collection and execution, and SHALL raise a
+  `pytest.UsageError` subclass when any of the file-opening entry points
+  is called with a path that resolves under `personas/<name>/` for
+  `<name>` in the forbidden-names list, or when a subprocess's argv
+  contains a substring matching a forbidden path prefix, with allow-listed
+  exceptions for paths under `tests/fixtures/` and `personas/_template/`.
+- **Layer 2 self-probe**: at plugin-install time (`pytest_configure`), the
+  plugin SHALL verify the patches are active by attempting a read of a
+  canary forbidden path and asserting `_PrivacyBoundaryViolation` is
+  raised. If the self-probe fails, the plugin SHALL fail the session via
+  `pytest.UsageError` before any test body runs.
 
 #### Scenario: Layer 1 rejects a literal forbidden path substring
 
@@ -72,7 +79,7 @@ configured from a single deny-list module `tests/_privacy_guard_config.py`:
 #### Scenario: Layer 2 rejects a runtime-constructed forbidden read
 
 - **WHEN** any test code reads a file using `Path.open`, `Path.read_text`,
-  `Path.read_bytes`, or `builtins.open`
+  `Path.read_bytes`, `builtins.open`, or `os.open`
 - **AND** the resolved path is under `personas/<name>/` for `<name>` in
   `FORBIDDEN_PATH_NAMES`
 - **AND** the resolved path is not under any prefix in
@@ -80,6 +87,28 @@ configured from a single deny-list module `tests/_privacy_guard_config.py`:
 - **THEN** the call SHALL raise `_PrivacyBoundaryViolation`
 - **AND** the test SHALL fail with a stack trace identifying the test file,
   the call site, and the resolved path
+
+#### Scenario: Layer 2 rejects a forbidden subprocess argv
+
+- **WHEN** any test code invokes `subprocess.Popen`, `subprocess.run`, or
+  any wrapper that constructs a subprocess
+- **AND** any element of the subprocess's `args` contains a substring of
+  the form `personas/<name>/` for `<name>` in `FORBIDDEN_PATH_NAMES`
+- **THEN** the call SHALL raise `_PrivacyBoundaryViolation` before the
+  subprocess is spawned
+- **AND** the failure message SHALL identify the test file, the
+  subprocess call site, and the matched argv element
+
+#### Scenario: Layer 2 self-probes after installation
+
+- **WHEN** pytest's `pytest_configure` hook finishes installing the
+  Layer 2 patches
+- **THEN** the plugin SHALL attempt a canary read of a path under
+  `personas/personal/` that is NOT allow-listed
+- **AND** the attempt SHALL raise `_PrivacyBoundaryViolation`
+- **AND** if the canary does NOT raise, the plugin SHALL fail the session
+  via `pytest.UsageError("Layer 2 privacy guard failed to install")`
+  before any test body runs
 
 #### Scenario: Layer 2 permits allow-listed reads
 
@@ -122,8 +151,10 @@ self-containment SHALL be verifiable by a fresh-venv proof.
 
 - **WHEN** the submodule test suite runs in its isolated venv
 - **THEN** the suite SHALL contain a positive runtime check that calls
-  `importlib.import_module("assistant")` and asserts that the call raises
-  `ImportError`
+  `importlib.import_module("assistant.core.persona")` — the qualified
+  submodule path that is distinctive to this project and will not
+  collide with the unrelated PyPI package named `assistant` — and
+  asserts that the call raises `ImportError`
 - **AND** the suite SHALL include a static check (grep or AST) that no
   test file under `personas/personal/tests/` contains the strings
   `import assistant`, `from assistant`, `from src.assistant`,
@@ -137,11 +168,27 @@ self-containment SHALL be verifiable by a fresh-venv proof.
   does not have `assistant` installed
 - **AND** it SHALL install only `pytest` and `pyyaml` (per
   `personas/personal/pyproject.toml`'s dev deps)
-- **AND** it SHALL invoke `pytest personas/personal/tests/` from that fresh
-  venv
+- **AND** it SHALL `cd` into `personas/personal/` before invoking pytest,
+  so the submodule's own `pyproject.toml` is pytest's rootdir and the
+  parent's `pytest_plugins` (privacy guard) are not loaded against
+  submodule tests
+- **AND** it SHALL invoke `pytest tests/` from inside the submodule using
+  the fresh venv's interpreter
 - **AND** the run SHALL exit with status 0
 - **AND** `PYTHONPATH=/dev/null` SHALL NOT be relied upon as proof of
   isolation (it does not affect installed packages)
+
+#### Scenario: Parent pyproject does not include submodule in a uv workspace
+
+- **WHEN** `tests/test_workspace_hygiene.py` runs
+- **THEN** it SHALL parse the parent repo's `pyproject.toml`
+- **AND** it SHALL assert that either (a) no `[tool.uv.workspace]`
+  section exists, or (b) if it does, `members` SHALL NOT contain any
+  glob that matches `personas/personal/` or `personas/work/` (e.g.
+  `personas/*`, `personas/**`)
+- **AND** this guards against a future dev-ergonomics change
+  accidentally drawing the submodule into the parent venv, which would
+  defeat the self-containment invariant
 
 #### Scenario: Submodule suite validates YAML shape
 
