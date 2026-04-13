@@ -234,6 +234,17 @@ literals out of test source entirely — use dynamic needle construction
 (`tuple(f"personas/{n}/" for n in FORBIDDEN_PATH_NAMES)`) in any file
 that legitimately needs to reference the deny-list as data.
 
+**The `ASSISTANT_PERSONAS_DIR` env var.** `tests/conftest.py` sets this
+via `os.environ.setdefault` so every in-process `PersonaRegistry` /
+`RoleRegistry` (including the one `cli.py` builds when tests invoke
+`assistant -p personal`) honors the fixture root. CI also sets it at
+the job level as defense-in-depth. Precedence is
+`explicit constructor arg > env var > Path("personas") default` — this
+contract is locked by `tests/test_env_var_contract.py`, which every
+change to `PersonaRegistry`/`RoleRegistry` constructors must keep green.
+The env var is an implementation detail enabling the repoint, not a
+public configuration surface; production callers should leave it unset.
+
 ---
 
 ## G7. Submodule test standalone mode silent-skip
