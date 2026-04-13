@@ -1,0 +1,45 @@
+# Sequential-tier work package — docs + spec change.
+# Single wp-main per the /plan-feature sequential-tier template.
+
+schema_version: "1.0"
+
+packages:
+  - id: wp-main
+    name: "roadmap-v2-reconciliation — full scope"
+    description: >
+      MODIFY tooling-roadmap "Roadmap Document Authoritative" requirement
+      (narrow scope to phase changes), update Purpose, add roadmap rows
+      for P1.5 test-privacy-boundary + P1.6 sync-test-privacy-boundary-spec,
+      and bump P1.5 bootstrap-fixes to P1.7.
+    tasks:
+      - "1.1"
+      - "1.2"
+      - "2.1"
+      - "2.2"
+      - "2.3"
+      - "3.1"
+      - "3.2"
+      - "4.1"
+      - "4.2"
+    priority: 1
+    dependencies: []
+    scope:
+      write_allow:
+        - "openspec/roadmap.md"
+        - "openspec/changes/roadmap-v2-reconciliation/**"
+      read_allow:
+        - "**"
+      deny:
+        - "src/**"
+        - "tests/**"
+        - "personas/**"
+        - "openspec/specs/**"
+    locks:
+      files:
+        - "openspec/roadmap.md"
+      keys:
+        - "docs:openspec/roadmap.md"
+        - "spec:tooling-roadmap"
+      ttl_minutes: 60
+      reason: "Roadmap table edit + tooling-roadmap spec MODIFY delta"
+    verification: tier_b

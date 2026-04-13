@@ -13,8 +13,10 @@
 1. **One OpenSpec proposal per §8 item** — fine-grained, independently
    reviewable, each eligible for `/plan-feature` → `/autopilot`.
 2. **§8 ordering is authoritative** — even where the original roadmap
-   had a different order. The only exception: `P1.5 bootstrap-fixes`
+   had a different order. The only exception: `P1.7 bootstrap-fixes`
    runs first to clear hygiene debt before architectural work starts.
+   (P1.5 / P1.6 are hygiene phases that already shipped before
+   bootstrap-fixes was planned.)
 3. **Old P2–P10 items without perplexity coverage are folded in at the
    end** so no prior scope is silently dropped.
 4. **Docs — not CI — enforce the DAG**. Consult this file before
@@ -25,7 +27,9 @@
 | # | Change ID | Status | Perplexity § | Source | Description |
 |---|-----------|--------|--------------|--------|-------------|
 | P1 | `bootstrap-vertical-slice` | **archived** (2026-04-12) | — | original P1 | Core library + Deep Agents harness + CLI + 5 roles + personal persona + delegation + tests + CI |
-| P1.5 | `bootstrap-fixes` | pending | §7.1–§7.5 | perplexity §7 | CLI `-h` flag conflict; add `sqlalchemy.text()` wrapper; reconcile `deepagents` package reference; add `[project.scripts]` entry point; fix `name` variable shadowing in `PersonaRegistry.load` |
+| P1.5 | `test-privacy-boundary` | **archived** (2026-04-13) | — | new (IR hygiene from P1 validation) | Separate public tests from private persona data: two-layer (collection-time substring scan + runtime FS patching) boundary guard, `ASSISTANT_PERSONAS_DIR` env-var contract, `scripts/push-with-submodule.sh` atomic dual-commit push wrapper |
+| P1.6 | `sync-test-privacy-boundary-spec` | **archived** (2026-04-13) | — | spec-sync follow-up of P1.5 | Spec-only change that codified five drift items found during P1.5 validation (env-var contract, subprocess `executable=`/`cwd=` kwarg coverage, hygiene-test exclusion list, submodule `parents[N]` abstraction, atomic-push wrapper requirement) |
+| P1.7 | `bootstrap-fixes` | pending | §7.1–§7.5 | perplexity §7 | CLI `-h` flag conflict; add `sqlalchemy.text()` wrapper; reconcile `deepagents` package reference; add `[project.scripts]` entry point; fix `name` variable shadowing in `PersonaRegistry.load` |
 | P2 | `memory-architecture` | pending | §1.2, §8.1 | perplexity §8.1 + old P3 | `core/memory.py` MemoryManager + `core/graphiti.py` client factory + per-persona AsyncEngine + `memory`/`preferences`/`interactions` tables + `scripts/export-memory.sh` that regenerates `memory.md` from Postgres+Graphiti |
 | P3 | `http-tools-layer` | pending | §8.2 | perplexity §8.2 + old P2 | `src/assistant/http_tools/` — `/help`-based discovery, `_build_tool()` Pydantic-model + async-callable generator, auth header handling, registry, `--list-tools` CLI command, integration tests against mock server |
 | P4 | `observability` | pending | §1.1, §8.3 | perplexity §8.3 (new) | `core/observability.py` — `@traced` decorator, spans on `HarnessAdapter.invoke()` and `DelegationSpawner.delegate()`, token + latency + cost tracking per persona/role. Langfuse backend default; OpenLLMetry adapter optional |
@@ -55,19 +59,21 @@ record — update it as part of the phase's final commit.
 
 ```
 P1 (archived)
- └─→ P1.5 bootstrap-fixes (hygiene; unblocks everything below)
-      ├─→ P2 memory-architecture ──┬─→ P7 scheduler
-      │                            ├─→ P8 obsidian-vault
-      │                            └─→ P12 delegation-context
-      ├─→ P3 http-tools-layer ─────┬─→ P5 ms-graph-extension ──┬─→ P6 a2a-server
-      │                            │                          └─→ P14 google-extensions
-      │                            └─→ P9 error-resilience
-      ├─→ P4 observability (spans everything below — lands early)
-      ├─→ P10 extension-lifecycle ─→ P13 security-hardening
-      └─→ P11 harness-routing (needs P5 MS Agent Framework real; decouples from Deep-Agents-only)
+ └─→ P1.5 test-privacy-boundary (archived; hygiene)
+      └─→ P1.6 sync-test-privacy-boundary-spec (archived; spec-sync for P1.5)
+           └─→ P1.7 bootstrap-fixes (pending; hygiene; unblocks everything below)
+                ├─→ P2 memory-architecture ──┬─→ P7 scheduler
+                │                            ├─→ P8 obsidian-vault
+                │                            └─→ P12 delegation-context
+                ├─→ P3 http-tools-layer ─────┬─→ P5 ms-graph-extension ──┬─→ P6 a2a-server
+                │                            │                          └─→ P14 google-extensions
+                │                            └─→ P9 error-resilience
+                ├─→ P4 observability (spans everything below — lands early)
+                ├─→ P10 extension-lifecycle ─→ P13 security-hardening
+                └─→ P11 harness-routing (needs P5 MS Agent Framework real; decouples from Deep-Agents-only)
 
 P15 work-persona-config — independent; triggered by machine availability; needs P5 + P8
-P16 cli-harness-integrations — independent; needs P1.5
+P16 cli-harness-integrations — independent; needs P1.7
 P17 mcp-server-exposure — needs P6 (protocol parallel)
 P18 railway-deployment — needs P15, P16
 ```
