@@ -69,3 +69,84 @@ too broad, requirement self-violates) plus the `test-privacy-boundary` /
 `sync-test-privacy-boundary-spec` roadmap-row omission are the scope of
 this change. Parallel-review-plan dispatch will stress-test the
 narrowing decision before implementation.
+
+---
+
+## Phase: Plan Iteration 1 (2026-04-13)
+
+**Agent**: claude-code (Opus 4.6) | **Session**: `/iterate-on-plan`
+
+### Decisions
+
+1. **Drop `Purpose` cleanup from scope** (reverses D5). Three of three
+   vendor reviewers (self, codex, gemini) independently flagged that
+   OpenSpec delta format has no mechanism to update `Purpose` from a
+   change delta; evidence is 5+ specs in `openspec/specs/` carrying
+   identical TBD placeholders. Spot-cleaning one spec is out of
+   proportion; filed as a repo-wide follow-up.
+2. **Redefine "phase change" by operational criteria** (evolves D1).
+   Earlier draft used a reference-based tautology ("a phase is what's
+   in the table"). Vendor reviewers flagged that this left authors
+   with no decision rule. The revised requirement body enumerates
+   three classification criteria: (a) introduces a new capability
+   spec, (b) implements a bootstrap-v4.1 P-item or perplexity §8 item,
+   (c) represents a committed milestone promoted by authoring judgment.
+   All other changes are non-phase by default.
+3. **Restructure the former "Non-phase changes are not required" scenario**
+   as a positive obligation: "Listed non-phase change still follows row
+   invariants." Negative-permissive phrasing ("SHALL NOT be required")
+   is atypical for OpenSpec scenarios and untestable as written.
+4. **Tighten `<date-prefix>` to `YYYY-MM-DD-`** in the "Every roadmap row
+   references a real change-id" scenario. Low-criticality finding
+   closed cheaply alongside the other rewrites.
+
+### Alternatives Considered
+
+- **Keep D5 + add manual Purpose edit task + expand work-packages scope**:
+  rejected — expands blast radius across `openspec/specs/**` for
+  marginal benefit that doesn't survive archival in isolation.
+- **Keep reference-based phase definition** (original D1): rejected —
+  author ambiguity is a real, documented review concern.
+- **Enumerate exempt non-phase kinds instead of defining phase
+  criteria**: rejected — list-of-exemptions is brittle as new change
+  kinds emerge; criterion-based classification scales.
+
+### Trade-offs
+
+- Accepted **criterion-based definition** (three enumerated categories
+  of what qualifies as a phase) over **reference-based definition**
+  (table membership is self-defining). Cost: future changes that
+  don't fit criteria 1-2 rely on criterion 3's "authoring judgment"
+  escape hatch. Benefit: reviewers reading the spec alone can classify
+  changes without cross-referencing.
+- Accepted **TBD Purpose placeholder survives in tooling-roadmap spec**
+  (matches 5+ other specs) over **inline Purpose cleanup** (requires
+  scope expansion and manual post-archive edit). Cost: spec carries
+  a cosmetic placeholder until repo-wide cleanup. Benefit: this
+  change stays within its scope.
+
+### Open Questions
+
+- [ ] Follow-up: repo-wide `TBD Purpose` cleanup proposal — manual
+      pass across 5+ specs, OR extend OpenSpec delta format.
+- [ ] Next iteration or vendor re-review may surface additional
+      clarity concerns with criterion 3's "authoring judgment" escape.
+
+### Context
+
+Addressed iterate-on-plan findings at or above the medium threshold:
+
+- F#1 (HIGH/correctness): dropped Purpose scope — closed
+- F#2 (MEDIUM/spec_gap): added operational criteria to requirement body
+  — closed
+- F#3 (MEDIUM/correctness): restructured negative-permissive scenario
+  as positive obligation — closed
+- F#4 (MEDIUM/architecture): resolved via F#2's criteria (one fix, two
+  findings closed)
+- F#5 (LOW/spec_gap, date-prefix format): fixed cheaply — closed
+
+Remaining below-threshold findings deferred: F#6 (renumbering stale
+archive refs — accept, non-functional), F#7 (no automated drift
+detection — accept, inherited design choice), F#8 (archive-date format
+in scenario — accept), F#9 (scope.deny semantics — accept, resolved
+as a side-effect of F#1 path (a)). `openspec validate --strict` passes.

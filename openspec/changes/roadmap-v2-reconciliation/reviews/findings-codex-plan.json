@@ -1,0 +1,31 @@
+{
+  "review_type": "plan",
+  "target": "roadmap-v2-reconciliation",
+  "reviewer_vendor": "codex",
+  "findings": [
+    {
+      "id": 1,
+      "type": "correctness",
+      "criticality": "high",
+      "description": "The plan claims this change will replace the tooling-roadmap spec's `Purpose` placeholder (proposal.md:30-46, design.md:83-91, tasks.md:8-12,68-70), but the actual delta file contains only `## MODIFIED Requirements` and no non-requirement edit mechanism (openspec/changes/roadmap-v2-reconciliation/specs/tooling-roadmap/spec.md:3-59). The installed OpenSpec archive/apply path only parses top-level `ADDED/MODIFIED/REMOVED/RENAMED Requirements` blocks (`/opt/homebrew/lib/node_modules/@fission-ai/openspec/dist/core/parsers/requirement-blocks.js:80-102`) and rebuilds the target spec starting from `## Requirements`, preserving whatever is before that section (`.../core/specs-apply.js:59-63,156-246`). In other words, archiving this change will modify the requirement text but will not touch `openspec/specs/tooling-roadmap/spec.md:3-4`, so D5 silently fails even though `openspec validate --strict` passes.",
+      "resolution": "Do not describe the `Purpose` cleanup as happening via the delta file. Either remove D5 from this change and track Purpose cleanup separately, or add an explicit post-archive/manual edit step for `openspec/specs/tooling-roadmap/spec.md` and update `work-packages.yaml` to allow that path (it currently allows only `openspec/roadmap.md` and the change directory while denying `openspec/specs/**`; work-packages.yaml:27-36).",
+      "disposition": "fix"
+    },
+    {
+      "id": 2,
+      "type": "spec_gap",
+      "criticality": "medium",
+      "description": "The narrowed requirement still does not define `phase change` operationally enough to make the SHALL/MUST obligations testable. Design D4 says `sync-test-privacy-boundary-spec` is intentionally treated as a phase and that spec-sync listing is a \"permission, not a mandate\" (design.md:67-81), but the delta's non-phase scenario uses `updates an existing spec (spec-sync)` and `reconciles prior phase output` as its concrete cues for the non-phase bucket (openspec/changes/roadmap-v2-reconciliation/specs/tooling-roadmap/spec.md:32-41). That leaves future authors without a repo-readable rule for when a spec-sync/tooling/hygiene change is a required roadmap phase versus merely optional context, so the core invariant in the same requirement (`every phase change ... MUST appear as a row`, spec.md:16-20) remains partly judgment-based rather than consistently enforceable.",
+      "resolution": "Encode the classifier in the spec itself, not only in design.md. For example: define a phase change as a change intentionally registered in `openspec/roadmap.md` because it represents a milestone in the execution sequence/dependency DAG, and state when spec-sync/tooling changes SHALL be listed versus when they MAY be omitted. If `sync-test-privacy-boundary-spec` is meant to be phase-worthy, make that criterion explicit in the requirement or scenarios.",
+      "disposition": "fix"
+    },
+    {
+      "id": 3,
+      "type": "compatibility",
+      "criticality": "low",
+      "description": "The renumbering does not appear to break live automation, because the roadmap itself says change-ids are the stable identity source (`openspec/roadmap.md:98-99`) and the active repo has no non-archive references to `P1.5 bootstrap-fixes` outside this reconciliation change. However, immutable archived artifacts from `roadmap-v2-perplexity-integration` still narrate the old numbering, e.g. `openspec/changes/archive/2026-04-13-roadmap-v2-perplexity-integration/session-log.md:19-22` and `.../tasks.md:92-94`. Future readers comparing those archives to the updated roadmap (`openspec/roadmap.md:30-32`) will see `bootstrap-fixes` referred to as both P1.5 and P1.7.",
+      "resolution": "Accept the historical mismatch as archive history, or add a brief note in `openspec/roadmap.md` or this change's session log that archived materials may reference the superseded P-number while `bootstrap-fixes` remains the authoritative change-id.",
+      "disposition": "accept"
+    }
+  ]
+}

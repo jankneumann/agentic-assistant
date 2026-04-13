@@ -1,0 +1,79 @@
+{
+  "review_type": "plan",
+  "target": "roadmap-v2-reconciliation",
+  "reviewer_vendor": "claude_code",
+  "findings": [
+    {
+      "id": 1,
+      "type": "correctness",
+      "criticality": "medium",
+      "description": "D5 / task 1.1 claims to update the tooling-roadmap spec's Purpose field (currently 'TBD - created by archiving change roadmap-v2-perplexity-integration. Update Purpose after archive.'), but the delta file at openspec/changes/roadmap-v2-reconciliation/specs/tooling-roadmap/spec.md contains only a '## MODIFIED Requirements' section. OpenSpec's archive tooling only applies requirement-level ADDED/MODIFIED/REMOVED deltas; it has no mechanism to update the Purpose section from a delta file. Evidence: 5+ synced specs in openspec/specs/ carry 'TBD' Purpose placeholders that survived archival (delegation-spawner, role-registry, extension-registry, cli-interface, tooling-roadmap). Under the current plan, D5 will silently not happen at archive time.",
+      "resolution": "Either (a) drop D5 from this change and leave Purpose as 'TBD' matching the existing pattern (file Purpose cleanup as a separate repo-wide follow-up), OR (b) add an explicit task that manually edits openspec/specs/tooling-roadmap/spec.md after archive completes, adjust work-packages.yaml scope.write_allow to include openspec/specs/tooling-roadmap/** (currently in scope.deny), and document the manual step in tasks.md.",
+      "disposition": "fix"
+    },
+    {
+      "id": 2,
+      "type": "spec_gap",
+      "criticality": "medium",
+      "description": "The new 'Roadmap Document Authoritative' requirement defines 'phase change' tautologically via the roadmap table (per design D1's reference-based approach) but the scenario preamble uses examples only: 'a new capability introduction, a bootstrap-v4.1 P-item, a perplexity §8 item'. For ambiguous cases — e.g., a substantial hygiene change, a pure refactor with its own spec delta, or a spec-sync reconciling a phase — authors lack a decision rule. Design D4 explicitly acknowledges this by labeling non-phase listing a 'permission, not a mandate', but that guideline lives only in design.md, not in the spec itself, so future authors reading the spec alone cannot decide consistently.",
+      "resolution": "Add a decision rule to either the requirement body or a new 'Non-normative guidance' sub-section: 'A change is a phase change when it (a) introduces a new capability spec, or (b) implements a bootstrap-v4.1 P-item or a perplexity §8 item, or (c) represents a milestone agreed with stakeholders. Spec-sync and meta changes are non-phase by default but MAY be listed when their chronological tie to a phase aids review.'",
+      "disposition": "fix"
+    },
+    {
+      "id": 3,
+      "type": "architecture",
+      "criticality": "medium",
+      "description": "D4 ('spec-sync CAN be a phase — permission not mandate') creates authoring ambiguity without a default. The same kind of change (spec-sync reconciling a phase's validation output) could land with or without a roadmap row depending on the author. This undercuts the 'single authoritative registry' property the capability is trying to preserve.",
+      "resolution": "Either (a) make spec-syncs that reconcile a phase's validation output mandatory phases, with their own row under the parent phase's chronology (stronger guarantee, matches P1.5/P1.6/P1.7 chronology here); or (b) keep the permission model but add a guideline in the spec text (see Finding #2) so the choice is at least explicit.",
+      "disposition": "fix"
+    },
+    {
+      "id": 4,
+      "type": "spec_gap",
+      "criticality": "low",
+      "description": "The new 'Every roadmap row references a real change-id' scenario says the change-id dir path is either 'openspec/changes/<change-id>/' or 'openspec/changes/archive/<date-prefix>-<change-id>/'. The <date-prefix> token is unspecified — archived changes in this repo use 'YYYY-MM-DD-' prefix (e.g., '2026-04-13-test-privacy-boundary/'), but the scenario doesn't state the format. A stricter reviewer tool couldn't enforce the convention without guessing.",
+      "resolution": "Change '<date-prefix>-<change-id>' to 'YYYY-MM-DD-<change-id>' in the scenario, matching the actual convention used in openspec/changes/archive/ entries.",
+      "disposition": "fix"
+    },
+    {
+      "id": 5,
+      "type": "correctness",
+      "criticality": "low",
+      "description": "The 'Non-phase changes are not required to have a row' scenario uses permissive negative language ('SHALL NOT be required to appear', 'if the author chooses to list it'). This is atypical for OpenSpec scenarios, which usually describe positive obligations under WHEN/THEN. As written, the scenario is hard to test — nothing can be verified because nothing is mandated.",
+      "resolution": "Either (a) move this content into the requirement body as a clarifying note (non-normative) and drop the scenario, OR (b) rephrase as a positive obligation: 'WHEN a non-phase change is listed in the roadmap THEN it SHALL follow all row invariants (unique change-id, valid Status, archive-retention)'.",
+      "disposition": "fix"
+    },
+    {
+      "id": 6,
+      "type": "compatibility",
+      "criticality": "low",
+      "description": "Renumbering P1.5 bootstrap-fixes → P1.7 creates stale references in the just-archived openspec/changes/archive/2026-04-13-roadmap-v2-perplexity-integration/ artifacts (proposal.md, tasks.md, design.md, session-log.md all mention 'P1.5 bootstrap-fixes'). Archive convention is immutable — these can stay — but reviewers reading the archive later will find numbering that contradicts the current roadmap. No functional impact since change-ids (not P-numbers) are the identity source.",
+      "resolution": "Accept as-is, but optionally add a one-line note to the top of roadmap.md stating 'Phase numbers (P1.5/P1.6/P1.7) were reshuffled by roadmap-v2-reconciliation; archived artifacts may reference prior numbering. Change-ids are the stable identity.' This makes the discrepancy explicit for future readers.",
+      "disposition": "accept"
+    },
+    {
+      "id": 7,
+      "type": "observability",
+      "criticality": "low",
+      "description": "No automated detection for roadmap↔changes drift. If a future phase change is added under openspec/changes/<id>/ without a roadmap row, the spec violation is silent until a reviewer notices. Design D1 in the original roadmap-v2-perplexity-integration explicitly rejected CI enforcement as over-engineered at solo-developer scale, and this reconciliation inherits that choice.",
+      "resolution": "Accept as deferred. If/when the project scales to multiple concurrent developers or autopilot-driven phase creation, file a follow-up change to add 'scripts/validate-roadmap.py' as a pre-commit or CI hook.",
+      "disposition": "accept"
+    },
+    {
+      "id": 8,
+      "type": "spec_gap",
+      "criticality": "low",
+      "description": "The spec's 'Archived phase changes remain listed' scenario says the row SHALL have Status=archived and SHALL NOT be deleted — but doesn't constrain what the archive date annotation looks like. The roadmap rows here use '**archived** (YYYY-MM-DD)' in the Status column; no scenario mandates this format. A stricter reviewer couldn't detect a row that says only 'archived' with no date.",
+      "resolution": "Optionally tighten the scenario: 'AND the row SHALL carry an archive-date annotation in ISO format (YYYY-MM-DD) identifying when the change was archived'. Low priority — the convention is visually obvious and reviewers reading the table pick it up. Fix-or-accept at author discretion.",
+      "disposition": "accept"
+    },
+    {
+      "id": 9,
+      "type": "architecture",
+      "criticality": "low",
+      "description": "work-packages.yaml scope.deny includes 'openspec/specs/**', but the archive step — which happens after tasks 1.1–4.2 complete — writes to openspec/specs/tooling-roadmap/. The deny rule technically doesn't apply during archive (archive is outside the implementation-phase scope), but this is implicit; a strict scope-checker might flag the apparent contradiction. Note: this is also the blocker for Finding #1's resolution path (b).",
+      "resolution": "If Finding #1 is resolved by adding a manual Purpose edit task, scope.write_allow needs to add 'openspec/specs/tooling-roadmap/spec.md' (currently forbidden by the deny rule). Otherwise, accept — the archive step's write is outside implementation scope and doesn't need scope permission.",
+      "disposition": "accept"
+    }
+  ]
+}
