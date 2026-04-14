@@ -212,4 +212,5 @@ personas/*.env
 .status-cache.json
 .DS_Store
 .idea/
+.git-worktrees/
 
