@@ -5,7 +5,7 @@ Docs + spec change. No production code or new tests. Validation is via
 
 ## Phase 1 — Spec MODIFY
 
-- [ ] 1.1 Write delta: author
+- [x] 1.1 Write delta: author
   `openspec/changes/roadmap-v2-reconciliation/specs/tooling-roadmap/spec.md`
   with a `## MODIFIED Requirements` section containing the fully-rewritten
   "Roadmap Document Authoritative" requirement. The rewrite SHALL (a)
@@ -19,13 +19,13 @@ Docs + spec change. No production code or new tests. Validation is via
   **Design decisions**: D1, D2
   **Dependencies**: None
 
-- [ ] 1.2 Validate: `openspec validate roadmap-v2-reconciliation --strict`
+- [x] 1.2 Validate: `openspec validate roadmap-v2-reconciliation --strict`
   exits 0.
   **Dependencies**: 1.1
 
 ## Phase 2 — Roadmap edit
 
-- [ ] 2.1 Edit `openspec/roadmap.md` phase-sequence table:
+- [x] 2.1 Edit `openspec/roadmap.md` phase-sequence table:
   - Insert new row `P1.5 test-privacy-boundary` (archived 2026-04-13).
     Perplexity §: "—". Source: "new (IR hygiene from P1 validation)".
   - Insert new row `P1.6 sync-test-privacy-boundary-spec` (archived
@@ -35,7 +35,7 @@ Docs + spec change. No production code or new tests. Validation is via
   **Design decisions**: D3, D4
   **Dependencies**: 1.2
 
-- [ ] 2.2 Edit `openspec/roadmap.md` Dependency graph:
+- [x] 2.2 Edit `openspec/roadmap.md` Dependency graph:
   - Replace the `P1 (archived) └─→ P1.5 bootstrap-fixes` edge with the
     chain: `P1 (archived) └─→ P1.5 test-privacy-boundary (archived) └─→
     P1.6 sync-test-privacy-boundary-spec (archived) └─→ P1.7
@@ -44,18 +44,18 @@ Docs + spec change. No production code or new tests. Validation is via
   **Design decisions**: D3
   **Dependencies**: 2.1
 
-- [ ] 2.3 Spot-check: verify all other references in `roadmap.md` (Phase
+- [x] 2.3 Spot-check: verify all other references in `roadmap.md` (Phase
   execution playbook, Cross-cutting themes, Out-of-scope section) are
   still consistent after the renumber. No other edits expected.
   **Dependencies**: 2.2
 
 ## Phase 3 — Wire-up & validation
 
-- [ ] 3.1 Re-run `openspec validate roadmap-v2-reconciliation --strict`
+- [x] 3.1 Re-run `openspec validate roadmap-v2-reconciliation --strict`
   after the roadmap edit lands. Exit 0 required.
   **Dependencies**: 2.3
 
-- [ ] 3.2 Manual walkthrough: confirm the narrowed `Roadmap Document
+- [x] 3.2 Manual walkthrough: confirm the narrowed `Roadmap Document
   Authoritative` requirement no longer self-violates (the
   `roadmap-v2-reconciliation` directory exists but is itself a
   non-phase change; it should not require a roadmap row under the
@@ -64,11 +64,11 @@ Docs + spec change. No production code or new tests. Validation is via
 
 ## Phase 4 — Session log and archival handoff
 
-- [ ] 4.1 Append Plan-phase session log entry documenting the
+- [x] 4.1 Append Plan-phase session log entry documenting the
   parallel-review-plan findings and their disposition.
   **Dependencies**: 3.2
 
-- [ ] 4.2 After this change archives, the `Purpose` placeholder and the
+- [x] 4.2 After this change archives, the `Purpose` placeholder and the
   P2 self-violation will be fully resolved. The next downstream phase
   to plan is P1.7 `bootstrap-fixes`.
   **Dependencies**: 4.1
