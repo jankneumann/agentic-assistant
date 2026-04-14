@@ -182,15 +182,17 @@ home for Codex — so each harness should invoke its own copy.
 **Claude Code web** — paste into Environment Settings > Setup Script:
 
 \`\`\`bash
-script="$(find "$(pwd)" -maxdepth 7 -path '*/.claude/skills/session-bootstrap/scripts/setup-cloud.sh' -print -quit)"
-bash "$script"
+mapfile -t matches < <(find "$(pwd)" -maxdepth 7 -path '*/.claude/skills/session-bootstrap/scripts/setup-cloud.sh')
+[ ${#matches[@]} -eq 1 ] || { printf 'setup-cloud.sh: expected 1 match, got %d:\n' "${#matches[@]}" >&2; printf '  %s\n' "${matches[@]}" >&2; exit 1; }
+bash "${matches[0]}"
 \`\`\`
 
 **Codex** — paste into the environment's Setup Script field:
 
 \`\`\`bash
-script="$(find "$(pwd)" -maxdepth 7 -path '*/.agents/skills/session-bootstrap/scripts/setup-cloud.sh' -print -quit)"
-bash "$script"
+mapfile -t matches < <(find "$(pwd)" -maxdepth 7 -path '*/.agents/skills/session-bootstrap/scripts/setup-cloud.sh')
+[ ${#matches[@]} -eq 1 ] || { printf 'setup-cloud.sh: expected 1 match, got %d:\n' "${#matches[@]}" >&2; printf '  %s\n' "${matches[@]}" >&2; exit 1; }
+bash "${matches[0]}"
 \`\`\`
 
 Note: `CLAUDE_PROJECT_DIR` isn't set yet at Setup-Script time (Claude Code
@@ -198,13 +200,19 @@ injects it later, for hooks). On Claude Code web, `$(pwd)` at Setup-Script
 time is the **parent** of the clone — typically `/home/user`, while the repo
 lives at `/home/user/<reponame>/`. The older recommendation
 `bash "$(pwd)/.claude/skills/session-bootstrap/scripts/setup-cloud.sh"` therefore
-resolves to `/home/user/.claude/...` and fails with "file not found". The
-harness-specific `find` patterns above handle both the cloud layout (pwd is
-the parent) and the local-dev case (pwd is the repo root), and — because the
-`-path` pattern pins the harness directory — each harness always executes its
-own copy rather than whichever one happens to sort first. The script then
-derives its own `PROJECT_DIR` from `BASH_SOURCE[0]`, so subsequent
-`uv sync`/`npm install` commands run in the right directory.
+resolves to `/home/user/.claude/...` and fails with "file not found".
+
+The harness-specific `find`-then-assert pattern above handles both the cloud
+layout (pwd is the parent) and the local-dev case (pwd is the repo root). It
+**fails loudly** when the search yields zero matches (nothing cloned yet,
+unexpected depth) or more than one (sibling repos under `$(pwd)` each with
+`session-bootstrap` installed — common on accounts that clone multiple
+projects into `/home/user`). Failing fast is safer than `-print -quit`,
+which would silently bootstrap whichever repo `find` visited first —
+filesystem-order dependent and repo-wrong more often than you'd think.
+Once a single match is confirmed, `setup-cloud.sh` derives its own
+`PROJECT_DIR` from `BASH_SOURCE[0]`, so subsequent `uv sync` / `npm install`
+commands run in the right directory.
 ```
 
 ### 4. Rationale for `-maxdepth 7`
@@ -254,10 +262,12 @@ bash path/to/agent-coding-tools/skills/install.sh --mode rsync --force
 bash -n .claude/skills/session-bootstrap/scripts/setup-cloud.sh
 bash -n .agents/skills/session-bootstrap/scripts/setup-cloud.sh
 
-# 3. Each harness's find snippet resolves to its own copy
+# 3. Each harness's find snippet resolves to its own copy (omit -quit so
+#    multi-match situations produce a multi-line value that the -f test
+#    below rejects — mirrors the fail-loud behaviour of the real snippet).
 cd /home/user  # simulate Claude Code web cwd
-script_claude="$(find "$(pwd)" -maxdepth 7 -path '*/.claude/skills/session-bootstrap/scripts/setup-cloud.sh' -print -quit)"
-script_agents="$(find "$(pwd)" -maxdepth 7 -path '*/.agents/skills/session-bootstrap/scripts/setup-cloud.sh' -print -quit)"
+script_claude="$(find "$(pwd)" -maxdepth 7 -path '*/.claude/skills/session-bootstrap/scripts/setup-cloud.sh')"
+script_agents="$(find "$(pwd)" -maxdepth 7 -path '*/.agents/skills/session-bootstrap/scripts/setup-cloud.sh')"
 [[ -f "$script_claude" ]] && echo "OK Claude Code script: $script_claude"
 [[ -f "$script_agents" ]] && echo "OK Codex script:       $script_agents"
 [[ "$script_claude" != "$script_agents" ]] && echo "OK distinct copies"
