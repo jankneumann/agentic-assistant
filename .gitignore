@@ -213,3 +213,7 @@ personas/*.env
 .DS_Store
 .idea/
 
+# Ephemeral local infrastructure — should never be committed
+.git-worktrees/
+.claude/scheduled_tasks.lock
+
