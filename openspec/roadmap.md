@@ -26,6 +26,7 @@
 |---|-----------|--------|--------------|--------|-------------|
 | P1 | `bootstrap-vertical-slice` | **archived** (2026-04-12) | — | original P1 | Core library + Deep Agents harness + CLI + 5 roles + personal persona + delegation + tests + CI |
 | P1.5 | `bootstrap-fixes` | pending | §7.1–§7.5 | perplexity §7 | CLI `-h` flag conflict; add `sqlalchemy.text()` wrapper; reconcile `deepagents` package reference; add `[project.scripts]` entry point; fix `name` variable shadowing in `PersonaRegistry.load` |
+| P1.7 | `harness-advisor-extension` | pending | — | new (April 2026 Anthropic advisor tool) | Extend `HarnessAdapter` with `advise()` alongside `invoke()` / `spawn_sub_agent()`; Deep Agents impl wires the `advisor_20260301` tool type + `anthropic-beta: advisor-tool-2026-03-01` header; add `advisor:` block to `RoleConfig` schema (model, trigger, max_calls_per_task, budget_tokens); new `core/advisor.py` `AdvisorClient` (kept separate from `DelegationSpawner` — shared context vs fresh, guidance vs work); MS Agent Framework harness documents emulated-fallback behavior; opt-in per role, no default behavior change. Rationale: executor-advisor pattern ([blog](https://claude.com/blog/the-advisor-strategy)) — downshift `coder`/similar single-loop roles from Opus to Sonnet with an Opus advisor for ~12% cost reduction + quality bump; must land before P2 so memory-architecture retrieval paths can opt in from day one |
 | P2 | `memory-architecture` | pending | §1.2, §8.1 | perplexity §8.1 + old P3 | `core/memory.py` MemoryManager + `core/graphiti.py` client factory + per-persona AsyncEngine + `memory`/`preferences`/`interactions` tables + `scripts/export-memory.sh` that regenerates `memory.md` from Postgres+Graphiti |
 | P3 | `http-tools-layer` | pending | §8.2 | perplexity §8.2 + old P2 | `src/assistant/http_tools/` — `/help`-based discovery, `_build_tool()` Pydantic-model + async-callable generator, auth header handling, registry, `--list-tools` CLI command, integration tests against mock server |
 | P4 | `observability` | pending | §1.1, §8.3 | perplexity §8.3 (new) | `core/observability.py` — `@traced` decorator, spans on `HarnessAdapter.invoke()` and `DelegationSpawner.delegate()`, token + latency + cost tracking per persona/role. Langfuse backend default; OpenLLMetry adapter optional |
@@ -56,15 +57,16 @@ record — update it as part of the phase's final commit.
 ```
 P1 (archived)
  └─→ P1.5 bootstrap-fixes (hygiene; unblocks everything below)
-      ├─→ P2 memory-architecture ──┬─→ P7 scheduler
-      │                            ├─→ P8 obsidian-vault
-      │                            └─→ P12 delegation-context
-      ├─→ P3 http-tools-layer ─────┬─→ P5 ms-graph-extension ──┬─→ P6 a2a-server
-      │                            │                          └─→ P14 google-extensions
-      │                            └─→ P9 error-resilience
-      ├─→ P4 observability (spans everything below — lands early)
-      ├─→ P10 extension-lifecycle ─→ P13 security-hardening
-      └─→ P11 harness-routing (needs P5 MS Agent Framework real; decouples from Deep-Agents-only)
+      └─→ P1.7 harness-advisor-extension (HarnessAdapter.advise(); must land before P2 so downstream phases opt in from day one)
+           ├─→ P2 memory-architecture ──┬─→ P7 scheduler
+           │                            ├─→ P8 obsidian-vault
+           │                            └─→ P12 delegation-context
+           ├─→ P3 http-tools-layer ─────┬─→ P5 ms-graph-extension ──┬─→ P6 a2a-server
+           │                            │                          └─→ P14 google-extensions
+           │                            └─→ P9 error-resilience
+           ├─→ P4 observability (spans everything below — lands early; adds advisor-call span type + cost attribution)
+           ├─→ P10 extension-lifecycle ─→ P13 security-hardening
+           └─→ P11 harness-routing (needs P5 MS Agent Framework real + P1.7 advisor primitive; advisor-capable roles prefer Deep Agents)
 
 P15 work-persona-config — independent; triggered by machine availability; needs P5 + P8
 P16 cli-harness-integrations — independent; needs P1.5
@@ -101,6 +103,7 @@ re-prefix with dates; the roadmap is the identity source.
 | **Resilience** (retry, circuit breaker — §1.3) | P9 establishes; P3/P5/P14/P17 adopt |
 | **Security boundaries** (credential scoping, manifest validation — §4) | P13 establishes; all phases loading config must comply |
 | **Proactive execution** (scheduler + A2A + Obsidian RAG — §2) | P6/P7/P8 — the differentiated Chief-of-Staff story |
+| **Executor-advisor pattern** (cheap executor + on-tap Opus advisor — April 2026 Anthropic tool) | P1.7 establishes `advise()`; P4 adds span + cost attribution; P11 routes advisor-capable roles to Deep Agents; individual roles opt in via `advisor:` block in `role.yaml` |
 
 ## Out of scope for roadmap v2
 
