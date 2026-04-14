@@ -1,0 +1,455 @@
+schema_version: 1
+roadmap_id: agentic-assistant
+source_proposal: docs/perplexity-feedback.md
+status: planning
+policy:
+  default_action: wait_if_budget_exceeded
+  max_switch_attempts_per_item: 2
+
+# Notes on authoring:
+# - item_id matches the OpenSpec change-id (stable across phase renumbers)
+# - Kind (phase vs non-phase) is encoded via item naming + description;
+#   non-phase items are tagged in their description/rationale and have
+#   no downstream dependents on the phase track
+# - DAG edges are functional prerequisites only, not chronological ordering
+# - Sourced from: openspec/roadmap.md (iteration-2 hand-authored 18-phase v2)
+#   which integrates perplexity §§1-§8 + original bootstrap-v4.1 P2-P10
+
+items:
+
+  # ── Completed phases (archived) ──
+
+  - item_id: bootstrap-vertical-slice
+    change_id: bootstrap-vertical-slice
+    title: Bootstrap vertical slice
+    status: completed
+    priority: 1
+    effort: XL
+    depends_on: []
+    description: >
+      Core library (persona, role, composition) + Deep Agents harness + CLI
+      + 5 public roles + personal persona populated + extension stubs +
+      delegation spawner + tests + CI. Archived 2026-04-12.
+    acceptance_outcomes:
+      - openspec/specs/persona-registry, role-registry, prompt-composition, harness-adapter, delegation-spawner, extension-registry, cli-interface all populated
+      - CLI assistant -p personal runs a REPL end-to-end
+      - Public test suite passes against tests/fixtures/personas/
+
+  - item_id: test-privacy-boundary
+    change_id: test-privacy-boundary
+    title: Test privacy boundary (public tests vs private persona data)
+    status: completed
+    priority: 2
+    effort: M
+    depends_on: [bootstrap-vertical-slice]
+    description: >
+      Two-layer boundary guard (collection-time substring scan + runtime
+      filesystem patching), `ASSISTANT_PERSONAS_DIR` env-var contract,
+      `scripts/push-with-submodule.sh` atomic dual-commit push wrapper.
+      Separates public test code from private persona submodule data.
+      Archived 2026-04-13.
+    acceptance_outcomes:
+      - openspec/specs/test-privacy-boundary populated
+      - Public test suite passes with persona submodule uninitialized
+      - scripts/push-with-submodule.sh exit code 47 for dangling-SHA case
+
+  - item_id: sync-test-privacy-boundary-spec
+    change_id: sync-test-privacy-boundary-spec
+    title: Sync test-privacy-boundary spec with shipped implementation
+    status: completed
+    priority: 3
+    effort: XS
+    depends_on: [test-privacy-boundary]
+    description: >
+      Non-phase (spec-sync). Codified five drift items found during
+      test-privacy-boundary validation: env-var contract scenarios,
+      subprocess `executable=`/`cwd=` kwarg coverage, hygiene-test
+      exclusion list, submodule `parents[N]` abstraction, atomic-push
+      wrapper requirement. Listed for chronological context only; not a
+      phase under the tooling-roadmap classification. Archived 2026-04-13.
+    rationale: >
+      Classified as non-phase (spec-sync) per tooling-roadmap spec
+      Requirement: Roadmap Document Authoritative criteria (1-3). Listed
+      because its chronological tie to test-privacy-boundary aids
+      reviewer navigation.
+    acceptance_outcomes:
+      - openspec/specs/test-privacy-boundary updated with 5 drift scenarios
+      - no implementation changes (pure spec text)
+
+  # ── Hygiene unblock (bootstrap-fixes) ──
+
+  - item_id: bootstrap-fixes
+    change_id: bootstrap-fixes
+    title: Bootstrap hygiene fixes (perplexity §7)
+    status: candidate
+    priority: 4
+    effort: S
+    depends_on: [bootstrap-vertical-slice]
+    description: >
+      Five minor fixes from perplexity §7: CLI `-h` flag conflict with
+      Click's `--help` (§7.1); add `sqlalchemy.text()` wrapper around raw
+      SQL in db.py (§7.2); reconcile `deepagents` package reference
+      (§7.3); add `[project.scripts]` entry point so `uv run assistant`
+      works (§7.4); fix `name` variable shadowing in
+      `PersonaRegistry.load` (§7.5).
+    rationale: >
+      Unblocks memory-architecture (needs §7.2), http-tools-layer (needs
+      §7.1/§7.4), harness-routing (needs §7.3), cli-harness-integrations
+      (needs §7.1/§7.4). NOT a global blocker — observability,
+      extension-lifecycle land independently.
+    acceptance_outcomes:
+      - CLI accepts -H/--harness without shadowing --help
+      - db.py uses sqlalchemy.text() for raw SQL
+      - uv run assistant -p personal invokes CLI via entry point
+      - PersonaRegistry.load loop variable renamed to avoid shadowing
+
+  # ── Foundation phases (perplexity §§1-3 infrastructure) ──
+
+  - item_id: memory-architecture
+    change_id: memory-architecture
+    title: Memory architecture (memory.md + Postgres + Graphiti hierarchy)
+    status: candidate
+    priority: 5
+    effort: XL
+    depends_on: [bootstrap-fixes]
+    description: >
+      Implement `core/memory.py` `MemoryManager` class with unified
+      `get_context(persona, role)` reading Postgres for operational
+      state + Graphiti for semantic context. Per-persona `AsyncEngine`,
+      schema init (memory/preferences/interactions tables), memory
+      CRUD. `core/graphiti.py` client factory.
+      `scripts/export-memory.sh` regenerates `memory.md` from
+      Postgres+Graphiti as a derived artifact, not source of truth.
+      Perplexity §1.2 + §8.1; supersedes original P3 persona-db-layer.
+    acceptance_outcomes:
+      - core/memory.py MemoryManager implemented
+      - core/graphiti.py client factory implemented
+      - Postgres schema migrations for memory/preferences/interactions tables
+      - scripts/export-memory.sh regenerates memory.md idempotently
+      - Isolation tests confirm per-persona DB separation
+
+  - item_id: http-tools-layer
+    change_id: http-tools-layer
+    title: HTTP tools layer (discover + build Pydantic-model tools)
+    status: candidate
+    priority: 6
+    effort: M
+    depends_on: [bootstrap-fixes]
+    description: >
+      `src/assistant/http_tools/` — `/help`-based discovery, `_build_tool()`
+      Pydantic-model + async-callable generator, auth header handling,
+      registry, `--list-tools` CLI command, integration tests against a
+      mock server. Perplexity §5 P0 + §8.2; supersedes original P2.
+    acceptance_outcomes:
+      - cli.py calls discover_tools at startup
+      - _build_tool() generates StructuredTool with Pydantic input model
+      - assistant --list-tools prints registered HTTP tools
+      - Integration tests pass against mock server
+
+  - item_id: observability
+    change_id: observability
+    title: Observability layer (tracing, cost, delegation spans)
+    status: candidate
+    priority: 7
+    effort: M
+    depends_on: [bootstrap-vertical-slice]
+    description: >
+      `core/observability.py` — `@traced` decorator, spans on
+      `HarnessAdapter.invoke()` and `DelegationSpawner.delegate()`,
+      token/latency/cost tracking per persona/role. Langfuse backend
+      default; OpenLLMetry adapter optional. Independent of
+      bootstrap-fixes — lands early so all later phases add spans to
+      their new code paths. Perplexity §1.1 + §8.3.
+    acceptance_outcomes:
+      - core/observability.py with @traced decorator
+      - HarnessAdapter.invoke emits spans with persona/role/harness
+      - DelegationSpawner.delegate emits delegation-chain spans
+      - Cost tracking per persona×role visible in backend
+      - Langfuse backend wired; OpenLLMetry adapter pluggable
+
+  - item_id: extension-lifecycle
+    change_id: extension-lifecycle
+    title: Extension lifecycle hooks (initialize, shutdown, refresh_credentials)
+    status: candidate
+    priority: 8
+    effort: S
+    depends_on: [bootstrap-vertical-slice]
+    description: >
+      Extend `Extension` protocol in `extensions/base.py` with
+      `initialize()`, `shutdown()`, `refresh_credentials()` async
+      methods. `PersonaRegistry.load_extensions()` calls `initialize()`
+      post-load and registers shutdown handler. Independent of
+      bootstrap-fixes. Perplexity §3.1 + §8.9.
+    acceptance_outcomes:
+      - Extension Protocol has initialize/shutdown/refresh_credentials
+      - PersonaRegistry.load_extensions calls initialize on each
+      - Graceful shutdown handler registered on process exit
+
+  # ── Phase-ordered work ──
+
+  - item_id: ms-graph-extension
+    change_id: ms-graph-extension
+    title: MS Graph / Teams / SharePoint / Outlook extensions + MS Agent Framework
+    status: candidate
+    priority: 9
+    effort: L
+    depends_on: [http-tools-layer]
+    description: >
+      Real `ms_graph`, `teams`, `sharepoint`, `outlook` extensions
+      (replaces P1 stubs). MSAL auth, httpx client, OAuth refresh.
+      Full MS Agent Framework harness implementation replacing P1's
+      `NotImplementedError` stub. Perplexity §5 P0 + §8.4.
+    acceptance_outcomes:
+      - Real API calls for mail_list, mail_read, mail_send, calendar_events, files_search, teams_chat_send
+      - MSAL auth wired with OAuth refresh
+      - harnesses/ms_agent_framework.py fully implemented (no NotImplementedError)
+
+  - item_id: a2a-server
+    change_id: a2a-server
+    title: A2A server (expose agent to Copilot Studio)
+    status: candidate
+    priority: 10
+    effort: L
+    depends_on: [ms-graph-extension]
+    description: >
+      `src/assistant/a2a/` — server.py, task_handler.py, agent_card.py.
+      Exposes `/a2a/v1/message:stream` endpoint. Serves
+      `.well-known/agent.json` agent card. Maps incoming A2A tasks to
+      persona × role × harness. Enables Copilot Studio Chief of Staff
+      to delegate to this assistant. Perplexity §6 + §8.5 (previously
+      "out of scope" in Phase 16).
+    acceptance_outcomes:
+      - /a2a/v1/message:stream endpoint accepts A2A task messages
+      - .well-known/agent.json served with capabilities
+      - Round-trip test - Copilot Studio → A2A → Deep Agents → A2A response
+
+  - item_id: scheduler
+    change_id: scheduler
+    title: Scheduler (cron + calendar + polling triggers for proactive execution)
+    status: candidate
+    priority: 11
+    effort: M
+    depends_on: [memory-architecture]
+    description: >
+      `core/scheduler.py` — cron (croniter) + calendar-event + polling
+      triggers. `schedules:` section in `persona.yaml`. `--daemon` CLI
+      flag. Morning briefing / email triage / pre-meeting brief hooks.
+      Perplexity §2.1 + §8.6.
+    acceptance_outcomes:
+      - core/scheduler.py with cron, calendar-event, polling triggers
+      - persona.yaml schedules section parsed and dispatched
+      - assistant --daemon runs REPL + scheduler concurrently
+      - Morning briefing fires on configured cron
+
+  - item_id: obsidian-vault
+    change_id: obsidian-vault
+    title: Obsidian vault RAG integration
+    status: candidate
+    priority: 12
+    effort: M
+    depends_on: [memory-architecture]
+    description: >
+      Obsidian vault RAG integration. Preferred path - add indexing
+      endpoint to `agentic-content-analyzer` and reference it as a tool
+      source. Fallback - standalone `extensions/obsidian.py` with
+      wikilink parsing, frontmatter YAML handling, tags, pgvector
+      index. Perplexity §2.2 + §8.7.
+    acceptance_outcomes:
+      - obsidian_search, obsidian_get_note, obsidian_recent_daily_notes tools exposed
+      - Wikilink resolution works across notes
+      - OneDrive-synced vault path configurable via env var
+
+  - item_id: error-resilience
+    change_id: error-resilience
+    title: Error resilience (retry + circuit breaker + graceful degradation)
+    status: candidate
+    priority: 13
+    effort: M
+    depends_on: [http-tools-layer]
+    description: >
+      `core/resilience.py` — tenacity-based retry with exponential
+      backoff for transient HTTP failures, circuit breaker per backend
+      service, graceful degradation (agent notes unavailability instead
+      of silent omission). Applied to http_tools client + extension
+      `health_check()`. Perplexity §1.3 + §8.8.
+    acceptance_outcomes:
+      - core/resilience.py with retry and circuit breaker
+      - http_tools/client.py retries on transient failures
+      - Circuit breaker trips after N consecutive failures per backend
+      - Agent output includes backend-unavailable note on degradation
+
+  - item_id: harness-routing
+    change_id: harness-routing
+    title: Dynamic harness routing (auto-select per task)
+    status: candidate
+    priority: 14
+    effort: M
+    depends_on: [ms-graph-extension, bootstrap-fixes]
+    description: >
+      `harnesses/factory.py` routing logic - `select_harness(persona,
+      role, task_hint)`. `--harness auto` default. Routes M365-tool
+      tasks → MS Agent Framework, complex reasoning → Deep Agents.
+      Needs MS Agent Framework to be real (not stub). Perplexity §3.2
+      + §8.10.
+    acceptance_outcomes:
+      - harnesses/factory.py select_harness() auto-mode
+      - CLI defaults to --harness auto
+      - M365 tasks route to MS Agent Framework when enabled
+      - Complex reasoning tasks route to Deep Agents
+
+  - item_id: delegation-context
+    change_id: delegation-context
+    title: Delegation context (DelegationContext + router for intent classification)
+    status: candidate
+    priority: 15
+    effort: L
+    depends_on: [memory-architecture]
+    description: >
+      `DelegationContext` dataclass (parent_role, delegation_chain,
+      memory_snippets, conversation_summary, constraints). Cycle
+      detection. `delegate_parallel`. Monitoring/cancellation.
+      Delegation analytics tables. Includes `delegation/router.py`
+      intent-classification logic for automatic delegation routing
+      (perplexity §5 P1 item; was silently dropped from pre-iteration-2
+      roadmap). Perplexity §3.3 + §5 P1 + §8.11.
+    acceptance_outcomes:
+      - DelegationContext dataclass with all fields
+      - Cycle detection prevents A → B → A loops
+      - delegate_parallel spawns N sub-agents concurrently
+      - delegation/router.py classifies intent and auto-routes
+      - Delegation analytics table tracks parent/child/latency
+
+  - item_id: security-hardening
+    change_id: security-hardening
+    title: Security hardening (env scoping, extension manifest validation)
+    status: candidate
+    priority: 16
+    effort: M
+    depends_on: [extension-lifecycle]
+    description: >
+      Per-persona env var scoping in `_env()` helper (work persona
+      can't read PERSONAL_* env vars and vice versa). Per-persona
+      `.env` files loaded only when that persona is active. Extension
+      `manifest.yaml` with SHA-256 hashes verified before
+      `spec.loader.exec_module()`. Perplexity §4 + §8.12.
+    acceptance_outcomes:
+      - _env() rejects cross-persona env var reads
+      - personas/<name>/.env loaded only for active persona
+      - Extension manifest.yaml with SHA-256 hashes
+      - Load fails on hash mismatch or missing manifest
+
+  # ── Long-range / carried-forward ──
+
+  - item_id: google-extensions
+    change_id: google-extensions
+    title: Google extensions (gmail, gcal, gdrive)
+    status: candidate
+    priority: 17
+    effort: L
+    depends_on: [ms-graph-extension]
+    description: >
+      Real `gmail`, `gcal`, `gdrive` extension implementations.
+      OAuth refresh via the extension-lifecycle hooks. Pattern parallels
+      ms-graph-extension. Original bootstrap-v4.1 P4.
+    acceptance_outcomes:
+      - gmail, gcal, gdrive extensions exit stub status
+      - OAuth refresh wired via refresh_credentials lifecycle hook
+      - Integration tests against mock Google APIs
+
+  - item_id: work-persona-config
+    change_id: work-persona-config
+    title: Work persona configuration (private submodule)
+    status: candidate
+    priority: 18
+    effort: M
+    depends_on: [ms-graph-extension, obsidian-vault]
+    description: >
+      Create `assistant-config-work` submodule, wire into `.gitmodules`,
+      populate work persona config + role overrides. Deferred until the
+      work machine is available; triggered by machine-availability
+      event, not upstream completion. Original bootstrap-v4.1 P6.
+    acceptance_outcomes:
+      - assistant-config-work submodule populated and mounted
+      - .gitmodules entry added
+      - assistant -p work starts REPL with work-specific tool sources
+
+  - item_id: cli-harness-integrations
+    change_id: cli-harness-integrations
+    title: CLI harness integrations (Claude Code, Codex, Gemini)
+    status: candidate
+    priority: 19
+    effort: M
+    depends_on: [bootstrap-fixes]
+    description: >
+      Deeper Claude Code / Codex / Gemini integrations — slash commands
+      in `.claude/commands/`, `.codex/skills/`, `.gemini/settings.json`.
+      Persona-aware routing from the surrounding CLI's context. Original
+      bootstrap-v4.1 P7.
+    acceptance_outcomes:
+      - .claude/commands populated with persona-aware wrappers
+      - .codex/skills populated with equivalent
+      - .gemini/settings.json wired
+      - CLI harness invocations pass persona context through
+
+  - item_id: mcp-server-exposure
+    change_id: mcp-server-exposure
+    title: MCP server exposure (parallel protocol to A2A)
+    status: candidate
+    priority: 20
+    effort: M
+    depends_on: [a2a-server]
+    description: >
+      Expose the assistant as an MCP server so other Claude Code
+      sessions can invoke it as a tool. Complementary to a2a-server
+      (different protocol, different clients). Original bootstrap-v4.1
+      P9.
+    acceptance_outcomes:
+      - MCP server binding implemented
+      - Other Claude Code sessions can add assistant as MCP server
+      - Tool invocations flow through persona × role × harness
+
+  - item_id: railway-deployment
+    change_id: railway-deployment
+    title: Railway deployment (persona instances as Railway services)
+    status: candidate
+    priority: 21
+    effort: L
+    depends_on: [work-persona-config, cli-harness-integrations]
+    description: >
+      Run persona instances as Railway services + deployment manifests.
+      Needs work-persona-config so the work instance can deploy
+      alongside personal; needs cli-harness-integrations so remote
+      invocations work from the deployed instance. Original
+      bootstrap-v4.1 P10.
+    acceptance_outcomes:
+      - Railway services for personal and work personas
+      - Deployment manifests in repo
+      - Services addressable via persistent URL with auth
+
+  # ── Meta / follow-up (non-phase) ──
+
+  - item_id: spec-purpose-cleanup
+    change_id: spec-purpose-cleanup
+    title: Spec Purpose placeholder cleanup (repo-wide)
+    status: candidate
+    priority: 22
+    effort: S
+    depends_on: []
+    description: >
+      Non-phase (meta/tooling). 5+ capability specs in
+      `openspec/specs/` carry the `TBD - created by archiving change...`
+      Purpose placeholder inserted by `openspec archive` and never
+      filled in. Two resolution paths - (a) manual pass replacing all
+      TBD placeholders with real one-paragraph Purpose statements, OR
+      (b) extend the OpenSpec delta format to support `## Purpose`
+      sections so the cleanup happens automatically at archive time.
+      Resolves F-T6 (deferred from roadmap-v2-reconciliation iteration 2).
+    rationale: >
+      Classified as non-phase (meta) — the cleanup doesn't implement a
+      new capability or advance a bootstrap-v4.1/perplexity item. Listed
+      in the roadmap to provide the concrete tracking artifact Codex's
+      technical review flagged as missing.
+    acceptance_outcomes:
+      - All openspec/specs/**/spec.md Purpose sections are non-TBD
+      - Decision documented (manual-pass vs OpenSpec tooling extension)
+      - openspec validate --strict still passes
