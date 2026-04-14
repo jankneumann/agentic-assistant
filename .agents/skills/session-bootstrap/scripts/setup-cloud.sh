@@ -1,22 +1,8 @@
 #!/bin/bash
 # setup-cloud.sh — One-time cloud environment setup.
 #
-# This is the Codex copy of the skill.  The Claude Code copy lives at
-# .claude/skills/session-bootstrap/scripts/setup-cloud.sh — each harness
-# invokes its own copy so the two can diverge later if needed.
-#
-# For the Codex cloud "Setup Script" field, paste:
-#   script="$(find "$(pwd)" -maxdepth 7 -path '*/.agents/skills/session-bootstrap/scripts/setup-cloud.sh' -print -quit)"
-#   bash "$script"
-#
-# (Claude Code users: see .claude/skills/session-bootstrap/scripts/setup-cloud.sh
-# for the matching snippet that targets .claude/.)
-#
-# This works whether $(pwd) at Setup-Script time is the repo root (local dev)
-# or the parent of the clone (Claude Code web, where $(pwd) is /home/user and
-# the repo is at /home/user/<reponame>/).  Do NOT use a literal
-# "$(pwd)/.agents/..." path — on cloud harnesses that resolves to
-# /home/user/.agents/... which doesn't exist, yielding "file not found".
+# For the cloud Environment Settings "Setup Script" field, paste:
+#   bash "$(pwd)/.claude/skills/session-bootstrap/scripts/setup-cloud.sh"
 #
 # Or paste the full script contents if the skill isn't installed yet.
 # Runs as root on new sessions only (skipped on resume).
@@ -30,23 +16,7 @@
 
 set -euo pipefail
 
-# Resolve project root — Setup Script can run with cwd = parent of clone on
-# Claude Code web (e.g. cwd is /home/user while the repo is at
-# /home/user/<reponame>/), so we can't trust $(pwd) alone.  Priority:
-#   1. $CLAUDE_PROJECT_DIR (set when Claude Code invokes the script).
-#   2. Walk up from the script's own location to the git root (works in both
-#      canonical skills/... and installed .claude/skills/... layouts).
-#   3. Fall back to $(pwd) if we can't find a git root (keeps old behavior).
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
-    PROJECT_DIR="$CLAUDE_PROJECT_DIR"
-elif git -C "$SCRIPT_DIR/../../.." rev-parse --show-toplevel >/dev/null 2>&1; then
-    PROJECT_DIR="$(git -C "$SCRIPT_DIR/../../.." rev-parse --show-toplevel)"
-elif git -C "$SCRIPT_DIR/../../../.." rev-parse --show-toplevel >/dev/null 2>&1; then
-    PROJECT_DIR="$(git -C "$SCRIPT_DIR/../../../.." rev-parse --show-toplevel)"
-else
-    PROJECT_DIR="$(pwd)"
-fi
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 
 log() { echo "[setup] $*"; }
 
