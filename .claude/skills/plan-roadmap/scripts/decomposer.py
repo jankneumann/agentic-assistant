@@ -57,6 +57,17 @@ _INFRA_MARKERS = re.compile(
 # Heading pattern: captures level (number of #) and text
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
 
+# Fenced code block fence pattern (``` or ~~~, optionally with language id)
+_FENCE_RE = re.compile(r"^(`{3,}|~{3,})")
+
+# Markdown table separator row: |---|---|...
+_TABLE_SEP_RE = re.compile(r"^\|[\s:]*-{2,}[\s:]*(\|[\s:]*-{2,}[\s:]*)+\|?\s*$")
+
+# Priority column header markers
+_PRIORITY_MARKERS = re.compile(
+    r"\b(priority|p[0-3]|impact|module|status)\b", re.IGNORECASE
+)
+
 # Bullet list item pattern
 _BULLET_RE = re.compile(r"^[\s]*[-*+]\s+(.+)$", re.MULTILINE)
 
@@ -116,15 +127,50 @@ def validate_proposal(text: str) -> list[str]:
 # Section parsing
 # ---------------------------------------------------------------------------
 def _parse_sections(text: str) -> list[_Section]:
-    """Split markdown into sections by headings."""
+    """Split markdown into sections by headings.
+
+    Fenced code blocks (``` or ~~~) are tracked so that headings inside
+    them are not treated as section boundaries — this prevents YAML/code
+    examples from generating noise sections.
+    """
     lines = text.split("\n")
     sections: list[_Section] = []
     current_level = 0
     current_title = ""
     current_body_lines: list[str] = []
     current_start = 0
+    in_fenced_block = False
+    fence_marker = ""
+    fence_length = 0
 
     for i, line in enumerate(lines):
+        # Track fenced code blocks (```, ~~~~, etc.)
+        fence_match = _FENCE_RE.match(line)
+        if fence_match:
+            marker = fence_match.group(1)
+            if not in_fenced_block:
+                in_fenced_block = True
+                fence_marker = marker[0]  # ` or ~
+                fence_length = len(marker)
+            else:
+                # Closing fence: same char, at least as many as opening,
+                # nothing else on the line (after stripping whitespace)
+                stripped = line.strip()
+                if (
+                    stripped[0] == fence_marker
+                    and len(stripped) >= fence_length
+                    and stripped == fence_marker * len(stripped)
+                ):
+                    in_fenced_block = False
+                    fence_marker = ""
+                    fence_length = 0
+            current_body_lines.append(line)
+            continue
+
+        if in_fenced_block:
+            current_body_lines.append(line)
+            continue
+
         m = _HEADING_RE.match(line)
         if m:
             # Flush previous section
@@ -161,8 +207,15 @@ def _parse_sections(text: str) -> list[_Section]:
 
 
 def _classify_sections(sections: list[_Section]) -> list[_Section]:
-    """Tag each section as capability, constraint, or phase."""
+    """Tag each section as capability, constraint, or phase.
+
+    Sub-section propagation: when a parent H2/H3 is classified as a
+    capability, child H4/H5 sections that don't match any markers
+    themselves inherit the capability classification.
+    """
     phase_counter = 0
+    parent_is_capability = False
+    parent_level = 0
 
     for section in sections:
         combined = f"{section.title} {section.body}"
@@ -173,6 +226,20 @@ def _classify_sections(sections: list[_Section]) -> list[_Section]:
             section.is_phase = True
             phase_counter += 1
             section.phase_index = phase_counter
+
+        # Sub-section propagation: if parent (H2/H3) is capability,
+        # propagate to children (H4+) that don't match any marker
+        if section.level <= 3:
+            parent_is_capability = section.is_capability
+            parent_level = section.level
+        elif (
+            section.level > parent_level
+            and parent_is_capability
+            and not section.is_capability
+            and not section.is_constraint
+            and not section.is_phase
+        ):
+            section.is_capability = True
 
     return sections
 
@@ -385,57 +452,22 @@ def _split_item(item: RoadmapItem) -> list[RoadmapItem]:
 # Dependency DAG construction
 # ---------------------------------------------------------------------------
 def build_dependency_dag(items: list[RoadmapItem]) -> list[RoadmapItem]:
-    """Infer dependency edges between items.
+    """Infer dependency edges between items using two-tier inference.
 
-    Heuristics:
-    1. Infrastructure/foundation items come before feature items.
-    2. Items referencing another item's key terms depend on it.
-    3. Existing depends_on edges (from splits) are preserved.
+    Tier A (deterministic): When both items declare ``scope``, edges are
+    added based on write/read glob overlap and shared lock keys.  No edge
+    is added when scopes are declared but don't overlap.
+
+    Tier B is handled by ``semantic_decomposer.py`` when an LLM client
+    is available.  This function only applies Tier A and preserves
+    existing edges (from splits or explicit declarations).
+
+    Design principle (PR #113): use determinism where input→output is
+    crisp; use LLM inference where ambiguity requires reasoning.
 
     Returns the same list with updated depends_on fields (no cycles guaranteed).
     """
-    title_words: dict[str, set[str]] = {}
-    for it in items:
-        words = set(re.findall(r"\b\w{4,}\b", it.title.lower()))
-        if it.description:
-            words |= set(re.findall(r"\b\w{4,}\b", it.description.lower()))
-        title_words[it.item_id] = words
-
-    infra_ids: set[str] = set()
-    for it in items:
-        combined = f"{it.title} {it.description or ''}"
-        if _INFRA_MARKERS.search(combined):
-            infra_ids.add(it.item_id)
-
-    for it in items:
-        existing_deps = set(it.depends_on)
-
-        # Rule 1: non-infra items depend on infra items
-        if it.item_id not in infra_ids:
-            for infra_id in infra_ids:
-                if infra_id != it.item_id and infra_id not in existing_deps:
-                    existing_deps.add(infra_id)
-
-        # Rule 2: keyword overlap — if item B mentions keywords unique to A,
-        # B may depend on A (only if A has higher priority / lower index)
-        for other in items:
-            if other.item_id == it.item_id:
-                continue
-            if other.item_id in existing_deps:
-                continue
-            # Only add dependency if 'other' has higher priority (lower number)
-            if other.priority >= it.priority:
-                continue
-            # Check if 'it' references key terms from 'other'
-            it_words = title_words[it.item_id]
-            other_words = title_words[other.item_id]
-            overlap = it_words & other_words
-            # Require significant overlap (not just common words)
-            unique_overlap = overlap - _common_words()
-            if len(unique_overlap) >= 2:
-                existing_deps.add(other.item_id)
-
-        it.depends_on = sorted(existing_deps)
+    _apply_scope_overlap(items)
 
     # Verify no cycles — if cycles found, break them
     _break_cycles(items)
@@ -443,16 +475,44 @@ def build_dependency_dag(items: list[RoadmapItem]) -> list[RoadmapItem]:
     return items
 
 
-def _common_words() -> set[str]:
-    """Words too common to be meaningful dependency signals."""
-    return {
-        "with", "that", "this", "from", "have", "will", "should", "must",
-        "each", "when", "then", "also", "into", "more", "some", "them",
-        "been", "were", "being", "their", "about", "would", "could",
-        "other", "only", "over", "such", "than", "very", "just",
-        "item", "test", "data", "file", "code", "type", "make",
-        "work", "need", "used", "uses", "part", "based",
-    }
+def _apply_scope_overlap(items: list[RoadmapItem]) -> None:
+    """Tier A: add edges based on declared scope overlap.
+
+    Uses shared primitives from ``roadmap-runtime/scripts/scope_overlap.py``.
+    Only runs when both items in a pair declare scope.  When neither or
+    only one item has scope, no deterministic edge is added — that case
+    is handled by Tier B (LLM) in the semantic decomposer.
+    """
+    try:
+        from scope_overlap import check_scope_overlap  # type: ignore[import-untyped]
+    except ImportError:
+        return  # scope_overlap not on path — skip Tier A
+
+    for i, item_a in enumerate(items):
+        if not getattr(item_a, "scope", None):
+            continue
+        for item_b in items[i + 1:]:
+            if not getattr(item_b, "scope", None):
+                continue
+
+            # Skip if already connected
+            if item_b.item_id in item_a.depends_on or item_a.item_id in item_b.depends_on:
+                continue
+
+            rationale = check_scope_overlap(
+                write_a=getattr(item_a.scope, "write_allow", []),
+                read_a=getattr(item_a.scope, "read_allow", []),
+                lock_a=getattr(item_a.scope, "lock_keys", []),
+                write_b=getattr(item_b.scope, "write_allow", []),
+                read_b=getattr(item_b.scope, "read_allow", []),
+                lock_b=getattr(item_b.scope, "lock_keys", []),
+            )
+            if rationale:
+                # Higher priority (lower number) is the dependency
+                if item_a.priority < item_b.priority:
+                    item_b.depends_on.append(item_a.item_id)
+                else:
+                    item_a.depends_on.append(item_b.item_id)
 
 
 def _break_cycles(items: list[RoadmapItem]) -> None:
@@ -487,6 +547,148 @@ def _break_cycles(items: list[RoadmapItem]) -> None:
 
     for it in items:
         _dfs(it.item_id)
+
+
+# ---------------------------------------------------------------------------
+# Table row extraction (for priority tables in proposal body)
+# ---------------------------------------------------------------------------
+def _extract_table_items(body: str) -> list[_Section]:
+    """Extract items from markdown priority tables in a section's body.
+
+    Looks for markdown tables with priority-related column headers
+    (Priority, P0, P1, Module, etc.) and creates a synthetic _Section
+    for each data row.  Returns an empty list if no priority tables found.
+    """
+    lines = body.split("\n")
+    items: list[_Section] = []
+
+    i = 0
+    while i < len(lines):
+        # Look for a table separator row (|---|---|)
+        if i > 0 and _TABLE_SEP_RE.match(lines[i].strip()):
+            header_line = lines[i - 1].strip()
+            if not header_line.startswith("|"):
+                i += 1
+                continue
+
+            # Parse header columns
+            headers = [
+                h.strip() for h in header_line.strip("|").split("|")
+            ]
+
+            # Check if this is a priority table
+            header_text = " ".join(headers)
+            if not _PRIORITY_MARKERS.search(header_text):
+                i += 1
+                continue
+
+            # Find the "name" column — prefer "Module", "Component",
+            # "Feature", "Item"; fall back to the first column.
+            _NAME_COLS = re.compile(
+                r"\b(module|component|feature|item|name|task|capability)\b",
+                re.IGNORECASE,
+            )
+            name_col = 0  # default: first column
+            for ci, h in enumerate(headers):
+                if _NAME_COLS.search(h):
+                    name_col = ci
+                    break
+
+            # Parse data rows
+            j = i + 1
+            while j < len(lines) and lines[j].strip().startswith("|"):
+                row = lines[j].strip()
+                cells = [c.strip() for c in row.strip("|").split("|")]
+                if len(cells) > name_col:
+                    title = cells[name_col].strip("`").strip("*").strip()
+                    if title and title != "---":
+                        # Build a description from all cells
+                        desc_parts = [
+                            f"{headers[ci]}: {cells[ci]}"
+                            for ci in range(len(cells))
+                            if ci < len(headers) and ci != name_col
+                        ]
+                        items.append(
+                            _Section(
+                                level=4,  # synthetic sub-section level
+                                title=title,
+                                body="\n".join(desc_parts),
+                                line_start=j,
+                                is_capability=True,
+                            )
+                        )
+                j += 1
+            i = j
+        else:
+            i += 1
+
+    return items
+
+
+# ---------------------------------------------------------------------------
+# Repo state scanning (archive and active changes)
+# ---------------------------------------------------------------------------
+def scan_archive_state(repo_root: Path) -> dict[str, str]:
+    """Walk openspec/changes/archive/ and openspec/changes/ to build a
+    {change_id: status} map.
+
+    Archive entries (``YYYY-MM-DD-<change-id>/``) → ``completed``.
+    Active change dirs (``openspec/changes/<name>/``) → ``in_progress``.
+    """
+    state: dict[str, str] = {}
+
+    # Archived changes
+    archive_dir = repo_root / "openspec" / "changes" / "archive"
+    if archive_dir.is_dir():
+        for entry in archive_dir.iterdir():
+            if entry.is_dir():
+                name = entry.name
+                # Strip date prefix (YYYY-MM-DD-)
+                if len(name) > 11 and name[4] == "-" and name[7] == "-" and name[10] == "-":
+                    change_id = name[11:]
+                else:
+                    change_id = name
+                state[change_id] = "completed"
+
+    # Active (non-archived) changes
+    changes_dir = repo_root / "openspec" / "changes"
+    if changes_dir.is_dir():
+        for entry in changes_dir.iterdir():
+            if entry.is_dir() and entry.name != "archive":
+                if entry.name not in state:
+                    state[entry.name] = "in_progress"
+
+    return state
+
+
+def make_repo_relative(path: str, repo_root: Path) -> str:
+    """Normalize an absolute path to repo-relative.
+
+    If ``path`` is already relative or ``repo_root`` is not a prefix,
+    return ``path`` unchanged.
+    """
+    try:
+        p = Path(path)
+        if p.is_absolute():
+            return str(p.relative_to(repo_root))
+    except (ValueError, TypeError):
+        pass
+    return path
+
+
+def _generate_clean_id(title: str) -> str:
+    """Generate a clean kebab-case ID from a title.
+
+    Unlike ``_generate_item_id``, this produces IDs without the ``ri-``
+    prefix or numeric section prefixes — matching OpenSpec change-id
+    conventions.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    # Remove leading numeric prefixes (e.g., "1-1-" from "§1.1")
+    slug = re.sub(r"^[\d]+-(?:[\d]+-)*", "", slug)
+    # Truncate to reasonable length
+    result = slug[:60].rstrip("-")
+    return result if result else "unnamed-item"
 
 
 # ---------------------------------------------------------------------------

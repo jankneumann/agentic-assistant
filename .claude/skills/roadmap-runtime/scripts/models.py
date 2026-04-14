@@ -63,6 +63,15 @@ class PolicyAction(str, Enum):
     SWITCH = "switch_if_time_saved"
 
 
+class DepEdgeSource(str, Enum):
+    """How a dependency edge was inferred."""
+    DETERMINISTIC = "deterministic"
+    LLM = "llm"
+    SPLIT = "split"
+    EXPLICIT = "explicit"
+    CEILING_SKIPPED = "ceiling-skipped"
+
+
 class CheckpointPhase(str, Enum):
     PLANNING = "planning"
     IMPLEMENTING = "implementing"
@@ -83,6 +92,72 @@ class LearningPhase(str, Enum):
 # ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
+@dataclass
+class DepEdge:
+    """A dependency edge with source attribution and rationale.
+
+    Carries metadata about how the edge was inferred so operators can
+    audit and prune the DAG.  DepEdge records are stored in the
+    ``dep_edges`` field of ``RoadmapItem``; the parallel ``depends_on``
+    field keeps plain IDs for backward compatibility.
+    """
+
+    id: str
+    source: DepEdgeSource = DepEdgeSource.EXPLICIT
+    rationale: str = ""
+    confidence: str | None = None  # "low" | "medium" | "high", LLM only
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "id": self.id,
+            "source": self.source.value,
+            "rationale": self.rationale,
+        }
+        if self.confidence is not None:
+            d["confidence"] = self.confidence
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> DepEdge:
+        return cls(
+            id=data["id"],
+            source=DepEdgeSource(data.get("source", "explicit")),
+            rationale=data.get("rationale", ""),
+            confidence=data.get("confidence"),
+        )
+
+
+@dataclass
+class Scope:
+    """Optional scope declaration for deterministic dependency inference.
+
+    When both items in a pair declare scope, Tier A (deterministic
+    overlap) can add or skip edges without LLM calls.
+    """
+
+    write_allow: list[str] = field(default_factory=list)
+    read_allow: list[str] = field(default_factory=list)
+    lock_keys: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.write_allow:
+            d["write_allow"] = self.write_allow
+        if self.read_allow:
+            d["read_allow"] = self.read_allow
+        if self.lock_keys:
+            d["lock_keys"] = self.lock_keys
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Scope:
+        return cls(
+            write_allow=data.get("write_allow", []),
+            read_allow=data.get("read_allow", []),
+            lock_keys=data.get("lock_keys", []),
+        )
+
+
 @dataclass
 class Policy:
     default_action: PolicyAction = PolicyAction.WAIT
@@ -124,6 +199,8 @@ class RoadmapItem:
     failure_reason: str | None = None
     blocked_by: list[str] = field(default_factory=list)
     learning_refs: list[str] = field(default_factory=list)
+    dep_edges: list[DepEdge] = field(default_factory=list)
+    scope: Scope | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -132,8 +209,13 @@ class RoadmapItem:
             "status": self.status.value,
             "priority": self.priority,
             "effort": self.effort.value,
-            "depends_on": self.depends_on,
         }
+        # Serialize depends_on: use rich DepEdge format when available,
+        # plain string list otherwise (backward compatible).
+        if self.dep_edges:
+            d["depends_on"] = [e.to_dict() for e in self.dep_edges]
+        else:
+            d["depends_on"] = self.depends_on
         if self.description:
             d["description"] = self.description
         if self.rationale:
@@ -148,17 +230,34 @@ class RoadmapItem:
             d["blocked_by"] = self.blocked_by
         if self.learning_refs:
             d["learning_refs"] = self.learning_refs
+        if self.scope:
+            d["scope"] = self.scope.to_dict()
         return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RoadmapItem:
+        # Normalize depends_on: accept both ["id", ...] and [{id, source, ...}, ...]
+        raw_deps = data.get("depends_on", [])
+        depends_on: list[str] = []
+        dep_edges: list[DepEdge] = []
+        for entry in raw_deps:
+            if isinstance(entry, str):
+                depends_on.append(entry)
+            elif isinstance(entry, dict):
+                edge = DepEdge.from_dict(entry)
+                depends_on.append(edge.id)
+                dep_edges.append(edge)
+
+        raw_scope = data.get("scope")
+        scope = Scope.from_dict(raw_scope) if raw_scope else None
+
         return cls(
             item_id=data["item_id"],
             title=data["title"],
             status=ItemStatus(data["status"]),
             priority=data["priority"],
             effort=Effort(data["effort"]),
-            depends_on=data.get("depends_on", []),
+            depends_on=depends_on,
             description=data.get("description"),
             rationale=data.get("rationale"),
             change_id=data.get("change_id"),
@@ -166,6 +265,8 @@ class RoadmapItem:
             failure_reason=data.get("failure_reason"),
             blocked_by=data.get("blocked_by", []),
             learning_refs=data.get("learning_refs", []),
+            dep_edges=dep_edges,
+            scope=scope,
         )
 
 
