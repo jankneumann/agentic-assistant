@@ -7,8 +7,9 @@ import argparse
 import os
 import subprocess
 import sys
-from collections.abc import Sequence
 from pathlib import Path
+from typing import Sequence
+
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 REFRESH_SCRIPT = SCRIPTS_DIR / "refresh_architecture.sh"

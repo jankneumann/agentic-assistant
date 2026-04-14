@@ -16,13 +16,14 @@ import json
 import logging
 import subprocess
 import sys
-from datetime import UTC, datetime
+from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from arch_utils.constants import EdgeType
-from arch_utils.node_id import make_node_id
+from arch_utils.constants import DEPENDENCY_EDGE_TYPES, EdgeType  # noqa: E402
+from arch_utils.node_id import make_node_id  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -654,7 +655,7 @@ def build_graph(
 
     # --- Build snapshot ---
     git_sha = get_git_sha()
-    generated_at = datetime.now(UTC).isoformat()
+    generated_at = datetime.now(timezone.utc).isoformat()
 
     tool_versions: dict[str, str] = {"graph_builder": "2.0.0"}
     for label, data in [("python_analyzer", py_data), ("ts_analyzer", ts_data), ("postgres_analyzer", pg_data)]:

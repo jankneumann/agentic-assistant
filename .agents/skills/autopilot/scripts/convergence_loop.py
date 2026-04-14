@@ -23,10 +23,9 @@ from __future__ import annotations
 
 import logging
 import sys
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 # ---------------------------------------------------------------------------
 # Import review_dispatcher and consensus_synthesizer from parallel-infrastructure
@@ -40,14 +39,14 @@ _PARALLEL_INFRA_DIR = str(
 if _PARALLEL_INFRA_DIR not in sys.path:
     sys.path.insert(0, _PARALLEL_INFRA_DIR)
 
+from review_dispatcher import (  # noqa: E402
+    ReviewOrchestrator,
+    ReviewResult,
+)
 from consensus_synthesizer import (  # noqa: E402
     ConsensusSynthesizer,
     Finding,
     VendorResult,
-)
-from review_dispatcher import (  # noqa: E402
-    ReviewOrchestrator,
-    ReviewResult,
 )
 
 logger = logging.getLogger(__name__)

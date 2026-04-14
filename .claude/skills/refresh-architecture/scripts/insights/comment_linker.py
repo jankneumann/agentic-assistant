@@ -18,7 +18,7 @@ import json
 import logging
 import sys
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -94,7 +94,7 @@ def compute_comment_insights(
         })
 
     return {
-        "generated_at": datetime.now(UTC).isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "summary": {
             "total_comments": len(comments),
             "total_with_markers": sum(1 for c in comments if c.get("markers")),

@@ -6,11 +6,12 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fix_models import ClassifiedFinding
-from verify import VerificationResult
+from fix_models import ClassifiedFinding  # noqa: E402
+from verify import VerificationResult  # noqa: E402
 
 
 def render_fix_report(

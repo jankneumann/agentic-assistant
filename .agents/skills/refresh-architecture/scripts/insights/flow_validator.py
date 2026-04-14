@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from validate_flows import validate_flows
+from validate_flows import validate_flows  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     # Import the scope resolver from validate_flows
-    from validate_flows import _resolve_changed_files
+    from validate_flows import _resolve_changed_files  # noqa: E402
 
     changed_files = _resolve_changed_files(args.files, args.diff, args.glob)
 

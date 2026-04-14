@@ -30,6 +30,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
 from validate_work_result import (
+    load_schema,
     validate_result as validate_result_base,
 )
 

@@ -4,11 +4,11 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import shutil
 import subprocess
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -339,7 +339,7 @@ def main() -> int:
         openspec_root=args.openspec_root,
     )
     commit_sha = _git_stdout(repo, "rev-parse", "HEAD") or "unknown"
-    timestamp = datetime.now(UTC).isoformat()
+    timestamp = datetime.now(timezone.utc).isoformat()
 
     profile = _apply_profile_override(detect_profiles(repo), args.profile_override)
     plan = build_plan(

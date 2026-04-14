@@ -28,8 +28,8 @@ logger = logging.getLogger("analyze_sql_treesitter")
 # ---------------------------------------------------------------------------
 
 try:
-    import tree_sitter_sql
     from tree_sitter import Language, Node, Parser
+    import tree_sitter_sql
 
     SQL_LANGUAGE = Language(tree_sitter_sql.language())
     TREESITTER_AVAILABLE = True

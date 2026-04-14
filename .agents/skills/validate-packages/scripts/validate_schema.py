@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 import jsonschema
 
+
 SCHEMA_PATH = Path(__file__).parent / "architecture_schema.json"
 
 

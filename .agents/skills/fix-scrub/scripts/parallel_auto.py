@@ -9,8 +9,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from execute_auto import execute_auto_fixes
-from fix_models import ClassifiedFinding, FixGroup
+from execute_auto import execute_auto_fixes  # noqa: E402
+from fix_models import ClassifiedFinding, FixGroup  # noqa: E402
 
 
 def execute_auto_fixes_parallel(

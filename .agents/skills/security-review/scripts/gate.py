@@ -10,6 +10,7 @@ from typing import Any
 
 from models import GateResult, normalize_severity, severity_rank
 
+
 DEGRADED_STATUSES = {"unavailable", "error"}
 
 

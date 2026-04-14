@@ -5,12 +5,12 @@ from __future__ import annotations
 
 import re
 import sys
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fix_models import ClassifiedFinding
+from fix_models import ClassifiedFinding, Finding  # noqa: E402
 
 
 def _is_partial_task(line: str) -> bool:
@@ -48,7 +48,7 @@ def _update_tasks_md(
                 continue
             lines[i] = line.replace(
                 "- [ ]",
-                "- [x]",
+                f"- [x]",
             ) + f" (completed by fix-scrub {today})"
             updated = True
             break
@@ -102,7 +102,7 @@ def track_completions(
     Returns:
         List of file paths that were updated (for staging in commit).
     """
-    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     updated_files: list[str] = []
 
     for cf in resolved_findings:

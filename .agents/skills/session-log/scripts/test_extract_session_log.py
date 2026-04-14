@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 import pytest
+
 from extract_session_log import (
     append_merge_entry,
     append_phase_entry,
     count_phase_iterations,
     generate_self_summary_prompt,
 )
+
 
 # --- append_phase_entry ---
 

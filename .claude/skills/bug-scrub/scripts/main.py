@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Ensure scripts directory is on the path
@@ -97,7 +97,7 @@ def run(
             print(f"  {status_icon}: {finding_count} findings ({result.duration_ms}ms)")
 
     # Aggregate
-    timestamp = datetime.now(UTC).isoformat()
+    timestamp = datetime.now(timezone.utc).isoformat()
     report = aggregate(results, severity_filter=severity, timestamp=timestamp)
 
     # Report

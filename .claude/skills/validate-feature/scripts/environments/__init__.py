@@ -2,4 +2,4 @@
 
 from .protocol import SeedableEnvironment, TestEnvironment
 
-__all__ = ["SeedableEnvironment", "TestEnvironment"]
+__all__ = ["TestEnvironment", "SeedableEnvironment"]

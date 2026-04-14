@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fix_models import ClassifiedFinding, FixGroup
+from fix_models import ClassifiedFinding, FixGroup  # noqa: E402
 
 
 def execute_auto_fixes(

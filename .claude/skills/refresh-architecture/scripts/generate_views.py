@@ -38,6 +38,7 @@ from arch_utils.constants import EdgeType  # noqa: E402
 from arch_utils.graph_io import load_graph as _load_graph  # noqa: E402
 from arch_utils.node_id import mermaid_id as _mermaid_id  # noqa: E402
 
+
 # ---------------------------------------------------------------------------
 # Graph loading
 # ---------------------------------------------------------------------------

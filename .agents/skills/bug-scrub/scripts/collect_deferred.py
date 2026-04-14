@@ -32,7 +32,7 @@ _UNCHECKED_RE = re.compile(r"^(\s*)-\s*\[\s*\]\s+(.+)", re.MULTILINE)
 _TABLE_ROW_RE = re.compile(r"^\|(.+)\|$")
 
 # Glob patterns relative to the project root
-_ACTIVE_GLOB = "openspec/changes/*/{}".format
+_ACTIVE_GLOB = "openspec/changes/*/{}".format  # noqa: UP032 – used as a factory
 _ARCHIVE_GLOB = "openspec/changes/archive/*/{}".format
 
 
@@ -137,7 +137,7 @@ def _scan_impl_findings(
 
             try:
                 table_rows = _parse_table_rows(content)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning("Malformed table in %s: %s", fpath, exc)
                 messages.append(f"warn: malformed table in {rel}: {exc}")
                 continue
@@ -218,7 +218,7 @@ def _scan_deferred_tasks(
 
             try:
                 table_rows = _parse_table_rows(content)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning("Malformed table in %s: %s", fpath, exc)
                 messages.append(f"warn: malformed table in {rel}: {exc}")
                 continue
@@ -301,7 +301,7 @@ def _scan_open_tasks(
 
             try:
                 lines = content.splitlines()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning("Malformed content in %s: %s", fpath, exc)
                 messages.append(f"warn: malformed content in {rel}: {exc}")
                 continue

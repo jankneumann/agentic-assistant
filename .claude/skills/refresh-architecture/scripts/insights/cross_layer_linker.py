@@ -30,9 +30,9 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from arch_utils.constants import EdgeType
-from arch_utils.node_id import make_node_id
-from graph_builder import deduplicate_edges, validate_edges
+from arch_utils.constants import EdgeType  # noqa: E402
+from arch_utils.node_id import make_node_id  # noqa: E402
+from graph_builder import deduplicate_edges, validate_edges  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

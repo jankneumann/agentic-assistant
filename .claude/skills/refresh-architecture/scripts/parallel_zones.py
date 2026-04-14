@@ -14,8 +14,8 @@ import argparse
 import json
 import logging
 import sys
-from collections import defaultdict
-from datetime import UTC, datetime
+from collections import defaultdict, deque
+from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -29,6 +29,7 @@ if str(_VALIDATE_PACKAGES_DIR) not in sys.path:
 from arch_utils.constants import DEPENDENCY_EDGE_TYPES  # noqa: E402
 from arch_utils.graph_io import load_graph  # noqa: E402
 from arch_utils.traversal import reachable_from  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # Union-Find for weakly connected components
@@ -230,7 +231,7 @@ def build_output(
     largest = max((len(g) for g in components), default=0)
 
     return {
-        "generated_at": datetime.now(UTC).isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "independent_groups": independent_groups,
         "leaf_modules": leaf_modules,
         "high_impact_modules": high_impact,

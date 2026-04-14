@@ -15,8 +15,9 @@ Functions:
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
+
 
 SESSION_LOG_HEADER = """\
 # Session Log: {change_id}
@@ -54,7 +55,7 @@ def append_phase_entry(
     )
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    date_str = datetime.now(UTC).strftime("%Y-%m-%d")
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     phase_header = f"## Phase: {phase_name} ({date_str})\n\n{content.rstrip()}\n"
 
     if path.exists():
@@ -166,7 +167,7 @@ List any unresolved questions as checklist items.
 Fill in the metadata table with:
 - Agent Type: (your agent type)
 - Session ID(s): (current session ID if available)
-- Date Range: {datetime.now(UTC).strftime('%Y-%m-%d')}
+- Date Range: {datetime.now(timezone.utc).strftime('%Y-%m-%d')}
 - Interactions: (approximate count)
 - Source: self-summary
 

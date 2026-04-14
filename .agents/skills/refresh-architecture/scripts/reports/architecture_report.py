@@ -26,12 +26,12 @@ import logging
 import re
 import sys
 from collections import Counter, defaultdict
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from arch_utils.graph_io import load_graph
+from arch_utils.graph_io import load_graph  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,6 @@ from generate_views import (  # noqa: E402
     generate_db_erd,
     generate_frontend_component_view,
 )
-
 from reports.config_schema import (  # noqa: E402
     KNOWN_SECTIONS,
     ReportConfig,
@@ -143,7 +142,7 @@ def _section_system_overview(
 
     # Metadata
     git_sha = "unknown"
-    generated_at = datetime.now(UTC).isoformat()
+    generated_at = datetime.now(timezone.utc).isoformat()
     if summary:
         git_sha = summary.get("git_sha", git_sha)
         generated_at = summary.get("generated_at", generated_at)

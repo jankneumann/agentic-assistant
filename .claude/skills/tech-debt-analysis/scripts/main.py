@@ -12,7 +12,7 @@ import argparse
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Ensure scripts directory is on the path
@@ -121,7 +121,7 @@ def run(
         print(f"  {result.analyzer}: {result.status}, {finding_count} findings ({result.duration_ms}ms)")
 
     # Aggregate
-    timestamp = datetime.now(UTC).isoformat()
+    timestamp = datetime.now(timezone.utc).isoformat()
     report = aggregate(results, severity_filter=severity, timestamp=timestamp)
 
     # Write report

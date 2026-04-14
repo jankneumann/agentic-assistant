@@ -43,11 +43,10 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +95,7 @@ Spawner = Callable[[list[str]], _ProcessLike]
 
 def _default_spawner(cmd: list[str]) -> _ProcessLike:
     """Default spawner: detached subprocess.Popen."""
-    return subprocess.Popen(
+    return subprocess.Popen(  # noqa: S603 — trusted command
         cmd,
         start_new_session=True,
         stdout=subprocess.DEVNULL,

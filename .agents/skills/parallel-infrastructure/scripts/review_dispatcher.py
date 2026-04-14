@@ -310,10 +310,33 @@ class CliVendorAdapter:
         )
 
     @staticmethod
+    def _extract_findings(data: dict[str, Any]) -> dict[str, Any] | None:
+        """Extract findings from a parsed JSON dict.
+
+        Handles both direct findings objects and vendor CLI envelopes.
+        Gemini CLI ``-o json`` wraps model output in
+        ``{"session_id": ..., "response": "<json-string>", "stats": ...}``.
+        """
+        if "findings" in data:
+            return data
+        # Unwrap vendor envelopes (e.g. Gemini -o json)
+        resp = data.get("response")
+        if isinstance(resp, str):
+            try:
+                inner = json.loads(resp)
+                if isinstance(inner, dict) and "findings" in inner:
+                    return inner
+            except json.JSONDecodeError:
+                pass
+        return None
+
+    @staticmethod
     def _parse_findings(stdout: str) -> dict[str, Any] | None:
         """Try to parse review findings JSON from stdout.
 
-        Handles cases where the vendor outputs extra text before/after JSON.
+        Handles cases where the vendor outputs extra text before/after JSON,
+        and vendor CLI envelopes that wrap model output (e.g. Gemini
+        ``-o json`` producing ``{"response": "<escaped-json>"}``).
         """
         text = stdout.strip()
         if not text:
@@ -322,8 +345,10 @@ class CliVendorAdapter:
         # Try direct parse
         try:
             data = json.loads(text)
-            if isinstance(data, dict) and "findings" in data:
-                return data
+            if isinstance(data, dict):
+                result = CliVendorAdapter._extract_findings(data)
+                if result is not None:
+                    return result
         except json.JSONDecodeError:
             pass
 
@@ -333,8 +358,10 @@ class CliVendorAdapter:
         if brace_start >= 0 and brace_end > brace_start:
             try:
                 data = json.loads(text[brace_start:brace_end + 1])
-                if isinstance(data, dict) and "findings" in data:
-                    return data
+                if isinstance(data, dict):
+                    result = CliVendorAdapter._extract_findings(data)
+                    if result is not None:
+                        return result
             except json.JSONDecodeError:
                 pass
 
@@ -703,7 +730,7 @@ class SdkVendorAdapter:
             raise _SdkCapacityError()
         except anthropic.AuthenticationError as exc:
             raise _SdkAuthError(str(exc))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             raise _SdkTransientError(str(exc))
 
     def _call_openai(
@@ -729,7 +756,7 @@ class SdkVendorAdapter:
             raise _SdkCapacityError()
         except openai.AuthenticationError as exc:
             raise _SdkAuthError(str(exc))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             raise _SdkTransientError(str(exc))
 
     def _call_google(
@@ -750,7 +777,7 @@ class SdkVendorAdapter:
             )
             text = response.text if response.text else ""
             return CliVendorAdapter._parse_findings(text)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             err_lower = str(exc).lower()
             if "429" in err_lower or "resource_exhausted" in err_lower:
                 raise _SdkCapacityError()
@@ -798,7 +825,7 @@ class ReviewOrchestrator:
         self.sdk_adapters = sdk_adapters or {}
 
     @classmethod
-    def from_config_dict(cls, data: dict[str, Any]) -> ReviewOrchestrator:
+    def from_config_dict(cls, data: dict[str, Any]) -> "ReviewOrchestrator":
         """Create orchestrator from a config dict (as returned by coordinator).
 
         The dict should have an ``agents`` key containing a list of agent
@@ -891,7 +918,7 @@ class ReviewOrchestrator:
             return None
 
     @classmethod
-    def from_coordinator(cls) -> ReviewOrchestrator:
+    def from_coordinator(cls) -> "ReviewOrchestrator":
         """Create orchestrator by calling get_dispatch_configs via subprocess.
 
         Discovers the agent-coordinator directory from the coordination
@@ -927,7 +954,7 @@ class ReviewOrchestrator:
             return cls({})
 
     @classmethod
-    def from_agents_yaml(cls, path: Path | None = None) -> ReviewOrchestrator:
+    def from_agents_yaml(cls, path: Path | None = None) -> "ReviewOrchestrator":
         """Create orchestrator from an explicit agents.yaml path.
 
         Uses ``_find_coordinator_dir()`` to locate the
@@ -1061,7 +1088,7 @@ class ReviewOrchestrator:
             if spec and spec.loader:
                 mod = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(mod)  # type: ignore[union-attr]
-                ApiKeyResolver = mod.ApiKeyResolver  # type: ignore[no-redef]
+                ApiKeyResolver = mod.ApiKeyResolver  # type: ignore[no-redef] # noqa: N806
             else:
                 raise
 

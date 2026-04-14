@@ -22,7 +22,7 @@ import re
 import subprocess
 import sys
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +34,7 @@ from arch_utils.traversal import (  # noqa: E402
     build_adjacency,
     reachable_from,
 )
+
 
 # ---------------------------------------------------------------------------
 # Data helpers
@@ -680,7 +681,7 @@ def validate_flows(
     info = sum(1 for f in all_findings if f["severity"] == "info")
 
     report = {
-        "generated_at": datetime.now(UTC).isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "scope": "changed" if changed_files is not None else "full",
         "changed_files": changed_files or [],
         "findings": all_findings,

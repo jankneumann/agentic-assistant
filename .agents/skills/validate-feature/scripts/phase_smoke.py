@@ -20,7 +20,7 @@ import re
 import subprocess
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -147,7 +147,7 @@ def append_smoke_section(
         results: Per-test results from parse_pytest_output()
         failure_output: Raw pytest output for failures (optional)
     """
-    timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # Build the smoke section
     section_lines = [
