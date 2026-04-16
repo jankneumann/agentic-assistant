@@ -50,6 +50,7 @@
 | P16 | `cli-harness-integrations` | phase | pending | — | original P7 | Deeper Claude Code / Codex / Gemini integrations — slash commands in `.claude/commands/`, `.codex/skills/`, `.gemini/settings.json`. Persona-aware routing |
 | P17 | `mcp-server-exposure` | phase | pending | — | original P9 | Expose the assistant as an MCP server so other Claude Code sessions can invoke it as a tool. Complementary to P6 A2A (different protocols, different clients) |
 | P18 | `railway-deployment` | phase | pending | — | original P10 | Run persona instances as Railway services + deployment manifests |
+| X1 | `add-teacher-role` | non-phase (feature) | pending | — | user-requested (2026-04-16) | Add `teacher` role with Feynman + Socratic skill files; `--method` CLI flag and `/method` / `/methods` REPL commands; forward-declare `content_analyzer:*` preferred tools for post-P3 wiring. Independent of the P-phase DAG — does not block or depend on any phase. |
 
 ## Status lifecycle
 

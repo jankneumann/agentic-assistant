@@ -453,3 +453,44 @@ items:
       - All openspec/specs/**/spec.md Purpose sections are non-TBD
       - Decision documented (manual-pass vs OpenSpec tooling extension)
       - openspec validate --strict still passes
+
+  # ── User-requested feature additions (independent of P-phase DAG) ──
+
+  - item_id: add-teacher-role
+    change_id: add-teacher-role
+    title: Add teacher role with Feynman and Socratic skill files
+    status: pending
+    priority: 23
+    effort: S
+    depends_on: []
+    description: >
+      Non-phase (feature). New public `teacher` role under
+      `roles/teacher/` with two skills: `feynman.md` (explain → check →
+      diagnose → re-teach loop toward a one-sentence transferable
+      definition) and `socratic.md` (question-only loop that surfaces
+      the user's model and fills gaps). CLI gains `--method <name>` /
+      `-m <name>` flag; REPL gains `/method <name>` and `/methods`
+      commands. Method switching is prompt-level (does NOT rebuild the
+      agent, unlike `/role <name>`) so the teaching loop survives
+      mid-session method changes. Teacher delegates to `researcher`
+      sub-role only, for concept verification. `preferred_tools`
+      declares `content_analyzer:search` and
+      `content_analyzer:knowledge_graph` — forward-declared; real
+      wiring lands with P3 `http-tools-layer`.
+    rationale: >
+      User-requested 2026-04-16 to support "master topics well enough
+      to teach them to others" via structured teaching methods.
+      Independent of the P-phase DAG: no functional dependency on any
+      phase, no phase depends on it. Effort is S because the design
+      reuses Deep Agents' native `skills=` discovery, existing role
+      machinery, and the existing delegation graph — no new core
+      abstractions.
+    acceptance_outcomes:
+      - openspec/specs/teacher-role populated (new capability)
+      - openspec/specs/cli-interface MODIFIED requirements land
+        (--method flag, /method and /methods REPL commands)
+      - roles/teacher/ present with role.yaml, prompt.md,
+        skills/feynman.md, skills/socratic.md
+      - uv run pytest tests/ exits 0 with new teacher + CLI tests
+      - Manual REPL smoke test confirms [Teacher:<method>]> prompt
+        prefix updates on /method switch without agent rebuild
