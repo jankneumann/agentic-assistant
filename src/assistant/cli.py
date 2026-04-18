@@ -1,4 +1,9 @@
-"""CLI: persona-by-role-by-harness selection with REPL + /role + /delegate."""
+"""CLI: persona-by-role-by-harness selection with REPL + /role + /delegate.
+
+Supports two modes:
+  - `run` (default): interactive REPL via SDK harness
+  - `export`: generate host-harness integration artifacts
+"""
 
 from __future__ import annotations
 
@@ -11,22 +16,37 @@ import click
 from assistant.core.persona import PersonaRegistry
 from assistant.core.role import RoleConfig, RoleRegistry
 from assistant.delegation.spawner import DelegationSpawner
-from assistant.harnesses.base import HarnessAdapter
+from assistant.harnesses.base import HostHarnessAdapter, SdkHarnessAdapter
 from assistant.harnesses.factory import create_harness as _default_create_harness
 
 logger = logging.getLogger(__name__)
 
-# Test seam: tests may monkeypatch this to inject a stub harness factory.
 _create_harness = _default_create_harness
 
 
-@click.command()
+class _DefaultGroup(click.Group):
+    """Click group that defaults to 'run' when no subcommand is given."""
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        if args and args[0] not in self.commands and not args[0].startswith("-"):
+            pass
+        elif not args or args[0].startswith("-"):
+            args = ["run", *args]
+        return super().parse_args(ctx, args)
+
+
+@click.group(cls=_DefaultGroup, invoke_without_command=True)
+def main() -> None:
+    """Start the agentic-assistant."""
+
+
+@main.command()
 @click.option("--persona", "-p", type=str, default=None, help="Persona name.")
 @click.option("--role", "-r", type=str, default=None, help="Role name.")
 @click.option(
     "--harness",
     "-H",
-    type=click.Choice(["deep_agents", "ms_agent_framework"]),
+    type=click.Choice(["deep_agents", "ms_agent_framework", "claude_code"]),
     default="deep_agents",
     help="Harness backend.",
 )
@@ -40,14 +60,14 @@ _create_harness = _default_create_harness
     is_flag=True,
     help="List roles available for the selected persona and exit.",
 )
-def main(
+def run(
     persona: str | None,
     role: str | None,
     harness: str,
     list_personas: bool,
     list_roles: bool,
 ) -> None:
-    """Start the agentic-assistant."""
+    """Start the interactive REPL."""
     persona_reg = PersonaRegistry()
     role_reg = RoleRegistry()
 
@@ -82,7 +102,59 @@ def main(
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
+    if not isinstance(adapter, SdkHarnessAdapter):
+        click.echo(
+            f"Error: harness '{harness}' is a host harness, not an SDK harness. "
+            f"Use 'assistant export' instead.",
+            err=True,
+        )
+        sys.exit(1)
+
     asyncio.run(_run_repl(persona_reg, role_reg, pc, rc, harness, adapter))
+
+
+@main.command()
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.option("--role", "-r", type=str, default=None, help="Role name.")
+@click.option(
+    "--harness",
+    "-H",
+    type=str,
+    required=True,
+    help="Host harness name (e.g., claude_code).",
+)
+def export(persona: str, role: str | None, harness: str) -> None:
+    """Generate host-harness integration artifacts."""
+    from assistant.core.capabilities.resolver import CapabilityResolver
+
+    persona_reg = PersonaRegistry()
+    role_reg = RoleRegistry()
+
+    pc = _load_persona_or_fail(persona_reg, persona)
+    role_name = role or pc.default_role
+    try:
+        rc = role_reg.load(role_name, pc)
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
+
+    try:
+        adapter = _create_harness(pc, rc, harness)
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
+
+    if not isinstance(adapter, HostHarnessAdapter):
+        click.echo(
+            f"Error: '{harness}' is an SDK harness, not a host harness. "
+            f"Use 'assistant run' instead.",
+            err=True,
+        )
+        sys.exit(1)
+
+    resolver = CapabilityResolver()
+    capabilities = resolver.resolve(pc, "host", rc)
+
+    context = adapter.export_context(capabilities)
+    click.echo(context.get("system_prompt", ""))
 
 
 def _load_persona_or_fail(
@@ -100,7 +172,7 @@ async def _run_repl(
     pc,
     rc: RoleConfig,
     harness_name: str,
-    adapter: HarnessAdapter,
+    adapter: SdkHarnessAdapter,
 ) -> None:
     click.echo(f"Persona:  {pc.display_name}")
     click.echo(f"Role:     {rc.display_name}")

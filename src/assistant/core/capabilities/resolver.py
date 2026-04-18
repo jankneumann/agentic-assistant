@@ -1,0 +1,98 @@
+"""CapabilityResolver — assembles CapabilitySet per harness type — Task 2.2."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+from assistant.core.capabilities.guardrails import AllowAllGuardrails, GuardrailProvider
+from assistant.core.capabilities.memory import (
+    FileMemoryPolicy,
+    HostProvidedMemoryPolicy,
+    MemoryPolicy,
+)
+from assistant.core.capabilities.sandbox import PassthroughSandbox, SandboxProvider
+from assistant.core.capabilities.tools import DefaultToolPolicy, ToolPolicy
+from assistant.core.capabilities.types import (
+    CapabilitySet,
+    ExecutionContext,
+    SandboxConfig,
+)
+
+
+class _HostProvidedSandbox:
+    def create_context(self, config: SandboxConfig) -> ExecutionContext:
+        return ExecutionContext(
+            work_dir=Path.cwd(), isolation_type="host_provided"
+        )
+
+    def cleanup(self, context: ExecutionContext) -> None:
+        pass
+
+
+class CapabilityResolver:
+    def __init__(
+        self,
+        *,
+        guardrail_factory: Callable[[], GuardrailProvider] | None = None,
+        sandbox_factory: Callable[[], SandboxProvider] | None = None,
+        memory_factory: Callable[[], MemoryPolicy] | None = None,
+        tool_factory: Callable[[], ToolPolicy] | None = None,
+    ) -> None:
+        self._guardrail_factory = guardrail_factory
+        self._sandbox_factory = sandbox_factory
+        self._memory_factory = memory_factory
+        self._tool_factory = tool_factory
+
+    def resolve(
+        self, persona: Any, harness_type: str, role: Any
+    ) -> CapabilitySet:
+        if harness_type == "host":
+            return CapabilitySet(
+                guardrails=(
+                    self._guardrail_factory()
+                    if self._guardrail_factory
+                    else AllowAllGuardrails()
+                ),
+                sandbox=(
+                    self._sandbox_factory()
+                    if self._sandbox_factory
+                    else _HostProvidedSandbox()
+                ),
+                memory=(
+                    self._memory_factory()
+                    if self._memory_factory
+                    else HostProvidedMemoryPolicy()
+                ),
+                tools=(
+                    self._tool_factory()
+                    if self._tool_factory
+                    else DefaultToolPolicy()
+                ),
+                context=None,
+            )
+
+        return CapabilitySet(
+            guardrails=(
+                self._guardrail_factory()
+                if self._guardrail_factory
+                else AllowAllGuardrails()
+            ),
+            sandbox=(
+                self._sandbox_factory()
+                if self._sandbox_factory
+                else PassthroughSandbox()
+            ),
+            memory=(
+                self._memory_factory()
+                if self._memory_factory
+                else FileMemoryPolicy()
+            ),
+            tools=(
+                self._tool_factory()
+                if self._tool_factory
+                else DefaultToolPolicy()
+            ),
+            context=None,
+        )
