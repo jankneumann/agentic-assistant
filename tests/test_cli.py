@@ -18,8 +18,9 @@ from click.testing import CliRunner
 import assistant.cli as cli_mod
 from assistant.core.persona import PersonaConfig
 from assistant.core.role import RoleConfig
-from assistant.harnesses.base import HarnessAdapter
-from assistant.harnesses.ms_agent_fw import MSAgentFrameworkHarness
+from assistant.harnesses.base import SdkHarnessAdapter
+from assistant.harnesses.host.claude_code import ClaudeCodeHarness
+from assistant.harnesses.sdk.ms_agent_fw import MSAgentFrameworkHarness
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -30,7 +31,7 @@ def chdir_to_repo_root(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(REPO_ROOT)
 
 
-class StubHarness(HarnessAdapter):
+class StubHarness(SdkHarnessAdapter):
     invoke_response = "hello back"
     spawn_response = "draft text"
 
@@ -39,6 +40,9 @@ class StubHarness(HarnessAdapter):
 
     def name(self) -> str:
         return "stub"
+
+    def harness_type(self) -> str:
+        return "sdk"
 
     async def create_agent(self, tools, extensions):
         return object()
@@ -62,7 +66,9 @@ def stub_factory(monkeypatch: pytest.MonkeyPatch):
             return MSAgentFrameworkHarness(persona, role)
         if harness_name == "deep_agents":
             return StubHarness(persona, role)
-        raise ValueError(f"Unknown harness '{harness_name}'. Available: ['deep_agents', 'ms_agent_framework']")
+        if harness_name == "claude_code":
+            return ClaudeCodeHarness(persona, role)
+        raise ValueError(f"Unknown harness '{harness_name}'. Available: ['deep_agents', 'ms_agent_framework', 'claude_code']")
 
     monkeypatch.setattr(cli_mod, "_create_harness", fake)
 
@@ -229,3 +235,49 @@ def test_invalid_delegate_usage_prints_hint(stub_factory) -> None:
     )
     assert result.exit_code == 0
     assert "Usage:" in result.output
+
+
+# ── CLI Export Subcommand (Phase 5) ─────────────────────────────────
+
+
+def test_export_generates_context_artifacts(stub_factory) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main, ["export", "-p", "personal", "-H", "claude_code"]
+    )
+    assert result.exit_code == 0
+    assert len(result.output.strip()) > 0
+
+
+def test_export_requires_persona() -> None:
+    runner = CliRunner()
+    result = runner.invoke(cli_mod.main, ["export", "-H", "claude_code"])
+    assert result.exit_code != 0
+
+
+def test_export_rejects_sdk_harness(stub_factory) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main, ["export", "-p", "personal", "-H", "deep_agents"]
+    )
+    assert result.exit_code != 0
+    combined = result.output + (str(result.exception) if result.exception else "")
+    assert "SDK harness" in combined or "sdk" in combined.lower()
+
+
+def test_bare_invocation_defaults_to_run(stub_factory) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main, ["-p", "personal"], input="quit\n"
+    )
+    assert result.exit_code == 0
+    assert "Chief of Staff" in result.output
+
+
+def test_explicit_run_subcommand(stub_factory) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main, ["run", "-p", "personal"], input="quit\n"
+    )
+    assert result.exit_code == 0
+    assert "Chief of Staff" in result.output

@@ -1,7 +1,7 @@
 """Tests for harness-adapter spec.
 
-Covers all 10 scenarios across 4 requirements in
-``openspec/changes/bootstrap-vertical-slice/specs/harness-adapter/spec.md``.
+Covers all scenarios across requirements in harness-adapter spec,
+including the Phase 3 restructure (SDK/Host split, harness_type property).
 """
 
 from __future__ import annotations
@@ -15,10 +15,11 @@ import pytest
 from assistant.core.persona import PersonaConfig
 from assistant.core.role import RoleConfig
 from assistant.extensions._stub import StubExtension
-from assistant.harnesses.base import HarnessAdapter
-from assistant.harnesses.deep_agents import DeepAgentsHarness
+from assistant.harnesses.base import HarnessAdapter, HostHarnessAdapter, SdkHarnessAdapter
 from assistant.harnesses.factory import create_harness
-from assistant.harnesses.ms_agent_fw import MSAgentFrameworkHarness
+from assistant.harnesses.host.claude_code import ClaudeCodeHarness
+from assistant.harnesses.sdk.deep_agents import DeepAgentsHarness
+from assistant.harnesses.sdk.ms_agent_fw import MSAgentFrameworkHarness
 
 
 def _persona(
@@ -48,7 +49,7 @@ def _role() -> RoleConfig:
         name="r",
         display_name="R",
         description="",
-        prompt="",
+        prompt="test prompt",
         delegation={"allowed_sub_roles": []},
     )
 
@@ -62,12 +63,25 @@ def test_instantiating_abstract_class_raises() -> None:
 
 
 def test_concrete_subclass_must_implement_all_methods() -> None:
-    class Partial(HarnessAdapter):
+    class Partial(SdkHarnessAdapter):
         def name(self) -> str:
             return "partial"
 
     with pytest.raises(TypeError):
         Partial(_persona(), _role())  # type: ignore[abstract]
+
+
+# ── Harness type property ────────────────────────────────────────────
+
+
+def test_sdk_harness_type() -> None:
+    h = DeepAgentsHarness(_persona(), _role())
+    assert h.harness_type() == "sdk"
+
+
+def test_host_harness_type() -> None:
+    h = ClaudeCodeHarness(_persona(), _role())
+    assert h.harness_type() == "host"
 
 
 # ── Deep Agents Harness ──────────────────────────────────────────────
@@ -80,10 +94,10 @@ def test_harness_name_is_deep_agents() -> None:
 def test_create_agent_uses_persona_configured_model() -> None:
     sentinel_model = MagicMock(name="model-handle")
     with patch(
-        "assistant.harnesses.deep_agents.init_chat_model",
+        "assistant.harnesses.sdk.deep_agents.init_chat_model",
         return_value=sentinel_model,
     ) as init_mock, patch(
-        "assistant.harnesses.deep_agents.create_deep_agent"
+        "assistant.harnesses.sdk.deep_agents.create_deep_agent"
     ) as cda_mock:
         cda_mock.return_value = MagicMock(name="agent")
         h = DeepAgentsHarness(_persona(model="anthropic:claude-sonnet-x"), _role())
@@ -103,10 +117,10 @@ def test_create_agent_includes_extension_tools() -> None:
 
     ext = _Ext("e", {})
     with patch(
-        "assistant.harnesses.deep_agents.init_chat_model",
+        "assistant.harnesses.sdk.deep_agents.init_chat_model",
         return_value=MagicMock(),
     ), patch(
-        "assistant.harnesses.deep_agents.create_deep_agent"
+        "assistant.harnesses.sdk.deep_agents.create_deep_agent"
     ) as cda_mock:
         cda_mock.return_value = MagicMock()
         h = DeepAgentsHarness(_persona(), _role())
@@ -144,12 +158,74 @@ def test_ms_af_create_agent_raises_not_implemented() -> None:
     h = MSAgentFrameworkHarness(_persona(ms_enabled=True), _role())
     with pytest.raises(NotImplementedError) as exc:
         asyncio.run(h.create_agent(tools=[], extensions=[]))
-    # Message references deferred/later proposal
     msg = str(exc.value).lower()
     assert "p5" in msg or "later proposal" in msg or "deferred" in msg
 
 
+# ── Claude Code Host Harness ─────────────────────────────────────────
+
+
+def test_claude_code_name_and_type() -> None:
+    h = ClaudeCodeHarness(_persona(), _role())
+    assert h.name() == "claude_code"
+    assert h.harness_type() == "host"
+
+
+def test_claude_code_export_context() -> None:
+    from assistant.core.capabilities.memory import FileMemoryPolicy
+    from assistant.core.capabilities.types import CapabilitySet
+
+    persona = _persona()
+    persona.prompt_augmentation = ""
+    persona.memory_content = "## Memory\ntest"
+
+    cs = CapabilitySet(
+        guardrails=MagicMock(),
+        sandbox=MagicMock(),
+        memory=FileMemoryPolicy(),
+        tools=MagicMock(),
+        context=None,
+    )
+
+    h = ClaudeCodeHarness(persona, _role())
+    ctx = h.export_context(cs)
+    assert "system_prompt" in ctx
+    assert "memory_context" in ctx
+    assert "## Memory" in ctx["memory_context"]
+
+
+def test_claude_code_export_tool_manifest() -> None:
+    from assistant.core.capabilities.tools import DefaultToolPolicy
+    from assistant.core.capabilities.types import CapabilitySet
+
+    persona = _persona()
+    persona.extensions = [{"module": "gmail", "config": {"scopes": ["read"]}}]
+
+    cs = CapabilitySet(
+        guardrails=MagicMock(),
+        sandbox=MagicMock(),
+        memory=MagicMock(),
+        tools=DefaultToolPolicy(),
+        context=None,
+    )
+
+    h = ClaudeCodeHarness(persona, _role())
+    manifest = h.export_tool_manifest(cs)
+    assert "extensions" in manifest
+    assert "gmail" in manifest["extensions"]
+
+
 # ── Harness Factory Validation ──────────────────────────────────────
+
+
+def test_factory_creates_sdk_harness() -> None:
+    harness = create_harness(_persona(), _role(), "deep_agents")
+    assert isinstance(harness, SdkHarnessAdapter)
+
+
+def test_factory_creates_host_harness() -> None:
+    harness = create_harness(_persona(), _role(), "claude_code")
+    assert isinstance(harness, HostHarnessAdapter)
 
 
 def test_unknown_harness_name_raises() -> None:

@@ -12,13 +12,15 @@ from typing import Any
 
 import pytest
 
+from assistant.core.capabilities.guardrails import AllowAllGuardrails
+from assistant.core.capabilities.types import ActionDecision, ActionRequest, RiskLevel
 from assistant.core.persona import PersonaConfig, PersonaRegistry
 from assistant.core.role import RoleConfig, RoleRegistry
 from assistant.delegation.spawner import DelegationSpawner
-from assistant.harnesses.base import HarnessAdapter
+from assistant.harnesses.base import SdkHarnessAdapter
 
 
-class FakeHarness(HarnessAdapter):
+class FakeHarness(SdkHarnessAdapter):
     """Captures spawn_sub_agent calls and exposes a gate event for
     concurrency tests."""
 
@@ -172,3 +174,118 @@ def test_disabled_role_for_persona_raises(
     with pytest.raises(ValueError) as exc:
         asyncio.run(spawner.delegate("writer", "x"))
     assert "personal" in str(exc.value)
+
+
+# ── Guardrail integration (Phase 4) ─────────────────────────────────
+
+
+class DenyAllGuardrails:
+    def check_action(self, action: ActionRequest) -> ActionDecision:
+        return ActionDecision(allowed=False, reason="policy violation")
+
+    def check_delegation(self, parent: str, sub: str, task: str) -> ActionDecision:
+        return ActionDecision(allowed=False, reason="policy violation")
+
+    def declare_risk(self, action: ActionRequest) -> RiskLevel:
+        return RiskLevel.HIGH
+
+
+def test_guardrail_denies_delegation(
+    roles_dir: Path,
+    personas_dir: Path,
+    personal: PersonaConfig,
+    researcher_parent: RoleConfig,
+) -> None:
+    spawner = DelegationSpawner(
+        personal,
+        researcher_parent,
+        FakeHarness(personal, researcher_parent),
+        tools=[],
+        extensions=[],
+        role_registry=RoleRegistry(roles_dir, personas_dir),
+        guardrails=DenyAllGuardrails(),
+    )
+    with pytest.raises(PermissionError) as exc:
+        asyncio.run(spawner.delegate("writer", "draft"))
+    assert "policy violation" in str(exc.value)
+
+
+def test_guardrail_allows_delegation(
+    roles_dir: Path,
+    personas_dir: Path,
+    personal: PersonaConfig,
+    researcher_parent: RoleConfig,
+) -> None:
+    harness = FakeHarness(personal, researcher_parent)
+    spawner = DelegationSpawner(
+        personal,
+        researcher_parent,
+        harness,
+        tools=[],
+        extensions=[],
+        role_registry=RoleRegistry(roles_dir, personas_dir),
+        guardrails=AllowAllGuardrails(),
+    )
+    asyncio.run(spawner.delegate("writer", "draft"))
+    assert harness.spawn_calls == [("writer", "draft")]
+
+
+def test_role_acl_checked_before_guardrail(
+    roles_dir: Path,
+    personas_dir: Path,
+    personal: PersonaConfig,
+    researcher_parent: RoleConfig,
+) -> None:
+    """When sub-role is not in allowed_sub_roles, ValueError is raised
+    without calling the guardrail."""
+    guardrails = DenyAllGuardrails()
+    spawner = DelegationSpawner(
+        personal,
+        researcher_parent,
+        FakeHarness(personal, researcher_parent),
+        tools=[],
+        extensions=[],
+        role_registry=RoleRegistry(roles_dir, personas_dir),
+        guardrails=guardrails,
+    )
+    with pytest.raises(ValueError):
+        asyncio.run(spawner.delegate("planner", "x"))
+
+
+def test_default_guardrails_allow_everything(
+    roles_dir: Path,
+    personas_dir: Path,
+    personal: PersonaConfig,
+    researcher_parent: RoleConfig,
+) -> None:
+    harness = FakeHarness(personal, researcher_parent)
+    spawner = DelegationSpawner(
+        personal,
+        researcher_parent,
+        harness,
+        tools=[],
+        extensions=[],
+        role_registry=RoleRegistry(roles_dir, personas_dir),
+    )
+    asyncio.run(spawner.delegate("writer", "draft"))
+    assert len(harness.spawn_calls) == 1
+
+
+def test_custom_guardrails_injected(
+    roles_dir: Path,
+    personas_dir: Path,
+    personal: PersonaConfig,
+    researcher_parent: RoleConfig,
+) -> None:
+    custom = DenyAllGuardrails()
+    spawner = DelegationSpawner(
+        personal,
+        researcher_parent,
+        FakeHarness(personal, researcher_parent),
+        tools=[],
+        extensions=[],
+        role_registry=RoleRegistry(roles_dir, personas_dir),
+        guardrails=custom,
+    )
+    with pytest.raises(PermissionError):
+        asyncio.run(spawner.delegate("writer", "draft"))

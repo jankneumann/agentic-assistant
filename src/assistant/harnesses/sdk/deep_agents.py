@@ -9,10 +9,10 @@ from langchain.chat_models import init_chat_model
 
 from assistant.core.composition import compose_system_prompt
 from assistant.core.role import RoleConfig
-from assistant.harnesses.base import HarnessAdapter
+from assistant.harnesses.base import SdkHarnessAdapter
 
 
-class DeepAgentsHarness(HarnessAdapter):
+class DeepAgentsHarness(SdkHarnessAdapter):
     def name(self) -> str:
         return "deep_agents"
 

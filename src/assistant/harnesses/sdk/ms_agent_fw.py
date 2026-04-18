@@ -5,16 +5,16 @@ from __future__ import annotations
 from typing import Any
 
 from assistant.core.role import RoleConfig
-from assistant.harnesses.base import HarnessAdapter
+from assistant.harnesses.base import SdkHarnessAdapter
 
 _NOT_IMPLEMENTED_MSG = (
     "MS Agent Framework harness is not yet implemented. "
     "Full implementation is deferred to a later proposal (P5 — "
-    "ms-graph-extensions). Use '-h deep_agents' for now."
+    "ms-graph-extensions). Use '-H deep_agents' for now."
 )
 
 
-class MSAgentFrameworkHarness(HarnessAdapter):
+class MSAgentFrameworkHarness(SdkHarnessAdapter):
     def name(self) -> str:
         return "ms_agent_framework"
 

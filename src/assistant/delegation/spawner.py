@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from assistant.core.capabilities.guardrails import AllowAllGuardrails, GuardrailProvider
 from assistant.core.persona import PersonaConfig
 from assistant.core.role import RoleConfig, RoleRegistry
 from assistant.harnesses.base import HarnessAdapter
@@ -18,6 +19,7 @@ class DelegationSpawner:
         tools: list[Any],
         extensions: list[Any],
         role_registry: RoleRegistry | None = None,
+        guardrails: GuardrailProvider | None = None,
     ) -> None:
         self.persona = persona
         self.parent_role = parent_role
@@ -25,6 +27,7 @@ class DelegationSpawner:
         self.tools = tools
         self.extensions = extensions
         self.role_registry = role_registry or RoleRegistry()
+        self.guardrails: GuardrailProvider = guardrails or AllowAllGuardrails()
         self._active: int = 0
 
     async def delegate(self, sub_role_name: str, task: str) -> str:
@@ -41,6 +44,12 @@ class DelegationSpawner:
                 f"Role '{sub_role_name}' is not available for persona "
                 f"'{self.persona.name}' (check disabled_roles)."
             )
+
+        decision = self.guardrails.check_delegation(
+            self.parent_role.name, sub_role_name, task
+        )
+        if not decision.allowed:
+            raise PermissionError(decision.reason)
 
         max_concurrent = self.parent_role.delegation.get(
             "max_concurrent", 3
