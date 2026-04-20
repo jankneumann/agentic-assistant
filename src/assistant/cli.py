@@ -219,14 +219,17 @@ async def _run_repl(
             new_role = user_input.split(" ", 1)[1].strip()
             try:
                 new_rc = role_reg.load(new_role, pc)
-                new_adapter = _create_harness(pc, new_rc, harness_name)
-                new_agent = await new_adapter.create_agent(
+                new_adapter_raw = _create_harness(pc, new_rc, harness_name)
+                if not isinstance(new_adapter_raw, SdkHarnessAdapter):
+                    click.echo("Error: harness is not SDK-based\n")
+                    continue
+                new_agent = await new_adapter_raw.create_agent(
                     tools=[], extensions=extensions
                 )
             except (ValueError, NotImplementedError) as e:
                 click.echo(f"Error: {e}\n")
                 continue
-            rc, adapter, agent = new_rc, new_adapter, new_agent
+            rc, adapter, agent = new_rc, new_adapter_raw, new_agent
             click.echo(f"→ {rc.display_name}\n")
             continue
 

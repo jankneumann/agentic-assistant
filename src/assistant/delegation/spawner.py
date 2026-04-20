@@ -7,7 +7,7 @@ from typing import Any
 from assistant.core.capabilities.guardrails import AllowAllGuardrails, GuardrailProvider
 from assistant.core.persona import PersonaConfig
 from assistant.core.role import RoleConfig, RoleRegistry
-from assistant.harnesses.base import HarnessAdapter
+from assistant.harnesses.base import SdkHarnessAdapter
 
 
 class DelegationSpawner:
@@ -15,7 +15,7 @@ class DelegationSpawner:
         self,
         persona: PersonaConfig,
         parent_role: RoleConfig,
-        harness: HarnessAdapter,
+        harness: SdkHarnessAdapter,
         tools: list[Any],
         extensions: list[Any],
         role_registry: RoleRegistry | None = None,
