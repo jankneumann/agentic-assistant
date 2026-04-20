@@ -5,10 +5,12 @@
 ### Requirement: ToolPolicy Protocol
 
 The system SHALL define a `ToolPolicy` runtime-checkable Protocol with
-the methods `authorized_tools(persona: PersonaConfig, role: RoleConfig)
-→ list[Any]`, `authorized_extensions(persona: PersonaConfig, role:
-RoleConfig) → list[Any]`, and `export_tool_manifest(persona:
-PersonaConfig, role: RoleConfig) → dict[str, Any]`.
+the methods `authorized_tools(persona, role, *, loaded_extensions)
+→ list[Any]`, `authorized_extensions(persona, role, *,
+loaded_extensions) → list[Any]`, and `export_tool_manifest(persona,
+role) → dict[str, Any]`. The `loaded_extensions` keyword argument
+receives pre-loaded extensions from the caller (CLI or harness),
+keeping ToolPolicy decoupled from PersonaRegistry.
 
 #### Scenario: Stub implementation satisfies Protocol
 
@@ -20,30 +22,28 @@ PersonaConfig, role: RoleConfig) → dict[str, Any]`.
 ### Requirement: DefaultToolPolicy Implementation
 
 The system SHALL provide a `DefaultToolPolicy` implementation that
-returns all tools from loaded extensions (via
-`PersonaRegistry.load_extensions`) filtered by the role's
-`preferred_tools` list when non-empty, or all tools when
+returns all tools from the provided `loaded_extensions` filtered by
+the role's `preferred_tools` list when non-empty, or all tools when
 `preferred_tools` is empty.
 
 #### Scenario: All extension tools when preferred_tools is empty
 
 - **WHEN** `role.preferred_tools` is `[]`
-- **AND** loaded extensions provide `[tool_a, tool_b]`
+- **AND** `loaded_extensions` provide `[tool_a, tool_b]`
 - **THEN** `authorized_tools()` MUST return a list containing both
   `tool_a` and `tool_b`
 
 #### Scenario: Filtered by preferred_tools
 
 - **WHEN** `role.preferred_tools` is `["tool_a"]`
-- **AND** loaded extensions provide `[tool_a, tool_b]`
+- **AND** `loaded_extensions` provide `[tool_a, tool_b]`
 - **THEN** `authorized_tools()` MUST return a list containing `tool_a`
 - **AND** `tool_b` MUST NOT be in the returned list
 
-#### Scenario: Extension authorization delegates to load_extensions
+#### Scenario: Extension authorization returns loaded extensions
 
-- **WHEN** `authorized_extensions()` is called
-- **THEN** it MUST return the result of
-  `PersonaRegistry.load_extensions(persona)`
+- **WHEN** `authorized_extensions(persona, role, loaded_extensions=[ext1, ext2])` is called
+- **THEN** the returned list MUST contain both `ext1` and `ext2`
 
 ### Requirement: Tool Manifest Export
 

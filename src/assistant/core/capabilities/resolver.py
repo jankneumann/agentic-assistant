@@ -6,6 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from assistant.core.capabilities.context import ContextProvider, DefaultContextProvider
 from assistant.core.capabilities.guardrails import AllowAllGuardrails, GuardrailProvider
 from assistant.core.capabilities.memory import (
     FileMemoryPolicy,
@@ -39,15 +40,23 @@ class CapabilityResolver:
         sandbox_factory: Callable[[], SandboxProvider] | None = None,
         memory_factory: Callable[[], MemoryPolicy] | None = None,
         tool_factory: Callable[[], ToolPolicy] | None = None,
+        context_factory: Callable[[], ContextProvider] | None = None,
     ) -> None:
         self._guardrail_factory = guardrail_factory
         self._sandbox_factory = sandbox_factory
         self._memory_factory = memory_factory
         self._tool_factory = tool_factory
+        self._context_factory = context_factory
 
     def resolve(
         self, persona: Any, harness_type: str, role: Any
     ) -> CapabilitySet:
+        context = (
+            self._context_factory()
+            if self._context_factory
+            else DefaultContextProvider()
+        )
+
         if harness_type == "host":
             return CapabilitySet(
                 guardrails=(
@@ -70,7 +79,7 @@ class CapabilityResolver:
                     if self._tool_factory
                     else DefaultToolPolicy()
                 ),
-                context=None,
+                context=context,
             )
 
         return CapabilitySet(
@@ -94,5 +103,5 @@ class CapabilityResolver:
                 if self._tool_factory
                 else DefaultToolPolicy()
             ),
-            context=None,
+            context=context,
         )

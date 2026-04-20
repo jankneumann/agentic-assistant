@@ -102,7 +102,59 @@ def test_memory_scoping_defaults() -> None:
     assert scoping.per_session is False
 
 
+def test_context_provider_protocol() -> None:
+    from assistant.core.capabilities.context import ContextProvider, DefaultContextProvider
+
+    assert isinstance(DefaultContextProvider(), ContextProvider)
+
+
+def test_context_provider_composes_prompt() -> None:
+    from unittest.mock import MagicMock
+
+    from assistant.core.capabilities.context import DefaultContextProvider
+
+    persona = MagicMock()
+    persona.prompt_augmentation = ""
+    persona.memory_content = ""
+    persona.name = "test"
+    persona.display_name = "Test"
+    role = MagicMock()
+    role.prompt = "test role prompt"
+    role.name = "tester"
+    role.delegation = {"allowed_sub_roles": []}
+    role.planning = {}
+    role.preferred_tools = []
+
+    provider = DefaultContextProvider()
+    result = provider.compose_system_prompt(persona, role)
+    assert isinstance(result, str)
+    assert len(result) > 0
+
+
+def test_context_provider_export() -> None:
+    from unittest.mock import MagicMock
+
+    from assistant.core.capabilities.context import DefaultContextProvider
+
+    persona = MagicMock()
+    persona.prompt_augmentation = ""
+    persona.memory_content = ""
+    persona.name = "test"
+    persona.display_name = "Test"
+    role = MagicMock()
+    role.prompt = ""
+    role.name = "tester"
+    role.delegation = {"allowed_sub_roles": []}
+    role.planning = {}
+    role.preferred_tools = []
+
+    provider = DefaultContextProvider()
+    ctx = provider.export_context(persona, role)
+    assert "system_prompt" in ctx
+
+
 def test_capability_set_holds_all_five() -> None:
+    from assistant.core.capabilities.context import ContextProvider, DefaultContextProvider
     from assistant.core.capabilities.guardrails import AllowAllGuardrails, GuardrailProvider
     from assistant.core.capabilities.memory import FileMemoryPolicy, MemoryPolicy
     from assistant.core.capabilities.sandbox import PassthroughSandbox, SandboxProvider
@@ -114,9 +166,10 @@ def test_capability_set_holds_all_five() -> None:
         sandbox=PassthroughSandbox(),
         memory=FileMemoryPolicy(),
         tools=DefaultToolPolicy(),
-        context=None,
+        context=DefaultContextProvider(),
     )
     assert isinstance(cs.guardrails, GuardrailProvider)
     assert isinstance(cs.sandbox, SandboxProvider)
     assert isinstance(cs.memory, MemoryPolicy)
     assert isinstance(cs.tools, ToolPolicy)
+    assert isinstance(cs.context, ContextProvider)

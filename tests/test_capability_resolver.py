@@ -24,6 +24,7 @@ def _make_role() -> MagicMock:
 
 
 def test_sdk_resolves_concrete_providers() -> None:
+    from assistant.core.capabilities.context import DefaultContextProvider
     from assistant.core.capabilities.guardrails import AllowAllGuardrails
     from assistant.core.capabilities.memory import FileMemoryPolicy
     from assistant.core.capabilities.resolver import CapabilityResolver
@@ -37,6 +38,7 @@ def test_sdk_resolves_concrete_providers() -> None:
     assert isinstance(cs.sandbox, PassthroughSandbox)
     assert isinstance(cs.memory, FileMemoryPolicy)
     assert isinstance(cs.tools, DefaultToolPolicy)
+    assert isinstance(cs.context, DefaultContextProvider)
 
 
 def test_host_marks_host_provided() -> None:

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from assistant.core.capabilities.context import ContextProvider
     from assistant.core.capabilities.guardrails import GuardrailProvider
     from assistant.core.capabilities.memory import MemoryPolicy
     from assistant.core.capabilities.sandbox import SandboxProvider
@@ -74,4 +75,4 @@ class CapabilitySet:
     sandbox: SandboxProvider
     memory: MemoryPolicy
     tools: ToolPolicy
-    context: Any = None
+    context: ContextProvider | None = None

@@ -19,18 +19,20 @@ in addition to the existing `name() → str` method.
 
 The system SHALL define an `SdkHarnessAdapter` abstract base class
 extending `HarnessAdapter` with `harness_type() → "sdk"` and requiring
-the methods `create_agent(capabilities: CapabilitySet) → Any`,
+the methods `create_agent(tools: list, extensions: list) → Any`,
 `invoke(agent: Any, message: str) → str`, and
-`spawn_sub_agent(role: RoleConfig, task: str, capabilities:
-CapabilitySet) → str`.
+`spawn_sub_agent(role: RoleConfig, task: str, tools: list,
+extensions: list) → str`. The `create_agent` signature retains the
+P1 tools/extensions parameters; migration to `CapabilitySet`-based
+invocation is deferred to P2 (memory-architecture) when concrete
+`MemoryPolicy` implementations exist to inject.
 
-#### Scenario: SdkHarnessAdapter.create_agent receives capabilities
+#### Scenario: SdkHarnessAdapter.create_agent accepts tools and extensions
 
-- **WHEN** `DeepAgentsHarness.create_agent(capabilities)` is called
-- **THEN** the harness MUST use `capabilities.memory.resolve()` to
-  obtain memory config instead of reading `memory_files` directly
-- **AND** the harness MUST use `capabilities.tools.authorized_tools()`
-  to obtain tools instead of receiving them as a parameter
+- **WHEN** `DeepAgentsHarness.create_agent(tools, extensions)` is called
+- **THEN** the harness MUST construct an agent with the provided tools
+  and extension tools combined
+- **AND** the harness MUST read memory configuration from persona config
 
 #### Scenario: SdkHarnessAdapter.invoke signature unchanged
 

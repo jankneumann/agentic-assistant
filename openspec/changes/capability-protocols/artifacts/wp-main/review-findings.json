@@ -1,0 +1,61 @@
+{
+  "review_type": "implementation",
+  "target": "wp-main",
+  "reviewer_vendor": "claude-opus-4-6",
+  "findings": [
+    {
+      "id": 1,
+      "type": "spec_gap",
+      "criticality": "high",
+      "description": "ContextProvider protocol was specified in the proposal and capability-resolver spec but not implemented. CapabilitySet.context was typed as Any instead of ContextProvider.",
+      "resolution": "Added ContextProvider protocol in capabilities/context.py with DefaultContextProvider wrapping compose_system_prompt(). Updated CapabilitySet.context type, resolver, and tests.",
+      "disposition": "fix",
+      "package_id": "wp-main"
+    },
+    {
+      "id": 2,
+      "type": "spec_gap",
+      "criticality": "medium",
+      "description": "Harness-adapter spec declared create_agent(capabilities: CapabilitySet) signature, but implementation retained P1 create_agent(tools, extensions) signature. This was a deliberate design choice — migrating to CapabilitySet-based invocation is deferred to P2 when concrete MemoryPolicy implementations exist.",
+      "resolution": "Updated harness-adapter spec delta to match the implemented signature. Added note that migration to CapabilitySet invocation is deferred to P2 memory-architecture.",
+      "disposition": "accept",
+      "package_id": "wp-main"
+    },
+    {
+      "id": 3,
+      "type": "spec_gap",
+      "criticality": "medium",
+      "description": "Tool-policy spec declared authorized_tools(persona, role) without loaded_extensions parameter, and specified that authorized_extensions() calls PersonaRegistry.load_extensions() internally. Implementation correctly passes loaded_extensions as a keyword argument to keep ToolPolicy decoupled from PersonaRegistry.",
+      "resolution": "Updated tool-policy spec delta to match the implemented signature with loaded_extensions keyword argument. Removed PersonaRegistry coupling requirement.",
+      "disposition": "accept",
+      "package_id": "wp-main"
+    },
+    {
+      "id": 4,
+      "type": "style",
+      "criticality": "low",
+      "description": "CapabilityResolver.resolve() has duplicated construction logic for sdk vs host branches — both branches construct guardrails/tools/context identically, differing only in sandbox and memory providers.",
+      "resolution": "Acceptable for clarity — the duplication makes the two branches independently readable. Refactoring into shared construction would obscure the tier-specific differences.",
+      "disposition": "accept",
+      "package_id": "wp-main"
+    },
+    {
+      "id": 5,
+      "type": "compatibility",
+      "criticality": "low",
+      "description": "DelegationSpawner.harness type annotation changed from HarnessAdapter to SdkHarnessAdapter. This is correct (delegation only applies to SDK harnesses) but is technically a breaking change for any code passing a raw HarnessAdapter.",
+      "resolution": "Acceptable — no external consumers exist. The __init__.py re-exports provide backward compat for import paths.",
+      "disposition": "accept",
+      "package_id": "wp-main"
+    },
+    {
+      "id": 6,
+      "type": "architecture",
+      "criticality": "low",
+      "description": "_HostProvidedSandbox is defined as a private class in resolver.py rather than alongside PassthroughSandbox in sandbox.py. This creates a pattern inconsistency — all other host-provided stubs live in their respective protocol modules.",
+      "resolution": "Minor — could be moved to sandbox.py in a future cleanup. Not blocking.",
+      "disposition": "accept",
+      "package_id": "wp-main"
+    }
+  ]
+}
