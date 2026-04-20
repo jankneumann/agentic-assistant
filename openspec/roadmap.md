@@ -33,13 +33,14 @@
 | P1.5 | `test-privacy-boundary` | phase | **archived** (2026-04-13) | — | new (IR hygiene from P1 validation) | Separate public tests from private persona data: two-layer (collection-time substring scan + runtime FS patching) boundary guard, `ASSISTANT_PERSONAS_DIR` env-var contract, `scripts/push-with-submodule.sh` atomic dual-commit push wrapper |
 | P1.6 | `sync-test-privacy-boundary-spec` | non-phase (spec-sync) | **archived** (2026-04-13) | — | spec-sync follow-up of P1.5 | Listed for chronological context. Spec-only change that codified five drift items found during P1.5 validation (env-var contract, subprocess `executable=`/`cwd=` kwarg coverage, hygiene-test exclusion list, submodule `parents[N]` abstraction, atomic-push wrapper requirement) |
 | P1.7 | `bootstrap-fixes` | phase | pending | §7.1–§7.5 | perplexity §7 | CLI `-h` flag conflict; add `sqlalchemy.text()` wrapper; reconcile `deepagents` package reference; add `[project.scripts]` entry point; fix `name` variable shadowing in `PersonaRegistry.load` |
-| P2 | `memory-architecture` | phase | pending | §1.2, §8.1 | perplexity §8.1 + old P3 | `core/memory.py` MemoryManager + `core/graphiti.py` client factory + per-persona AsyncEngine + `memory`/`preferences`/`interactions` tables + `scripts/export-memory.sh` that regenerates `memory.md` from Postgres+Graphiti |
+| P1.8 | `capability-protocols` | phase | pending | — | new (harness architecture redesign) | Five capability protocols (GuardrailProvider, SandboxProvider, MemoryPolicy, ToolPolicy, ContextProvider) + CapabilityResolver + two-tier harness split (SDK vs Host) + ClaudeCodeHarness + CLI export subcommand + delegation guardrail integration |
+| P2 | `memory-architecture` | phase | pending | §1.2, §8.1 | perplexity §8.1 + old P3 | `core/memory.py` MemoryManager + `core/graphiti.py` client factory + per-persona AsyncEngine + `memory`/`preferences`/`interactions` tables + `scripts/export-memory.sh` that regenerates `memory.md` from Postgres+Graphiti. Implements `MemoryPolicy` protocol from P1.8 |
 | P3 | `http-tools-layer` | phase | pending | §8.2 | perplexity §8.2 + old P2 | `src/assistant/http_tools/` — `/help`-based discovery, `_build_tool()` Pydantic-model + async-callable generator, auth header handling, registry, `--list-tools` CLI command, integration tests against mock server |
 | P4 | `observability` | phase | pending | §1.1, §8.3 | perplexity §8.3 (new) | `core/observability.py` — `@traced` decorator, spans on `HarnessAdapter.invoke()` and `DelegationSpawner.delegate()`, token + latency + cost tracking per persona/role. Langfuse backend default; OpenLLMetry adapter optional |
 | P5 | `ms-graph-extension` | phase | pending | §8.4 | perplexity §8.4 + old P5 | Real `ms_graph`, `teams`, `sharepoint`, `outlook` extensions (replaces P1 stubs). MSAL auth, httpx client, OAuth refresh. Full MS Agent Framework harness implementation replacing P1's `NotImplementedError` stub |
 | P6 | `a2a-server` | phase | pending | §6, §8.5 | perplexity §8.5 (new; was Phase-16 "out of scope") | `src/assistant/a2a/` — server.py, task_handler.py, agent_card.py. Exposes `/a2a/v1/message:stream` endpoint. Serves `.well-known/agent.json`. Lets Copilot Studio Chief of Staff delegate to this assistant |
 | P7 | `scheduler` | phase | pending | §2.1, §8.6 | perplexity §8.6 (new) | `core/scheduler.py` — cron (croniter) + calendar-event + polling triggers. `schedules:` section in `persona.yaml`. `--daemon` CLI flag. Morning briefing / email triage / pre-meeting brief hooks |
-| P8 | `obsidian-vault` | phase | pending | §2.2, §8.7 | perplexity §8.7 (new) | Obsidian vault RAG integration. Preferred: add indexing endpoint to `agentic-content-analyzer` and reference it as a tool source. Fallback: standalone `extensions/obsidian.py` with wikilink parsing, pgvector index |
+| P8 | `obsidian-vault` | phase | pending | §2.2, §8.7 | perplexity §8.7 (new) | Bi-directional Obsidian vault sync, split by authoring domain. Vault config declares `notes_dir` (human-authored: frameworks, meeting notes, raw thoughts — synced **into** ACA as indexed source) and `agent_dir` (agent-authored: entity hub pages, compiled summaries — rendered **from** ACA; frontmatter declares `agent_maintained: true`, `compiled_from: <entity_id>`, `regenerated_at: <ts>`; hand-edits may be overwritten on regeneration). Preferred: two endpoints on `agentic-content-analyzer` (`/index/vault-notes` for inbound, `/render/agent-folder` for outbound) invoked by a persona extension. Fallback: standalone `extensions/obsidian.py` with wikilink parsing + pgvector index covers the `notes_dir → ACA` direction only; `agent_dir` rendering deferred until ACA endpoint exists. Headless personas (no vault) skip both directions without penalty. Doctrine/frameworks remain in the persona submodule (loaded via P1.8 `ContextProvider`) — explicitly **not** vault content. |
 | P9 | `error-resilience` | phase | pending | §1.3, §8.8 | perplexity §8.8 (new) | `core/resilience.py` — `tenacity`-based retry on transient HTTP failures, circuit breaker per backend, graceful degradation (agent notes unavailability instead of silent omission). Applied to http_tools client + extension `health_check()` |
 | P10 | `extension-lifecycle` | phase | pending | §3.1, §8.9 | perplexity §8.9 (new) | Extend `Extension` protocol with `initialize()`, `shutdown()`, `refresh_credentials()` lifecycle hooks. `PersonaRegistry.load_extensions()` calls `initialize()` post-load; registers shutdown handler |
 | P11 | `harness-routing` | phase | pending | §3.2, §8.10 | perplexity §8.10 (new) | Dynamic harness selection in `harnesses/factory.py`. `--harness auto` default. Routes M365-tool tasks → MS Agent Framework, complex reasoning → Deep Agents |
@@ -73,13 +74,23 @@ P1 bootstrap-vertical-slice (archived)
  │    └─→ P1.6 sync-test-privacy-boundary-spec (archived; spec-sync of P1.5)
  │
  ├─→ P1.7 bootstrap-fixes (pending; §7 hygiene)
- │    ├─→ P2 memory-architecture             (needs §7.2 sqlalchemy.text() wrapper)
  │    ├─→ P3 http-tools-layer                (needs §7.1 CLI `-h` fix; §7.4 entry point)
- │    ├─→ P11 harness-routing                (needs §7.3 deepagents package reference reconciled)
- │    └─→ P16 cli-harness-integrations       (needs §7.1 + §7.4 for slash-command wiring)
+ │    └─→ P11 harness-routing                (needs §7.3 deepagents package reference reconciled)
  │
- ├─→ P4 observability                        (independent of P1.7; lands early for tracing)
- ├─→ P10 extension-lifecycle                 (independent of P1.7; initialize/shutdown hooks)
+ ├─→ P1.8 capability-protocols (pending; harness architecture redesign)
+ │    ├─→ P2 memory-architecture             (implements MemoryPolicy protocol;
+ │    │                                       also needs P1.7 §7.2 sqlalchemy.text() wrapper)
+ │    ├─→ P3 http-tools-layer                (implements ToolPolicy source;
+ │    │                                       also needs P1.7 §7.1 + §7.4)
+ │    ├─→ P11 harness-routing                (three-tier routing uses CapabilityResolver;
+ │    │                                       also needs P1.7 §7.3)
+ │    ├─→ P13 security-hardening             (implements GuardrailProvider;
+ │    │                                       also needs P10 lifecycle hooks)
+ │    └─→ P16 cli-harness-integrations       (extends HostHarnessAdapter exports;
+ │                                            also needs P1.7 §7.1 + §7.4)
+ │
+ ├─→ P4 observability                        (independent of P1.7/P1.8; lands early for tracing)
+ ├─→ P10 extension-lifecycle                 (independent of P1.7/P1.8; initialize/shutdown hooks)
  │
  ├─→ P2 memory-architecture ──┬─→ P7 scheduler         (needs memory for briefings)
  │                            ├─→ P8 obsidian-vault    (needs memory for indexing backend)
@@ -124,6 +135,7 @@ re-prefix with dates; the roadmap is the identity source.
 
 | Theme | Phases that touch it |
 |-------|----------------------|
+| **Capability protocols** (guardrails, sandbox, memory policy, tool policy — harness architecture) | P1.8 establishes protocols; P2 implements MemoryPolicy; P3 implements ToolPolicy; P13 implements GuardrailProvider; P11/P16 consume CapabilityResolver |
 | **Memory hierarchy** (memory.md derived from Postgres+Graphiti — perplexity §1.2) | P2 establishes; P7/P8/P12 consume |
 | **Observability** (tracing, cost per persona×role — §1.1) | P4 establishes; all later phases add spans to their new code paths |
 | **Resilience** (retry, circuit breaker — §1.3) | P9 establishes; P3/P5/P14/P17 adopt |

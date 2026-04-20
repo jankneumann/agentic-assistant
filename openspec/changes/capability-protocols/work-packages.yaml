@@ -1,0 +1,69 @@
+schema_version: 1
+change_id: capability-protocols
+
+packages:
+  - id: wp-main
+    name: "Capability protocols — full scope"
+    description: >
+      Deliver the complete capability protocol layer in a single
+      sequential package. The phases have strong internal dependencies
+      (protocols → resolver → harness restructure → delegation → CLI)
+      making parallel decomposition impractical without coordination
+      overhead exceeding the time savings.
+    tasks:
+      - "1.1"
+      - "1.2"
+      - "1.3"
+      - "1.4"
+      - "1.5"
+      - "1.6"
+      - "1.7"
+      - "1.8"
+      - "1.9"
+      - "1.10"
+      - "2.1"
+      - "2.2"
+      - "3.1"
+      - "3.2"
+      - "3.3"
+      - "3.4"
+      - "3.5"
+      - "4.1"
+      - "4.2"
+      - "5.1"
+      - "5.2"
+      - "6.1"
+      - "6.2"
+      - "7.1"
+      - "7.2"
+      - "7.3"
+      - "7.4"
+      - "7.5"
+    priority: 1
+    dependencies: []
+    scope:
+      write_allow:
+        - "src/assistant/core/capabilities/**"
+        - "src/assistant/harnesses/**"
+        - "src/assistant/delegation/**"
+        - "src/assistant/cli.py"
+        - "tests/**"
+        - "openspec/changes/capability-protocols/**"
+      read_allow:
+        - "**"
+    locks:
+      files:
+        - "src/assistant/harnesses/base.py"
+        - "src/assistant/harnesses/factory.py"
+        - "src/assistant/delegation/spawner.py"
+        - "src/assistant/cli.py"
+      keys:
+        - "harness:adapter-contract"
+        - "delegation:spawner-interface"
+        - "cli:entry-point"
+      ttl_minutes: 120
+      reason: >
+        Restructures harness directory layout and modifies the adapter
+        contract, delegation spawner interface, and CLI entry point.
+        Concurrent changes to these files would conflict.
+    verification: tier_b
