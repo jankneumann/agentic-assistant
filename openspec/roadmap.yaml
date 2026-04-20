@@ -103,6 +103,28 @@ items:
       - uv run assistant -p personal invokes CLI via entry point
       - PersonaRegistry.load loop variable renamed to avoid shadowing
 
+  - item_id: capability-protocols
+    change_id: capability-protocols
+    title: Capability protocols (guardrails, sandbox, memory/tool policy, two-tier harness split)
+    status: approved
+    priority: 4.5
+    effort: M
+    depends_on: [bootstrap-vertical-slice]
+    description: >
+      Five capability protocols (GuardrailProvider, SandboxProvider,
+      MemoryPolicy, ToolPolicy, ContextProvider) + CapabilityResolver +
+      two-tier harness split (SDK vs Host) + ClaudeCodeHarness + CLI
+      export subcommand + delegation guardrail integration. Establishes
+      protocol interfaces that P2/P3/P11/P13/P16 implement against.
+      Independent of bootstrap-fixes — can proceed immediately.
+    acceptance_outcomes:
+      - src/assistant/core/capabilities/ with all five protocols + resolver
+      - src/assistant/harnesses/sdk/ and host/ directory split
+      - ClaudeCodeHarness exports context artifacts
+      - DelegationSpawner consults GuardrailProvider
+      - CLI export subcommand generates host-harness artifacts
+      - openspec validate capability-protocols --strict passes
+
   # ── Foundation phases (perplexity §§1-3 infrastructure) ──
 
   - item_id: memory-architecture
@@ -111,7 +133,7 @@ items:
     status: candidate
     priority: 5
     effort: XL
-    depends_on: [bootstrap-fixes]
+    depends_on: [bootstrap-fixes, capability-protocols]
     description: >
       Implement `core/memory.py` `MemoryManager` class with unified
       `get_context(persona, role)` reading Postgres for operational
@@ -134,7 +156,7 @@ items:
     status: candidate
     priority: 6
     effort: M
-    depends_on: [bootstrap-fixes]
+    depends_on: [bootstrap-fixes, capability-protocols]
     description: >
       `src/assistant/http_tools/` — `/help`-based discovery, `_build_tool()`
       Pydantic-model + async-callable generator, auth header handling,
@@ -284,7 +306,7 @@ items:
     status: candidate
     priority: 14
     effort: M
-    depends_on: [ms-graph-extension, bootstrap-fixes]
+    depends_on: [ms-graph-extension, bootstrap-fixes, capability-protocols]
     description: >
       `harnesses/factory.py` routing logic - `select_harness(persona,
       role, task_hint)`. `--harness auto` default. Routes M365-tool
@@ -325,7 +347,7 @@ items:
     status: candidate
     priority: 16
     effort: M
-    depends_on: [extension-lifecycle]
+    depends_on: [extension-lifecycle, capability-protocols]
     description: >
       Per-persona env var scoping in `_env()` helper (work persona
       can't read PERSONAL_* env vars and vice versa). Per-persona
@@ -379,7 +401,7 @@ items:
     status: candidate
     priority: 19
     effort: M
-    depends_on: [bootstrap-fixes]
+    depends_on: [bootstrap-fixes, capability-protocols]
     description: >
       Deeper Claude Code / Codex / Gemini integrations — slash commands
       in `.claude/commands/`, `.codex/skills/`, `.gemini/settings.json`.
