@@ -7,7 +7,7 @@ phase.
 
 ## Phase 1 — Capability types and protocols
 
-- [ ] 1.1 Write `tests/test_capabilities.py` encoding the following
+- [x] 1.1 Write `tests/test_capabilities.py` encoding the following
   scenarios from capability protocol specs:
   - `ActionRequest` captures action context
   - `ActionDecision` defaults
@@ -21,7 +21,7 @@ phase.
   (MemoryConfig, MemoryScoping), capability-resolver (CapabilitySet).
   **Dependencies**: none
 
-- [ ] 1.2 Implement `src/assistant/core/capabilities/__init__.py` and
+- [x] 1.2 Implement `src/assistant/core/capabilities/__init__.py` and
   type modules:
   - `types.py`: `ActionRequest`, `ActionDecision`, `RiskLevel`,
     `ExecutionContext`, `SandboxConfig`, `MemoryConfig`,
@@ -29,7 +29,7 @@ phase.
   **Design decisions**: D5 (CapabilitySet is a plain dataclass)
   **Dependencies**: 1.1
 
-- [ ] 1.3 Write `tests/test_guardrail_protocol.py` encoding:
+- [x] 1.3 Write `tests/test_guardrail_protocol.py` encoding:
   - Stub implementation satisfies Protocol
   - Non-conforming class rejected
   - Stub allows all actions
@@ -38,25 +38,25 @@ phase.
   **Spec scenarios**: all 5 scenarios from guardrail-provider spec.
   **Dependencies**: 1.2
 
-- [ ] 1.4 Implement `src/assistant/core/capabilities/guardrails.py`:
+- [x] 1.4 Implement `src/assistant/core/capabilities/guardrails.py`:
   `GuardrailProvider` Protocol and `AllowAllGuardrails` stub.
   **Design decisions**: D2 (genuinely new protocol), D7 (stub defaults
   to allow_all)
   **Dependencies**: 1.3
 
-- [ ] 1.5 Write `tests/test_sandbox_protocol.py` encoding:
+- [x] 1.5 Write `tests/test_sandbox_protocol.py` encoding:
   - Stub implementation satisfies Protocol
   - Stub returns current directory
   - Stub cleanup is safe to call
   **Spec scenarios**: all 3 scenarios from sandbox-provider spec.
   **Dependencies**: 1.2
 
-- [ ] 1.6 Implement `src/assistant/core/capabilities/sandbox.py`:
+- [x] 1.6 Implement `src/assistant/core/capabilities/sandbox.py`:
   `SandboxProvider` Protocol and `PassthroughSandbox` stub.
   **Design decisions**: D2 (genuinely new protocol)
   **Dependencies**: 1.5
 
-- [ ] 1.7 Write `tests/test_memory_policy.py` encoding:
+- [x] 1.7 Write `tests/test_memory_policy.py` encoding:
   - Stub implementation satisfies Protocol
   - Reads memory_files from persona config
   - Defaults to AGENTS.md
@@ -65,13 +65,13 @@ phase.
   (FileMemoryPolicy).
   **Dependencies**: 1.2
   
-- [ ] 1.8 Implement `src/assistant/core/capabilities/memory.py`:
+- [x] 1.8 Implement `src/assistant/core/capabilities/memory.py`:
   `MemoryPolicy` Protocol and `FileMemoryPolicy` implementation.
   **Design decisions**: D1 (policy over SDK-native types), D6
   (formalizes existing behavior)
   **Dependencies**: 1.7
 
-- [ ] 1.9 Write `tests/test_tool_policy.py` encoding:
+- [x] 1.9 Write `tests/test_tool_policy.py` encoding:
   - Stub implementation satisfies Protocol
   - All extension tools when preferred_tools is empty
   - Filtered by preferred_tools
@@ -81,14 +81,14 @@ phase.
   **Spec scenarios**: all 6 scenarios from tool-policy spec.
   **Dependencies**: 1.2
 
-- [ ] 1.10 Implement `src/assistant/core/capabilities/tools.py`:
+- [x] 1.10 Implement `src/assistant/core/capabilities/tools.py`:
   `ToolPolicy` Protocol and `DefaultToolPolicy` implementation.
   **Design decisions**: D1 (policy over SDK-native types)
   **Dependencies**: 1.9
 
 ## Phase 2 — Capability resolver
 
-- [ ] 2.1 Write `tests/test_capability_resolver.py` encoding:
+- [x] 2.1 Write `tests/test_capability_resolver.py` encoding:
   - SDK harness resolves concrete providers
   - Host harness marks host-provided capabilities
   - Custom guardrail provider injected
@@ -96,14 +96,14 @@ phase.
   **Spec scenarios**: all 4 scenarios from capability-resolver spec.
   **Dependencies**: 1.4, 1.6, 1.8, 1.10
 
-- [ ] 2.2 Implement `src/assistant/core/capabilities/resolver.py`:
+- [x] 2.2 Implement `src/assistant/core/capabilities/resolver.py`:
   `CapabilityResolver` with `resolve()` method.
   **Design decisions**: D3 (two-tier, not three-tier)
   **Dependencies**: 2.1
 
 ## Phase 3 — Harness restructure (TDD)
 
-- [ ] 3.1 Write `tests/test_harness_restructure.py` encoding:
+- [x] 3.1 Write `tests/test_harness_restructure.py` encoding:
   - harness_type identifies adapter category (sdk)
   - SdkHarnessAdapter.create_agent receives capabilities
   - SdkHarnessAdapter.invoke signature unchanged
@@ -117,7 +117,7 @@ phase.
   **Spec scenarios**: 10 scenarios from harness-adapter spec delta.
   **Dependencies**: 2.2
 
-- [ ] 3.2 Restructure `src/assistant/harnesses/`:
+- [x] 3.2 Restructure `src/assistant/harnesses/`:
   - Create `src/assistant/harnesses/sdk/__init__.py`
   - Create `src/assistant/harnesses/host/__init__.py`
   - Move `deep_agents.py` → `sdk/deep_agents.py`
@@ -128,7 +128,7 @@ phase.
   **Design decisions**: D8 (directory restructure), D3 (two-tier)
   **Dependencies**: 3.1
 
-- [ ] 3.3 Refactor `DeepAgentsHarness` to extend `SdkHarnessAdapter`
+- [x] 3.3 Refactor `DeepAgentsHarness` to extend `SdkHarnessAdapter`
   and accept `CapabilitySet`:
   - `create_agent(capabilities)` uses `capabilities.memory.resolve()`
     instead of reading `memory_files` directly
@@ -138,19 +138,19 @@ phase.
   **Design decisions**: D1 (policy over SDK-native types)
   **Dependencies**: 3.2
 
-- [ ] 3.4 Implement `src/assistant/harnesses/host/claude_code.py`:
+- [x] 3.4 Implement `src/assistant/harnesses/host/claude_code.py`:
   `ClaudeCodeHarness` with `export_context()`,
   `export_guardrail_declarations()`, `export_tool_manifest()`.
   **Design decisions**: D4 (exports generated artifacts)
   **Dependencies**: 3.2
 
-- [ ] 3.5 Update `src/assistant/harnesses/factory.py`: register both
+- [x] 3.5 Update `src/assistant/harnesses/factory.py`: register both
   SDK and host harnesses, update validation for two-tier routing.
   **Dependencies**: 3.3, 3.4
 
 ## Phase 4 — Delegation guardrail integration
 
-- [ ] 4.1 Write additional tests in `tests/test_delegation.py` encoding:
+- [x] 4.1 Write additional tests in `tests/test_delegation.py` encoding:
   - Guardrail denies delegation
   - Guardrail allows delegation
   - Role ACL checked before guardrail
@@ -159,7 +159,7 @@ phase.
   **Spec scenarios**: all 5 scenarios from delegation-spawner spec delta.
   **Dependencies**: 3.5
 
-- [ ] 4.2 Update `src/assistant/delegation/spawner.py`:
+- [x] 4.2 Update `src/assistant/delegation/spawner.py`:
   - Add optional `guardrails: GuardrailProvider` parameter to
     `__init__()`, defaulting to `AllowAllGuardrails()`
   - Call `guardrails.check_delegation()` after role ACL check, before
@@ -169,7 +169,7 @@ phase.
 
 ## Phase 5 — CLI export mode
 
-- [ ] 5.1 Write tests in `tests/test_cli.py` encoding:
+- [x] 5.1 Write tests in `tests/test_cli.py` encoding:
   - Export generates context artifacts
   - Export requires persona
   - Export rejects SDK harness names
@@ -178,7 +178,7 @@ phase.
   **Spec scenarios**: all 5 scenarios from cli-interface spec delta.
   **Dependencies**: 3.5
 
-- [ ] 5.2 Refactor `src/assistant/cli.py`:
+- [x] 5.2 Refactor `src/assistant/cli.py`:
   - Convert to `click.Group` with `run` (default) and `export`
     subcommands
   - `run` preserves existing REPL behavior
@@ -189,12 +189,12 @@ phase.
 
 ## Phase 6 — Extension registry integration
 
-- [ ] 6.1 Write tests in `tests/test_extensions.py` encoding:
+- [x] 6.1 Write tests in `tests/test_extensions.py` encoding:
   - Extensions accessible via ToolPolicy
   **Spec scenarios**: extension-registry spec delta scenario.
   **Dependencies**: 3.5
 
-- [ ] 6.2 Verify `DefaultToolPolicy.authorized_extensions()` correctly
+- [x] 6.2 Verify `DefaultToolPolicy.authorized_extensions()` correctly
   delegates to `PersonaRegistry.load_extensions()`. No code changes
   expected if 1.10 implementation is correct — this task validates the
   integration seam.
@@ -202,20 +202,20 @@ phase.
 
 ## Phase 7 — Update existing tests and validation
 
-- [ ] 7.1 Update `tests/test_harnesses.py` for new import paths and
+- [x] 7.1 Update `tests/test_harnesses.py` for new import paths and
   `SdkHarnessAdapter` base class. All existing scenarios MUST continue
   to pass.
   **Dependencies**: 3.5
 
-- [ ] 7.2 Update `tests/test_cli.py` existing tests for `click.Group`
+- [x] 7.2 Update `tests/test_cli.py` existing tests for `click.Group`
   structure. All existing scenarios MUST continue to pass.
   **Dependencies**: 5.2
 
-- [ ] 7.3 Run `uv run ruff check .` — zero errors.
+- [x] 7.3 Run `uv run ruff check .` — zero errors.
   **Dependencies**: 7.1, 7.2
 
-- [ ] 7.4 Run `uv run pytest` — all tests pass.
+- [x] 7.4 Run `uv run pytest` — all tests pass.
   **Dependencies**: 7.3
 
-- [ ] 7.5 `openspec validate capability-protocols --strict` passes.
+- [x] 7.5 `openspec validate capability-protocols --strict` passes.
   **Dependencies**: 7.4

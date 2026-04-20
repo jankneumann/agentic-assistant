@@ -5,19 +5,20 @@ TBD - created by archiving change bootstrap-vertical-slice. Update Purpose after
 ## Requirements
 ### Requirement: CLI Entry Point
 
-The system SHALL provide an `assistant` CLI entry point (installed via
-`[project.scripts]`) that accepts `-p/--persona`, `-r/--role`,
-`-H/--harness`, `--list-personas`, and `--list-roles` options.
-(Note: uppercase `-H` is used because Click reserves lowercase `-h` for
-`--help` by convention; overriding that would regress against every other
-Click-based CLI.)
+The CLI SHALL use a `click.Group` with `run` as the default subcommand
+(preserving current REPL behavior) and `export` as the new subcommand.
+Bare `assistant -p personal` SHALL continue to work as equivalent to
+`assistant run -p personal`.
 
-#### Scenario: Entry point is installed
+#### Scenario: Bare invocation defaults to run
 
-- **WHEN** `uv run assistant --help` is executed against the synced venv
-- **THEN** the exit code MUST be `0`
-- **AND** the output MUST contain the strings `--persona`, `--role`, and
-  `--harness`
+- **WHEN** `assistant -p personal` is executed (no subcommand)
+- **THEN** the behavior MUST be identical to `assistant run -p personal`
+
+#### Scenario: Explicit run subcommand
+
+- **WHEN** `assistant run -p personal` is executed
+- **THEN** the REPL MUST start with the personal persona
 
 ### Requirement: List Personas Lists Initialized Submodules
 
@@ -138,4 +139,31 @@ sub-role name.
 - **WHEN** the user types `/delegate` with fewer than two arguments
 - **THEN** the output MUST contain the substring `"Usage:"`
 - **AND** the REPL MUST remain active
+
+### Requirement: CLI Export Subcommand
+
+The CLI SHALL provide an `export` subcommand that generates host-harness
+integration artifacts for a given persona, role, and host harness type.
+The command SHALL accept `-p/--persona` (required), `-r/--role`
+(optional, defaults to persona's `default_role`), and
+`-H/--harness` (required, restricted to registered host harness names).
+
+#### Scenario: Export generates context artifacts
+
+- **WHEN** `assistant export -p personal -H claude_code` is executed
+- **THEN** the exit code MUST be `0`
+- **AND** the output MUST contain the composed system prompt for the
+  personal persona with its default role
+
+#### Scenario: Export requires persona
+
+- **WHEN** `assistant export -H claude_code` is executed without `-p`
+- **THEN** the exit code MUST be non-zero
+
+#### Scenario: Export rejects SDK harness names
+
+- **WHEN** `assistant export -p personal -H deep_agents` is executed
+- **THEN** the exit code MUST be non-zero
+- **AND** the output MUST indicate that `deep_agents` is an SDK harness,
+  not a host harness
 

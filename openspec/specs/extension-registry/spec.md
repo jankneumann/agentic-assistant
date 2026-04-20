@@ -5,15 +5,16 @@ TBD - created by archiving change bootstrap-vertical-slice. Update Purpose after
 ## Requirements
 ### Requirement: Extension Protocol
 
-The system SHALL define an `Extension` runtime-checkable Protocol with a `name`
-attribute and the methods `as_langchain_tools()`, `as_ms_agent_tools()`, and
-`async health_check()`.
+The `Extension` Protocol SHALL retain its existing `as_langchain_tools()`
+and `as_ms_agent_tools()` methods. Extensions become one tool source
+managed by `ToolPolicy` alongside HTTP tools and MCP servers.
 
-#### Scenario: Stub implementation satisfies Protocol
+#### Scenario: Extensions accessible via ToolPolicy
 
-- **WHEN** a class defines `name: str`, `as_langchain_tools() -> list`,
-  `as_ms_agent_tools() -> list`, and `async def health_check() -> bool`
-- **THEN** `isinstance(instance, Extension)` MUST return `True`
+- **WHEN** `ToolPolicy.authorized_extensions(persona, role)` is called
+- **THEN** the returned list MUST contain all loaded extensions for the
+  persona
+- **AND** each extension MUST satisfy `isinstance(ext, Extension)`
 
 ### Requirement: Stub Implementations for All Configured Extensions
 

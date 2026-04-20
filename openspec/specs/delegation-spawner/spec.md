@@ -5,23 +5,32 @@ TBD - created by archiving change bootstrap-vertical-slice. Update Purpose after
 ## Requirements
 ### Requirement: Delegation Respects allowed_sub_roles
 
-The `DelegationSpawner.delegate(sub_role, task)` method SHALL reject any
-`sub_role` not present in the parent role's
-`delegation.allowed_sub_roles` list.
+The `DelegationSpawner.delegate()` method SHALL consult the
+`GuardrailProvider.check_delegation(parent_role, sub_role, task)` before
+spawning, in addition to the existing `allowed_sub_roles` ACL check.
+If the guardrail check returns `ActionDecision(allowed=False)`, the
+spawner SHALL raise `PermissionError` with the decision's `reason`.
 
-#### Scenario: Disallowed sub-role raises ValueError
+#### Scenario: Guardrail denies delegation
 
-- **WHEN** parent role has `delegation.allowed_sub_roles == ["researcher"]`
-- **AND** `spawner.delegate("coder", "task")` is called
-- **THEN** `ValueError` MUST be raised
-- **AND** the message MUST reference the allowed roles list
+- **WHEN** `GuardrailProvider.check_delegation()` returns
+  `ActionDecision(allowed=False, reason="policy violation")`
+- **AND** the sub-role is in `allowed_sub_roles`
+- **THEN** `PermissionError` MUST be raised
+- **AND** the message MUST contain `"policy violation"`
 
-#### Scenario: Allowed sub-role proceeds to harness
+#### Scenario: Guardrail allows delegation
 
-- **WHEN** parent role allows `["writer"]`
-- **AND** `spawner.delegate("writer", "draft an email")` is called
-- **THEN** `HarnessAdapter.spawn_sub_agent` MUST be invoked once with a
-  `RoleConfig` whose `name == "writer"`
+- **WHEN** `GuardrailProvider.check_delegation()` returns
+  `ActionDecision(allowed=True)`
+- **AND** the sub-role is in `allowed_sub_roles`
+- **THEN** the delegation MUST proceed to `harness.spawn_sub_agent()`
+
+#### Scenario: Role ACL checked before guardrail
+
+- **WHEN** the sub-role is NOT in `allowed_sub_roles`
+- **THEN** `ValueError` MUST be raised (existing behavior)
+- **AND** `GuardrailProvider.check_delegation()` MUST NOT be called
 
 ### Requirement: Concurrent Delegation Limit Enforced
 
@@ -52,4 +61,22 @@ for the current persona (i.e., not in `persona.disabled_roles`).
 - **AND** parent role allows `"writer"` as sub-role
 - **AND** `spawner.delegate("writer", "task")` is called
 - **THEN** `ValueError` MUST be raised referencing the persona name
+
+### Requirement: DelegationSpawner Receives GuardrailProvider
+
+The `DelegationSpawner.__init__()` SHALL accept an optional
+`guardrails: GuardrailProvider` parameter, defaulting to
+`AllowAllGuardrails()` when not provided.
+
+#### Scenario: Default guardrails allow everything
+
+- **WHEN** `DelegationSpawner` is created without a `guardrails`
+  parameter
+- **THEN** all delegations that pass role ACL checks MUST succeed
+  (backward compatible)
+
+#### Scenario: Custom guardrails injected
+
+- **WHEN** `DelegationSpawner(guardrails=custom_provider)` is created
+- **THEN** `delegate()` MUST call `custom_provider.check_delegation()`
 
