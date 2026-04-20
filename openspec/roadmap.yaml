@@ -81,32 +81,30 @@ items:
   - item_id: bootstrap-fixes
     change_id: bootstrap-fixes
     title: Bootstrap hygiene fixes (perplexity §7)
-    status: candidate
+    status: completed
     priority: 4
     effort: S
     depends_on: [bootstrap-vertical-slice]
     description: >
-      Five minor fixes from perplexity §7: CLI `-h` flag conflict with
-      Click's `--help` (§7.1); add `sqlalchemy.text()` wrapper around raw
-      SQL in db.py (§7.2); reconcile `deepagents` package reference
-      (§7.3); add `[project.scripts]` entry point so `uv run assistant`
-      works (§7.4); fix `name` variable shadowing in
-      `PersonaRegistry.load` (§7.5).
+      Five minor fixes from perplexity §7. All resolved: §7.1 CLI `-H`
+      landed in P1; §7.3 `deepagents` v0.5.2 confirmed valid package;
+      §7.4 `[project.scripts]` entry point landed in P1; §7.5 `src_name`
+      renamed in P1. §7.2 (`sqlalchemy.text()`) deferred to P2 — no
+      db.py exists yet. Archived 2026-04-20.
     rationale: >
-      Unblocks memory-architecture (needs §7.2), http-tools-layer (needs
-      §7.1/§7.4), harness-routing (needs §7.3), cli-harness-integrations
-      (needs §7.1/§7.4). NOT a global blocker — observability,
-      extension-lifecycle land independently.
+      All downstream blockers resolved: P3/P16 no longer need §7.1/§7.4
+      (already fixed); P11 no longer needs §7.3 (deepagents confirmed);
+      §7.2 folded into P2 scope (applies when database code is written).
     acceptance_outcomes:
       - CLI accepts -H/--harness without shadowing --help
-      - db.py uses sqlalchemy.text() for raw SQL
+      - deepagents v0.5.2 import verified
       - uv run assistant -p personal invokes CLI via entry point
       - PersonaRegistry.load loop variable renamed to avoid shadowing
 
   - item_id: capability-protocols
     change_id: capability-protocols
     title: Capability protocols (guardrails, sandbox, memory/tool policy, two-tier harness split)
-    status: approved
+    status: completed
     priority: 4.5
     effort: M
     depends_on: [bootstrap-vertical-slice]
@@ -116,7 +114,7 @@ items:
       two-tier harness split (SDK vs Host) + ClaudeCodeHarness + CLI
       export subcommand + delegation guardrail integration. Establishes
       protocol interfaces that P2/P3/P11/P13/P16 implement against.
-      Independent of bootstrap-fixes — can proceed immediately.
+      Archived 2026-04-20.
     acceptance_outcomes:
       - src/assistant/core/capabilities/ with all five protocols + resolver
       - src/assistant/harnesses/sdk/ and host/ directory split
@@ -133,7 +131,7 @@ items:
     status: candidate
     priority: 5
     effort: XL
-    depends_on: [bootstrap-fixes, capability-protocols]
+    depends_on: [capability-protocols]
     description: >
       Implement `core/memory.py` `MemoryManager` class with unified
       `get_context(persona, role)` reading Postgres for operational
@@ -156,7 +154,7 @@ items:
     status: candidate
     priority: 6
     effort: M
-    depends_on: [bootstrap-fixes, capability-protocols]
+    depends_on: [capability-protocols]
     description: >
       `src/assistant/http_tools/` — `/help`-based discovery, `_build_tool()`
       Pydantic-model + async-callable generator, auth header handling,
@@ -306,7 +304,7 @@ items:
     status: candidate
     priority: 14
     effort: M
-    depends_on: [ms-graph-extension, bootstrap-fixes, capability-protocols]
+    depends_on: [ms-graph-extension, capability-protocols]
     description: >
       `harnesses/factory.py` routing logic - `select_harness(persona,
       role, task_hint)`. `--harness auto` default. Routes M365-tool
@@ -401,7 +399,7 @@ items:
     status: candidate
     priority: 19
     effort: M
-    depends_on: [bootstrap-fixes, capability-protocols]
+    depends_on: [capability-protocols]
     description: >
       Deeper Claude Code / Codex / Gemini integrations — slash commands
       in `.claude/commands/`, `.codex/skills/`, `.gemini/settings.json`.
