@@ -32,7 +32,7 @@
 | P1 | `bootstrap-vertical-slice` | phase | **archived** (2026-04-12) | — | original P1 | Core library + Deep Agents harness + CLI + 5 roles + personal persona + delegation + tests + CI |
 | P1.5 | `test-privacy-boundary` | phase | **archived** (2026-04-13) | — | new (IR hygiene from P1 validation) | Separate public tests from private persona data: two-layer (collection-time substring scan + runtime FS patching) boundary guard, `ASSISTANT_PERSONAS_DIR` env-var contract, `scripts/push-with-submodule.sh` atomic dual-commit push wrapper |
 | P1.6 | `sync-test-privacy-boundary-spec` | non-phase (spec-sync) | **archived** (2026-04-13) | — | spec-sync follow-up of P1.5 | Listed for chronological context. Spec-only change that codified five drift items found during P1.5 validation (env-var contract, subprocess `executable=`/`cwd=` kwarg coverage, hygiene-test exclusion list, submodule `parents[N]` abstraction, atomic-push wrapper requirement) |
-| P1.7 | `bootstrap-fixes` | phase | pending | §7.1–§7.5 | perplexity §7 | CLI `-h` flag conflict; add `sqlalchemy.text()` wrapper; reconcile `deepagents` package reference; add `[project.scripts]` entry point; fix `name` variable shadowing in `PersonaRegistry.load` |
+| P1.7 | `bootstrap-fixes` | phase | **archived** (2026-04-20) | §7.1–§7.5 | perplexity §7 | All items resolved: §7.1 CLI `-H` fix landed in P1; §7.3 `deepagents` v0.5.2 confirmed valid; §7.4 entry point landed in P1; §7.5 `src_name` fix landed in P1. §7.2 (`sqlalchemy.text()`) is deferred to P2 — no database code exists yet |
 | P1.8 | `capability-protocols` | phase | **archived** (2026-04-20) | — | new (harness architecture redesign) | Five capability protocols (GuardrailProvider, SandboxProvider, MemoryPolicy, ToolPolicy, ContextProvider) + CapabilityResolver + two-tier harness split (SDK vs Host) + ClaudeCodeHarness + CLI export subcommand + delegation guardrail integration |
 | P2 | `memory-architecture` | phase | pending | §1.2, §8.1 | perplexity §8.1 + old P3 | `core/memory.py` MemoryManager + `core/graphiti.py` client factory + per-persona AsyncEngine + `memory`/`preferences`/`interactions` tables + `scripts/export-memory.sh` that regenerates `memory.md` from Postgres+Graphiti. Implements `MemoryPolicy` protocol from P1.8 |
 | P3 | `http-tools-layer` | phase | pending | §8.2 | perplexity §8.2 + old P2 | `src/assistant/http_tools/` — `/help`-based discovery, `_build_tool()` Pydantic-model + async-callable generator, auth header handling, registry, `--list-tools` CLI command, integration tests against mock server |
@@ -73,21 +73,16 @@ P1 bootstrap-vertical-slice (archived)
  ├─→ P1.5 test-privacy-boundary (archived; tests/ infrastructure)
  │    └─→ P1.6 sync-test-privacy-boundary-spec (archived; spec-sync of P1.5)
  │
- ├─→ P1.7 bootstrap-fixes (pending; §7 hygiene)
- │    ├─→ P3 http-tools-layer                (needs §7.1 CLI `-h` fix; §7.4 entry point)
- │    └─→ P11 harness-routing                (needs §7.3 deepagents package reference reconciled)
+ ├─→ P1.7 bootstrap-fixes (archived; all §7 items resolved or folded into P2)
  │
- ├─→ P1.8 capability-protocols (pending; harness architecture redesign)
+ ├─→ P1.8 capability-protocols (archived; harness architecture redesign)
  │    ├─→ P2 memory-architecture             (implements MemoryPolicy protocol;
- │    │                                       also needs P1.7 §7.2 sqlalchemy.text() wrapper)
- │    ├─→ P3 http-tools-layer                (implements ToolPolicy source;
- │    │                                       also needs P1.7 §7.1 + §7.4)
- │    ├─→ P11 harness-routing                (three-tier routing uses CapabilityResolver;
- │    │                                       also needs P1.7 §7.3)
+ │    │                                       §7.2 sqlalchemy.text() folded into P2 scope)
+ │    ├─→ P3 http-tools-layer                (implements ToolPolicy source)
+ │    ├─→ P11 harness-routing                (three-tier routing uses CapabilityResolver)
  │    ├─→ P13 security-hardening             (implements GuardrailProvider;
  │    │                                       also needs P10 lifecycle hooks)
- │    └─→ P16 cli-harness-integrations       (extends HostHarnessAdapter exports;
- │                                            also needs P1.7 §7.1 + §7.4)
+ │    └─→ P16 cli-harness-integrations       (extends HostHarnessAdapter exports)
  │
  ├─→ P4 observability                        (independent of P1.7/P1.8; lands early for tracing)
  ├─→ P10 extension-lifecycle                 (independent of P1.7/P1.8; initialize/shutdown hooks)
