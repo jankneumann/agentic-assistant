@@ -16,7 +16,7 @@ def test_non_conforming_class_rejected() -> None:
     from assistant.core.capabilities.guardrails import GuardrailProvider
 
     class Incomplete:
-        def check_action(self, action):  # type: ignore[no-untyped-def]
+        def check_action(self, action):
             pass
 
     assert not isinstance(Incomplete(), GuardrailProvider)
