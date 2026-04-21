@@ -14,6 +14,7 @@ def _make_persona(harnesses: dict | None = None) -> MagicMock:
     persona.memory_content = ""
     persona.extensions = []
     persona.tool_sources = {}
+    persona.database_url = ""
     return persona
 
 

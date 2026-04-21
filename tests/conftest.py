@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -162,8 +163,6 @@ def pytest_collection_modifyitems(
 
 
 # ── Memory-architecture fixtures ─────────────────────────────────────
-
-from unittest.mock import AsyncMock, MagicMock
 
 
 @pytest.fixture(autouse=True)
