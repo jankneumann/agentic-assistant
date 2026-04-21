@@ -43,6 +43,11 @@ engine.
 - **THEN** it MUST return an `async_sessionmaker` that produces
   `AsyncSession` instances
 
+#### Scenario: Session factory rejects None engine
+
+- **WHEN** `async_session_factory(None)` is called
+- **THEN** it MUST raise `ValueError`
+
 ### Requirement: Graphiti Client Factory
 
 The system SHALL provide a `create_graphiti_client(persona)` function in
@@ -278,3 +283,10 @@ and returns `MemoryConfig(backend_type="file", ...)`.
   with `persona.harnesses["deep_agents"]["memory_files"] == ["./CONTEXT.md"]`
 - **THEN** it MUST return a `MemoryConfig` with
   `config["memory_files"] == ["./CONTEXT.md"]`
+
+#### Scenario: FileMemoryPolicy defaults when memory_files absent
+
+- **WHEN** `FileMemoryPolicy().resolve(persona, "deep_agents")` is called
+  and `persona.harnesses["deep_agents"]` has no `memory_files` key
+- **THEN** it MUST return a `MemoryConfig` with
+  `config["memory_files"] == ["./AGENTS.md"]`
