@@ -14,7 +14,7 @@ Approach A — Layered Manager with Dual Backends.
                     │  store_interaction()     │
                     │  store_episode()         │
                     │  search()               │
-                    │  export_memory()         ���
+                    │  export_memory()         │
                     └────────┬────────────────┘
                              │
                 ┌────────────┴────────────┐
@@ -28,7 +28,7 @@ Approach A — Layered Manager with Dual Backends.
       │  interactions table│   │  temporal facts      │
       │                    │   │                     │
       │  AsyncEngine       │   │  Graphiti client     │
-      │  (asyncpg)         │   │  (neo4j)            │
+      │  (asyncpg)         │   │  (FalkorDB driver)  │
       └────────────────────┘   └─────────────────────┘
 ```
 
@@ -42,25 +42,26 @@ internal implementation that `PostgresGraphitiMemoryPolicy` delegates
 to. Consumers never import `MemoryManager` directly — they receive a
 `MemoryPolicy` through the `CapabilityResolver`.
 
-**Why**: Keeps the public interface narrow. Harnesses only need to know
-about `MemoryPolicy`. The richer `MemoryManager` API (store, search,
-export) is used by the CLI and by delegation code that explicitly
-needs memory writes.
+The two method names are distinct by design:
+- `MemoryManager.export_memory()` — the implementation that queries both backends
+- `MemoryPolicy.export_memory_context()` — the protocol-level wrapper that delegates to it
 
 ### D2: Per-persona engine factory with lazy initialization
 
-`create_engine(persona)` returns a cached `AsyncEngine` per
+`create_async_engine(persona)` returns a cached `AsyncEngine` per
 `persona.database_url`. Engines are created on first access and cached
-in a module-level dict. Same pattern for Graphiti clients keyed by
-`persona.graphiti_url`.
+in a module-level dict keyed by URL. Same pattern for Graphiti clients.
 
-**Why**: Personas are loaded at startup but engines should only connect
-when actually needed. Connection pooling is per-persona — one persona's
-pool exhaustion doesn't affect another.
+Both caches export `_clear_engine_cache()` / `_clear_graphiti_cache()`
+functions for test isolation. An `autouse` fixture in `conftest.py`
+clears both caches before each test.
 
-### D3: Alembic migrations live in `src/assistant/migrations/`
+Pool defaults: `pool_size=2, max_overflow=0` — appropriate for a
+single-user assistant. Configurable via persona harness config if
+needed in future phases.
 
-Standard Alembic layout:
+### D3: Alembic migrations in `src/assistant/migrations/`
+
 ```
 src/assistant/migrations/
   alembic.ini
@@ -69,85 +70,140 @@ src/assistant/migrations/
     001_initial_memory_schema.py
 ```
 
-`env.py` imports the engine factory from `core/db.py` and runs
-migrations with `run_async()`. The CLI `assistant db upgrade` subcommand
-invokes Alembic programmatically.
+`alembic.ini` is intentionally co-located with migrations because all
+Alembic access is programmatic via `alembic.command.upgrade(config, "head")`
+— never via the `alembic` CLI directly. The CLI constructs the `Config`
+object using an absolute path:
+`Path(__file__).resolve().parent.parent / "migrations" / "alembic.ini"`.
 
-**Why**: Keeps migrations co-located with the package. Alembic's async
-support works with our existing asyncpg + SQLAlchemy stack. Programmatic
-invocation avoids requiring users to know Alembic CLI.
+### D4: Three tables with explicit constraints
 
-### D4: Three tables, not one
+| Table | Purpose | Key columns | Constraints |
+|-------|---------|-------------|-------------|
+| `memory` | Key-value operational state | `persona`, `key`, `value` (JSONB), `updated_at` | UNIQUE(persona, key) |
+| `preferences` | Learned user preferences | `persona`, `category`, `key`, `value` (JSONB), `confidence`, `updated_at` | UNIQUE(persona, category, key) |
+| `interactions` | Session history | `persona`, `role`, `summary`, `metadata` (JSONB), `created_at` | INDEX(persona, created_at DESC) |
 
-| Table | Purpose | Key columns |
-|-------|---------|-------------|
-| `memory` | Key-value operational state | `persona`, `key`, `value` (JSONB), `updated_at` |
-| `preferences` | Learned user preferences | `persona`, `category`, `key`, `value` (JSONB), `confidence`, `updated_at` |
-| `interactions` | Session history | `persona`, `role`, `summary`, `metadata` (JSONB), `created_at` |
+Separate tables for distinct access patterns. `memory` is read-heavy at
+session start. `preferences` are queried by category. `interactions`
+are append-only with time-range queries.
 
-**Why**: Distinct access patterns warrant distinct tables. `memory` is
-read-heavy at session start. `preferences` are queried by category.
-`interactions` are append-only with time-range queries. Separate tables
-allow independent indexing and retention policies.
+### D5: Graceful degradation when FalkorDB is unavailable
 
-### D5: Graceful degradation when Graphiti is unavailable
+`MemoryManager.__init__` accepts optional `graphiti_client`. Degradation
+covers two cases:
 
-`MemoryManager.__init__` accepts optional `graphiti_client`. If `None`
-(empty `graphiti_url` in persona config) or if Neo4j is unreachable,
-all Graphiti methods return empty results and log warnings instead of
-raising. `get_context()` returns Postgres-only context.
+1. **Client is None** (empty `graphiti_url`): all Graphiti methods return
+   empty results silently.
+2. **Client raises connection error** (FalkorDB unreachable): Graphiti
+   methods catch connection errors, emit a `logging.WARNING`-level
+   message including the persona name, and return empty results. The
+   call never raises to the caller.
 
-**Why**: Not every persona needs semantic memory. The personal persona
-may start with just Postgres. Graphiti adds value but shouldn't be a
-hard requirement for the system to function.
+`get_context()` returns Postgres-only context in both cases.
+`export_memory()` omits the Knowledge Graph Summary section.
 
-### D6: SQLAlchemy ORM models, not raw SQL
+### D6: SQLAlchemy ORM models with text() for raw SQL
 
 Tables are defined as SQLAlchemy `DeclarativeBase` models. All queries
-use the ORM. Raw SQL is wrapped with `sqlalchemy.text()` per §7.2
-guidance when needed (e.g., in Alembic migrations).
+use the ORM. Raw SQL in Alembic migrations is wrapped with
+`sqlalchemy.text()` per §7.2 guidance.
 
-**Why**: Type-safe queries, automatic parameter binding (SQL injection
-prevention), compatibility with Alembic autogenerate.
+### D7: Structured Markdown output formats
 
-### D7: export_memory produces structured Markdown
-
-`MemoryManager.export_memory()` generates a Markdown document with
-sections:
+**`export_memory(persona)`** produces:
 ```markdown
 # Memory — {persona.display_name}
+
 ## Active Context
-{key-value pairs from memory table}
+{key-value pairs from memory table, limited to 50 most recent}
+
 ## Preferences
-{categorized preferences}
+{categorized preferences, ordered by confidence DESC}
+
 ## Recent Interactions
-{last N interactions with role and timestamp}
+{last 100 interactions with role and timestamp}
+
 ## Knowledge Graph Summary
 {top entities and relationships from Graphiti}
+{included only when Graphiti client is available and responsive}
 ```
 
-**Why**: Human-readable, diff-friendly in git, consumable by host
-harnesses (Claude Code, Codex) that read memory.md as context.
+**`get_context(persona, role, limit=50)`** produces:
+```markdown
+## Active Context
+{up to `limit` most-recently-updated memory entries}
 
-### D8: CLI subcommands under `assistant db` group
+## Semantic Context
+{Graphiti search results relevant to role, if available}
+```
 
-New CLI command group:
+Both methods return UTF-8 Markdown strings ending with a single
+trailing newline.
+
+### D8: CLI subcommands
+
 - `assistant db upgrade` — run Alembic migrations to head
-- `assistant db downgrade <revision>` — rollback
-- `assistant export-memory -p <persona>` — generate memory.md
+- `assistant db downgrade <revision>` — rollback to specified revision
+- `assistant export-memory -p <persona>` — generate memory.md to stdout
 
-**Why**: Keeps database operations grouped. `export-memory` is separate
-because it's a read-only operation that doesn't modify the schema.
+`db upgrade/downgrade` exit non-zero with an error message if the
+database is unreachable. `export-memory` exits non-zero if the persona
+has no `database_url` configured.
 
-### D9: Test strategy — unit tests with mocks, optional integration markers
+### D9: Test strategy
 
-Unit tests mock `AsyncSession` and `Graphiti` client. They verify
-`MemoryManager` routing logic, `PostgresGraphitiMemoryPolicy` protocol
-compliance, and export formatting.
+**Unit tests** mock `AsyncSession` and `Graphiti` client. Shared
+fixtures in `tests/conftest.py`:
+- `mock_async_session` — `AsyncMock` session with query/execute
+- `mock_graphiti_client` — `AsyncMock` Graphiti with search/add_episode
+- `mock_session_factory` — returns `mock_async_session`
+- `autouse` cache-clearing fixture for `_clear_engine_cache()` and
+  `_clear_graphiti_cache()`
 
-Integration tests (marked `@pytest.mark.integration`) require running
-Postgres and Neo4j. They're skipped in CI unless services are available.
-The existing `FileMemoryPolicy` tests remain unchanged.
+**Integration tests** (marked `@pytest.mark.integration`) require
+running Postgres and FalkorDB. Skipped in CI unless services are
+available.
 
-**Why**: Core logic is testable without infrastructure. Integration
-tests catch real connection issues but shouldn't block CI.
+### D10: Credential management
+
+All database and FalkorDB credentials are resolved from environment
+variables via the existing `_env()` pattern in `persona.py`. No
+credentials are stored in YAML files or code.
+
+Persona config pattern:
+```yaml
+database:
+  url_env: PERSONAL_DATABASE_URL    # postgresql+asyncpg://user:pass@host/db
+
+graphiti:
+  url_env: PERSONAL_GRAPHITI_URL    # activation signal (non-empty = enabled)
+  host_env: PERSONAL_FALKORDB_HOST
+  port_env: PERSONAL_FALKORDB_PORT
+  password_env: PERSONAL_FALKORDB_PASSWORD
+  database: personal_graph
+```
+
+The `create_graphiti_client` factory reads FalkorDB-specific fields
+from `persona.raw["graphiti"]`, resolving `*_env` fields via `_env()`.
+`PersonaConfig.graphiti_url` remains the activation signal — if empty,
+Graphiti is disabled for the persona.
+
+### D11: FalkorDB driver configuration
+
+Graphiti client is created with `graphiti_core`'s `FalkorDriver`:
+```python
+from graphiti_core.driver.falkordb_driver import FalkorDriver
+
+driver = FalkorDriver(
+    host=host,       # from persona graphiti.host_env
+    port=port,       # from persona graphiti.port_env (default 6379)
+    username="",     # FalkorDB typically uses password-only auth
+    password=password,  # from persona graphiti.password_env
+    database=database,  # from persona graphiti.database (default: {name}_graph)
+)
+client = Graphiti(driver=driver)
+```
+
+This matches the proven pattern in `agentic-newsletter-aggregator`'s
+`FalkorDBGraphDBProvider`.
