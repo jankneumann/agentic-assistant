@@ -198,5 +198,5 @@ def _extract_content(result: Any) -> str:
     if hasattr(result, "fact"):
         return str(result.fact)
     if isinstance(result, dict):
-        return result.get("content", result.get("fact", str(result)))
+        return str(result.get("content", result.get("fact", str(result))))
     return str(result)
