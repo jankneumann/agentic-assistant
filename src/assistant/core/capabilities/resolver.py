@@ -12,6 +12,7 @@ from assistant.core.capabilities.memory import (
     FileMemoryPolicy,
     HostProvidedMemoryPolicy,
     MemoryPolicy,
+    PostgresGraphitiMemoryPolicy,
 )
 from assistant.core.capabilities.sandbox import PassthroughSandbox, SandboxProvider
 from assistant.core.capabilities.tools import DefaultToolPolicy, ToolPolicy
@@ -82,6 +83,13 @@ class CapabilityResolver:
                 context=context,
             )
 
+        if self._memory_factory:
+            memory = self._memory_factory()
+        elif getattr(persona, "database_url", ""):
+            memory = PostgresGraphitiMemoryPolicy(persona)
+        else:
+            memory = FileMemoryPolicy()
+
         return CapabilitySet(
             guardrails=(
                 self._guardrail_factory()
@@ -93,11 +101,7 @@ class CapabilityResolver:
                 if self._sandbox_factory
                 else PassthroughSandbox()
             ),
-            memory=(
-                self._memory_factory()
-                if self._memory_factory
-                else FileMemoryPolicy()
-            ),
+            memory=memory,
             tools=(
                 self._tool_factory()
                 if self._tool_factory

@@ -256,5 +256,80 @@ async def _run_repl(
         click.echo(f"\n[{rc.display_name}]> {response}\n")
 
 
+@main.group()
+def db() -> None:
+    """Database migration commands."""
+
+
+@db.command()
+def upgrade() -> None:
+    """Run all pending Alembic migrations to head."""
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+
+    ini_path = (
+        Path(__file__).resolve().parent / "migrations" / "alembic.ini"
+    )
+    try:
+        cfg = Config(str(ini_path))
+        cfg.set_main_option("script_location", str(ini_path.parent))
+        command.upgrade(cfg, "head")
+        click.echo("Migrations applied successfully.")
+    except Exception as e:
+        click.echo(f"Error running migrations: {e}", err=True)
+        sys.exit(1)
+
+
+@db.command()
+@click.argument("revision")
+def downgrade(revision: str) -> None:
+    """Roll back database to a specific REVISION."""
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+
+    ini_path = (
+        Path(__file__).resolve().parent / "migrations" / "alembic.ini"
+    )
+    try:
+        cfg = Config(str(ini_path))
+        cfg.set_main_option("script_location", str(ini_path.parent))
+        command.downgrade(cfg, revision)
+        click.echo(f"Downgraded to revision {revision}.")
+    except Exception as e:
+        click.echo(f"Error running downgrade: {e}", err=True)
+        sys.exit(1)
+
+
+@main.command("export-memory")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+def export_memory(persona: str) -> None:
+    """Generate memory.md content from Postgres + Graphiti."""
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+
+    if not pc.database_url:
+        click.echo(
+            f"Error: persona '{persona}' has no database_url configured.",
+            err=True,
+        )
+        sys.exit(1)
+
+    from assistant.core.db import async_session_factory, create_async_engine
+    from assistant.core.graphiti import create_graphiti_client
+    from assistant.core.memory import MemoryManager
+
+    engine = create_async_engine(pc)
+    session_fac = async_session_factory(engine)
+    graphiti = create_graphiti_client(pc)
+    mgr = MemoryManager(session_fac, graphiti_client=graphiti)
+
+    output = asyncio.run(mgr.export_memory(pc.name))
+    click.echo(output, nl=False)
+
+
 if __name__ == "__main__":
     main()
