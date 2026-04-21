@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import parallel_zones as pz
+import parallel_zones as pz  # noqa: E402
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

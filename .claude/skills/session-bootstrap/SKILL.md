@@ -49,14 +49,101 @@ On a resumed session, `bootstrap-cloud.sh` takes <1 second — it only checks th
 ### 1. Cloud Setup Script (Environment Settings UI)
 
 The Setup Script field is a text area in the cloud UI (not committed to git).
-Paste this one-liner — it calls the versioned script from the cloned repo:
+The skill is installed into two parallel directories — `.claude/skills/` is
+the canonical home for Claude Code, and `.agents/skills/` is the canonical
+home for Codex — so each harness should invoke its own copy.
+
+**Claude Code web** — paste into Environment Settings > Setup Script:
 
 ```bash
-bash "$(pwd)/.claude/skills/session-bootstrap/scripts/setup-cloud.sh"
+matches="$(
+  find "$(pwd)" -maxdepth 7 -path '*/.claude/skills/session-bootstrap/scripts/setup-cloud.sh' -print
+)"
+count="$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l | tr -d '[:space:]')"
+[ "$count" -eq 1 ] || {
+  printf 'setup-cloud.sh: expected 1 match, got %s:\n' "$count" >&2
+  [ -n "$matches" ] && printf '  %s\n' "$matches" >&2
+  exit 1
+}
+bash "$matches"
 ```
 
-Note: `$(pwd)` not `$CLAUDE_PROJECT_DIR` — the Setup Script runs before Claude Code
-launches, so `CLAUDE_PROJECT_DIR` isn't set yet. The repo is already cloned at `$(pwd)`.
+**Codex** — paste into the environment's Setup Script field:
+
+```bash
+SEARCH_ROOT="$(pwd)"
+MATCHES="$(find "$SEARCH_ROOT" -maxdepth 7 -path '*/.agents/skills/session-bootstrap/scripts/setup-cloud.sh' -print)"
+
+if [ -z "$MATCHES" ]; then
+  PARENT="$(dirname "$SEARCH_ROOT")"
+  if [ "$PARENT" != "$SEARCH_ROOT" ]; then
+    MATCHES="$(find "$PARENT" -maxdepth 7 -path '*/.agents/skills/session-bootstrap/scripts/setup-cloud.sh' -print)"
+  fi
+fi
+
+COUNT="$(printf '%s\n' "$MATCHES" | sed '/^$/d' | wc -l | tr -d '[:space:]')"
+if [ "$COUNT" -ne 1 ]; then
+  printf 'setup-cloud.sh: expected 1 match, got %s:\n' "$COUNT" >&2
+  if [ -n "$MATCHES" ]; then
+    printf '  %s\n' "$MATCHES" >&2
+  fi
+  exit 1
+fi
+
+bash "$MATCHES"
+```
+
+**Codex** — paste into the environment's Maintenance Script field:
+
+```bash
+SEARCH_ROOT="$(pwd)"
+MATCHES="$(find "$SEARCH_ROOT" -maxdepth 7 -path '*/.agents/skills/session-bootstrap/scripts/bootstrap-cloud.sh' -print)"
+
+if [ -z "$MATCHES" ]; then
+  PARENT="$(dirname "$SEARCH_ROOT")"
+  if [ "$PARENT" != "$SEARCH_ROOT" ]; then
+    MATCHES="$(find "$PARENT" -maxdepth 7 -path '*/.agents/skills/session-bootstrap/scripts/bootstrap-cloud.sh' -print)"
+  fi
+fi
+
+COUNT="$(printf '%s\n' "$MATCHES" | sed '/^$/d' | wc -l | tr -d '[:space:]')"
+if [ "$COUNT" -ne 1 ]; then
+  printf 'bootstrap-cloud.sh: expected 1 match, got %s:\n' "$COUNT" >&2
+  if [ -n "$MATCHES" ]; then
+    printf '  %s\n' "$MATCHES" >&2
+  fi
+  exit 1
+fi
+
+bash "$MATCHES"
+```
+
+Note: `CLAUDE_PROJECT_DIR` isn't set yet at Setup-Script time (Claude Code
+injects it later, for hooks). On Claude Code web, `$(pwd)` at Setup-Script
+time is the **parent** of the clone — typically `/home/user`, while the repo
+lives at `/home/user/<reponame>/`. The older recommendation
+`bash "$(pwd)/.claude/skills/session-bootstrap/scripts/setup-cloud.sh"` therefore
+resolves to `/home/user/.claude/...` and fails with "file not found".
+
+The harness-specific `find`-then-assert pattern above handles both the cloud
+layout (pwd is the parent) and the local-dev case (pwd is the repo root). It
+**fails loudly** when the search yields zero matches (nothing cloned yet,
+unexpected depth) or more than one (sibling repos under `$(pwd)` each with
+`session-bootstrap` installed — common on accounts that clone multiple
+projects into `/home/user`). Failing fast is safer than `-print -quit`,
+which would silently bootstrap whichever repo `find` visited first —
+filesystem-order dependent and repo-wrong more often than you'd think.
+Once a single match is confirmed, `setup-cloud.sh` derives its own
+`PROJECT_DIR` from `BASH_SOURCE[0]`, so subsequent `uv sync` / `npm install`
+commands run in the right directory.
+
+The wrapper intentionally avoids `mapfile` and process substitution. Some
+cloud setup runners invoke the field via `/bin/sh`, and some images still ship
+older Bash versions where `mapfile` is unavailable. The `find` + `wc -l`
+variant above is portable across both cases. Keep the `-path` argument on a
+single line when copying into the cloud UI; if a wrapped line introduces
+whitespace inside `session-bootstrap/scripts/...`, the search pattern no
+longer matches.
 
 ### 2. `.claude/settings.json` — Hooks
 

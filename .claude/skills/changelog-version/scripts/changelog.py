@@ -17,10 +17,12 @@ import argparse
 import json
 import re
 import subprocess
+import sys
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from enum import IntEnum
 from pathlib import Path
+
 
 # ---------------------------------------------------------------------------
 # Domain types

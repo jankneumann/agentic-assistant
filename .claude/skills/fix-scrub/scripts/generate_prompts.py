@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fix_models import FixGroup
+from fix_models import FixGroup  # noqa: E402
 
 
 def generate_prompts(

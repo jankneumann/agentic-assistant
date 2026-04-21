@@ -26,17 +26,14 @@ from typing import Any
 # Share branch resolution logic with worktree.py so both scripts always
 # agree on what branch a given (change-id, agent-id) pair resolves to.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from worktree import (
+from worktree import (  # noqa: E402
     find_entry,
     load_registry,
-    resolve_main_repo,
-)
-from worktree import (
     resolve_branch as _resolve_branch,
-)
-from worktree import (
+    resolve_main_repo,
     resolve_parent_branch as _resolve_parent_branch,
 )
+
 
 # ---------------------------------------------------------------------------
 # Git helpers

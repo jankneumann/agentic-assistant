@@ -21,7 +21,7 @@ import json
 import logging
 import re
 import sys
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -32,9 +32,10 @@ logger = logging.getLogger("enrich_with_treesitter")
 # ---------------------------------------------------------------------------
 
 try:
+    from tree_sitter import Language, Node, Parser, Query, QueryCursor
+
     import tree_sitter_python
     import tree_sitter_typescript
-    from tree_sitter import Language, Node, Parser, Query, QueryCursor
 
     PY_LANGUAGE = Language(tree_sitter_python.language())
     TS_LANGUAGE = Language(tree_sitter_typescript.language_typescript())
@@ -469,7 +470,7 @@ class TreeSitterEnricher:
                             break
 
     @staticmethod
-    def _walk_tree(node: Node):
+    def _walk_tree(node: Node):  # noqa: ANN205 — generator
         """Depth-first walk of all nodes in the tree (generator)."""
         cursor = node.walk()
         visited = False
@@ -486,7 +487,7 @@ class TreeSitterEnricher:
     def build_output(self) -> dict[str, Any]:
         """Build the final enrichment JSON."""
         return {
-            "generated_at": datetime.now(UTC).isoformat(),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
             "treesitter_version": _get_treesitter_version(),
             "comments": {
                 "total": len(self.comments),

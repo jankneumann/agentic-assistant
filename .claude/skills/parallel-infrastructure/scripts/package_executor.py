@@ -41,10 +41,11 @@ Usage:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from scope_checker import check_scope_compliance
+
 
 PAUSE_LOCK_PREFIX = "feature:"
 PAUSE_LOCK_SUFFIX = ":pause"
@@ -125,11 +126,11 @@ class PackageExecutor:
 
     def mark_started(self) -> None:
         """Record execution start time."""
-        self._started_at = datetime.now(UTC)
+        self._started_at = datetime.now(timezone.utc)
 
     def mark_finished(self) -> None:
         """Record execution finish time."""
-        self._finished_at = datetime.now(UTC)
+        self._finished_at = datetime.now(timezone.utc)
 
     def check_scope(self, files_modified: list[str]) -> dict[str, Any]:
         """B7: Deterministic scope check via file list.

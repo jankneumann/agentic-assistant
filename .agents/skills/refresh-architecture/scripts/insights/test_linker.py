@@ -34,8 +34,8 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from arch_utils.constants import EdgeType, NodeKind
-from arch_utils.graph_io import load_graph, save_json
+from arch_utils.constants import EdgeType, NodeKind  # noqa: E402
+from arch_utils.graph_io import load_graph, save_json  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

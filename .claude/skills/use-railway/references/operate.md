@@ -14,6 +14,13 @@ railway deployment list --limit 10 --json                # recent deployments
 
 Deployment statuses: `SUCCESS`, `BUILDING`, `DEPLOYING`, `FAILED`, `CRASHED`, `REMOVED`.
 
+For projects with buckets, include bucket status:
+
+```bash
+railway bucket list --json                                       # buckets in current environment
+railway bucket info --bucket <name> --json                       # storage size, object count, region
+```
+
 If everything looks healthy, return a summary and stop. If something is degraded or failing, continue to log inspection.
 
 ## Logs
@@ -70,6 +77,15 @@ scripts/railway-api.sh \
 Available measurements: `CPU_USAGE`, `CPU_LIMIT`, `MEMORY_USAGE_GB`, `MEMORY_LIMIT_GB`, `NETWORK_RX_GB`, `NETWORK_TX_GB`, `DISK_USAGE_GB`, `EPHEMERAL_DISK_USAGE_GB`, `BACKUP_USAGE_GB`.
 
 Omit `serviceId` and add `"groupBy": ["SERVICE_ID"]` to query all services in the environment at once. Get the environment and service IDs from `railway status --json`.
+
+## Database inspection
+
+For database-level metrics and introspection, always use the analysis scripts. See [analyze-db.md](analyze-db.md) for comprehensive database analysis including:
+
+- Deep Postgres analysis (pg_stat_statements, vacuum health, index health, cache hit ratios)
+- HA cluster checks (Patroni, etcd, HAProxy)
+- Redis, MySQL, and MongoDB introspection
+- Combined analysis via `scripts/analyze-<type>.py` (postgres, mysql, redis, mongo)
 
 ## Failure triage
 

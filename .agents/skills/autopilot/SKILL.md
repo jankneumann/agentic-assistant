@@ -21,6 +21,7 @@ Orchestrate the full plan-review-implement-validate-PR lifecycle with multi-vend
 Optional flags:
 - `--force` — Bypass complexity gate thresholds
 - `--val-review` — Force VAL_REVIEW phase even for simple features
+- `--no-review` — Skip multi-vendor review phases (PLAN_REVIEW, IMPL_REVIEW); iterate phases still run
 
 ## Prerequisites
 
@@ -38,10 +39,13 @@ python3 "<skill-base-dir>/../coordination-bridge/scripts/check_coordinator.py" -
 
 If coordinator is unavailable, emit a warning and fall back to sequential skill invocation:
 1. `/plan-feature` (if description provided)
-2. `/parallel-review-plan` (single pass, no convergence loop)
-3. `/implement-feature`
-4. `/validate-feature`
-5. Create PR manually
+2. `/iterate-on-plan` (always runs — self-review)
+3. `/parallel-review-plan` (CLI only — single pass, no convergence loop)
+4. `/implement-feature`
+5. `/iterate-on-implementation` (always runs — self-review)
+6. `/parallel-review-implementation` (CLI only — single pass, no convergence loop)
+7. `/validate-feature`
+8. Create PR manually
 
 ## Steps
 
@@ -66,6 +70,24 @@ If `loop-state.json` exists and `current_phase == "ESCALATE"`:
 
 ### 1. INIT Phase
 
+**Detect CLI mode** — check whether multi-vendor review is available:
+
+```bash
+# CLI mode: vendor CLIs are available for multi-vendor review dispatch
+CLI_REVIEW_ENABLED=true
+if [[ "$ARGUMENTS" == *"--no-review"* ]]; then
+  CLI_REVIEW_ENABLED=false
+fi
+# Also disable if no vendor CLIs are installed (non-interactive/cloud environment)
+python3 "<skill-base-dir>/../parallel-infrastructure/scripts/review_dispatcher.py" --check-vendors
+if [[ $? -ne 0 ]]; then
+  CLI_REVIEW_ENABLED=false
+  echo "[autopilot] No vendor CLIs detected — multi-vendor review disabled"
+fi
+```
+
+Pass `cli_review_enabled` to `run_loop()`. When False, PLAN_ITERATE and IMPL_ITERATE still run (self-review is always valuable), but PLAN_REVIEW and IMPL_REVIEW are skipped.
+
 Run the complexity gate:
 ```python
 from complexity_gate import assess_complexity
@@ -87,7 +109,23 @@ If argument was an existing change-id:
 - Verify proposal artifacts exist (proposal.md, design.md, specs/, tasks.md)
 - Skip to PLAN_REVIEW
 
-### 3. PLAN_REVIEW Phase (Convergence Loop)
+### 2.5. PLAN_ITERATE Phase (Always Runs)
+
+Self-review and refinement of plan artifacts. This phase always runs regardless of CLI mode.
+
+Invoke `/iterate-on-plan <change-id>` — this runs the single-agent self-review loop that:
+- Reads all proposal documents and spec deltas
+- Identifies findings across quality dimensions (completeness, clarity, feasibility, security, etc.)
+- Fixes findings above threshold
+- Runs `openspec validate --strict` after each fix
+- Loops until convergence or max iterations
+
+**If complete**: Transition to PLAN_REVIEW (CLI mode) or IMPLEMENT (non-CLI mode).
+**If failed**: Transition to ESCALATE.
+
+### 3. PLAN_REVIEW Phase (Convergence Loop — CLI Only)
+
+**Skipped when `cli_review_enabled=false`** — transitions directly to IMPLEMENT.
 
 Invoke the convergence loop with `fix_mode="inline"`:
 
@@ -119,9 +157,30 @@ Invoke implementation using existing skills:
 
 Record `package_authors` from the implementation results (which vendor implemented each package).
 
-### 5. IMPL_REVIEW Phase (Convergence Loop)
+### 4.5. IMPL_ITERATE Phase (Always Runs)
 
-Invoke the convergence loop with `fix_mode="targeted"`:
+Self-review and refinement of implementation. This phase always runs regardless of CLI mode.
+
+Invoke `/iterate-on-implementation <change-id>` — this runs the single-agent self-review loop that:
+- Reads proposal, design, and all changed source files
+- Identifies bugs, security issues, edge cases, performance problems
+- Fixes findings above threshold with parallel agents for independent files
+- Runs quality checks (pytest, mypy, ruff, openspec validate) after each fix
+- Loops until convergence or max iterations
+
+**If complete**: Transition to IMPL_REVIEW (CLI mode) or VALIDATE (non-CLI mode).
+**If failed**: Transition to ESCALATE.
+
+### 5. IMPL_REVIEW Phase (Convergence Loop — CLI Only)
+
+**Skipped when `cli_review_enabled=false`** — transitions directly to VALIDATE.
+
+Invoke the convergence loop with `fix_mode="targeted"`.
+
+**Post-fix validation**: Pass a `post_fix_validator` callback that runs scoped quality checks after each fix round:
+- `pytest` on changed files only (not full suite)
+- `mypy` on changed files
+- Validation errors are attached to the convergence result for visibility but don't alter convergence logic — the next review round surfaces them to vendors.
 
 For **targeted implementation fixes** (IMPL_FIX): Look up the lead vendor from `package_authors`, use `CliVendorAdapter.dispatch()` directly to send the fix to that specific vendor, scoped to the package's `write_allow` paths.
 
@@ -179,9 +238,11 @@ Write final handoff document.
 
 At each state transition, report:
 ```
+[autopilot] Phase: PLAN_ITERATE → PLAN_REVIEW (self-review complete, 3 findings fixed)
 [autopilot] Phase: PLAN_REVIEW → IMPLEMENT (converged in 2 rounds)
 [autopilot] Finding trend: [8, 2, 0]
 [autopilot] Vendor participation: claude ✓, codex ✓, gemini ✗
+[autopilot] CLI review: enabled | disabled (--no-review or no vendor CLIs)
 ```
 
 ## Output

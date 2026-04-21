@@ -10,11 +10,10 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +67,7 @@ class LoopState:
     previous_phase: str | None = None
     escalation_reason: str | None = None
     val_review_enabled: bool = False
+    cli_review_enabled: bool = True
     error: str | None = None
 
 
@@ -94,10 +94,12 @@ def load_state(path: str | Path) -> LoopState:
 
 TRANSITIONS: dict[str, dict[str, str]] = {
     "INIT": {"next": "PLAN"},
-    "PLAN": {"exists": "PLAN_REVIEW", "created": "PLAN_REVIEW", "failed": "ESCALATE"},
+    "PLAN": {"exists": "PLAN_ITERATE", "created": "PLAN_ITERATE", "failed": "ESCALATE"},
+    "PLAN_ITERATE": {"complete": "PLAN_REVIEW_OR_IMPLEMENT", "failed": "ESCALATE"},
     "PLAN_REVIEW": {"converged": "IMPLEMENT", "not_converged": "PLAN_FIX", "max_iter": "ESCALATE"},
     "PLAN_FIX": {"fixed": "PLAN_REVIEW", "stuck": "ESCALATE"},
-    "IMPLEMENT": {"complete": "IMPL_REVIEW", "failed": "ESCALATE"},
+    "IMPLEMENT": {"complete": "IMPL_ITERATE", "failed": "ESCALATE"},
+    "IMPL_ITERATE": {"complete": "IMPL_REVIEW_OR_VALIDATE", "failed": "ESCALATE"},
     "IMPL_REVIEW": {"converged": "VALIDATE", "not_converged": "IMPL_FIX", "max_iter": "ESCALATE"},
     "IMPL_FIX": {"fixed": "IMPL_REVIEW", "stuck": "ESCALATE"},
     "VALIDATE": {"passed": "VAL_REVIEW_OR_SUBMIT", "failed": "VAL_FIX"},
@@ -122,6 +124,10 @@ def transition(state: LoopState, outcome: str) -> str:
         raise ValueError(f"Invalid outcome {outcome!r} for phase {phase!r}")
 
     # Dynamic resolution
+    if target == "PLAN_REVIEW_OR_IMPLEMENT":
+        return "PLAN_REVIEW" if state.cli_review_enabled else "IMPLEMENT"
+    if target == "IMPL_REVIEW_OR_VALIDATE":
+        return "IMPL_REVIEW" if state.cli_review_enabled else "VALIDATE"
     if target == "VAL_REVIEW_OR_SUBMIT":
         return "VAL_REVIEW" if state.val_review_enabled else "SUBMIT_PR"
     if target == "_previous_phase":
@@ -183,7 +189,7 @@ class PhaseFn(Protocol):
 # ---------------------------------------------------------------------------
 
 def _now_iso() -> str:
-    return datetime.now(UTC).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _apply_transition(
@@ -206,6 +212,10 @@ def _apply_transition(
 
 def _is_review_phase(phase: str) -> bool:
     return phase in ("PLAN_REVIEW", "IMPL_REVIEW", "VAL_REVIEW")
+
+
+def _is_iterate_phase(phase: str) -> bool:
+    return phase in ("PLAN_ITERATE", "IMPL_ITERATE")
 
 
 def _safe_status_call(
@@ -255,6 +265,8 @@ def run_loop(
     *,
     state_path: str | Path | None = None,
     plan_fn: Callable[[LoopState], str] | None = None,
+    iterate_plan_fn: Callable[[LoopState], str] | None = None,
+    iterate_impl_fn: Callable[[LoopState], str] | None = None,
     implement_fn: Callable[[LoopState], str] | None = None,
     validate_fn: Callable[[LoopState], str] | None = None,
     submit_pr_fn: Callable[[LoopState], str] | None = None,
@@ -263,7 +275,9 @@ def run_loop(
     gate_check_fn: Callable[[LoopState], bool] | None = None,
     converge_fn: Callable[..., Any] | None = None,
     assess_complexity_fn: Callable[..., Any] | None = None,
+    post_fix_validator_fn: Callable[[Path], list[str]] | None = None,
     status_fn: Callable[[LoopState, str, str, bool], None] | None = None,
+    cli_review_enabled: bool = True,
     max_global_iterations: int = 50,
 ) -> LoopState:
     """Drive the autopilot loop from the current phase to DONE or ESCALATE.
@@ -282,6 +296,12 @@ def run_loop(
     plan_fn / implement_fn / validate_fn / submit_pr_fn:
         Callbacks for phases that require external tool invocations.
         Each receives the current state and returns an outcome string.
+    iterate_plan_fn:
+        Callback for PLAN_ITERATE phase (self-review of plan artifacts).
+        Receives state, returns outcome ("complete" or "failed").
+    iterate_impl_fn:
+        Callback for IMPL_ITERATE phase (self-review of implementation).
+        Receives state, returns outcome ("complete" or "failed").
     handoff_fn:
         Called at major transition boundaries with a description.
     memory_fn:
@@ -292,10 +312,18 @@ def run_loop(
         Override for the convergence loop (defaults to sibling module).
     assess_complexity_fn:
         Override for complexity assessment (defaults to sibling module).
+    post_fix_validator_fn:
+        Passed through to convergence loop as ``post_fix_validator``.
+        Called after fixes are applied during review phases to catch
+        regressions (e.g. test failures on changed files).
     status_fn:
         Called on phase transitions and escalations to report status.
         Signature: ``(state, event_type, message, urgent) -> None``.
         Wrapped in try/except with 5s timeout — never crashes the loop.
+    cli_review_enabled:
+        Whether multi-vendor review phases (PLAN_REVIEW, IMPL_REVIEW)
+        should run.  True when vendor CLIs are available (CLI mode),
+        False for headless/cloud/API execution.  Defaults to True.
     max_global_iterations:
         Safety cap on total loop iterations.
     """
@@ -313,6 +341,8 @@ def run_loop(
     # ---- Load or create state ----
     if state_path.exists():
         state = load_state(state_path)
+        # Update cli_review_enabled from caller (may change between resumes)
+        state.cli_review_enabled = cli_review_enabled
         logger.info(
             "Resumed loop state at phase=%s iteration=%d",
             state.current_phase, state.total_iterations,
@@ -322,6 +352,7 @@ def run_loop(
             change_id=change_id,
             started_at=_now_iso(),
             phase_started_at=_now_iso(),
+            cli_review_enabled=cli_review_enabled,
         )
         logger.info("Created new loop state for %s", change_id)
 
@@ -336,6 +367,8 @@ def run_loop(
                 change_dir=change_dir,
                 worktree_path=worktree_path,
                 plan_fn=plan_fn,
+                iterate_plan_fn=iterate_plan_fn,
+                iterate_impl_fn=iterate_impl_fn,
                 implement_fn=implement_fn,
                 validate_fn=validate_fn,
                 submit_pr_fn=submit_pr_fn,
@@ -344,6 +377,7 @@ def run_loop(
                 gate_check_fn=gate_check_fn,
                 converge_fn=_converge,
                 assess_complexity_fn=_assess,
+                post_fix_validator_fn=post_fix_validator_fn,
             )
         except Exception as exc:
             logger.error("Phase %s raised: %s", phase, exc)
@@ -398,6 +432,8 @@ def _run_phase(
     change_dir: Path,
     worktree_path: Path,
     plan_fn: Callable[[LoopState], str] | None,
+    iterate_plan_fn: Callable[[LoopState], str] | None,
+    iterate_impl_fn: Callable[[LoopState], str] | None,
     implement_fn: Callable[[LoopState], str] | None,
     validate_fn: Callable[[LoopState], str] | None,
     submit_pr_fn: Callable[[LoopState], str] | None,
@@ -406,6 +442,7 @@ def _run_phase(
     gate_check_fn: Callable[[LoopState], bool] | None,
     converge_fn: Callable[..., Any] | None,
     assess_complexity_fn: Callable[..., Any] | None,
+    post_fix_validator_fn: Callable[[Path], list[str]] | None,
 ) -> str | None:
     """Run a single phase and return the outcome string, or None to pause."""
     phase = state.current_phase
@@ -416,8 +453,14 @@ def _run_phase(
     if phase == "PLAN":
         return _phase_plan(state, change_dir, plan_fn)
 
+    if phase == "PLAN_ITERATE":
+        return _phase_iterate(state, iterate_plan_fn)
+
     if phase == "PLAN_REVIEW":
-        return _phase_review(state, change_dir, worktree_path, converge_fn, fix_mode="inline")
+        return _phase_review(
+            state, change_dir, worktree_path, converge_fn,
+            fix_mode="inline", post_fix_validator_fn=post_fix_validator_fn,
+        )
 
     if phase == "PLAN_FIX":
         # Plan fixes are handled inline by the convergence loop; if we land
@@ -427,8 +470,14 @@ def _run_phase(
     if phase == "IMPLEMENT":
         return _phase_implement(state, implement_fn)
 
+    if phase == "IMPL_ITERATE":
+        return _phase_iterate(state, iterate_impl_fn)
+
     if phase == "IMPL_REVIEW":
-        return _phase_review(state, change_dir, worktree_path, converge_fn, fix_mode="targeted")
+        return _phase_review(
+            state, change_dir, worktree_path, converge_fn,
+            fix_mode="targeted", post_fix_validator_fn=post_fix_validator_fn,
+        )
 
     if phase == "IMPL_FIX":
         return "fixed"
@@ -437,7 +486,10 @@ def _run_phase(
         return _phase_validate(state, validate_fn)
 
     if phase == "VAL_REVIEW":
-        return _phase_review(state, change_dir, worktree_path, converge_fn, fix_mode="targeted")
+        return _phase_review(
+            state, change_dir, worktree_path, converge_fn,
+            fix_mode="targeted", post_fix_validator_fn=post_fix_validator_fn,
+        )
 
     if phase == "VAL_FIX":
         return "fixed"
@@ -511,6 +563,18 @@ def _phase_plan(
     return "created"
 
 
+def _phase_iterate(
+    state: LoopState,
+    iterate_fn: Callable[[LoopState], str] | None,
+) -> str:
+    """Delegate to iterate callback (self-review loop). Always runs."""
+    state.phase_started_at = _now_iso()
+    if iterate_fn is not None:
+        return iterate_fn(state)
+    # No callback — stub returns "complete" (iterate is a no-op without a callback)
+    return "complete"
+
+
 _PHASE_TO_REVIEW_TYPE: dict[str, str] = {
     "PLAN_REVIEW": "plan",
     "IMPL_REVIEW": "implementation",
@@ -524,6 +588,7 @@ def _phase_review(
     worktree_path: Path,
     converge_fn: Callable[..., Any] | None,
     fix_mode: str,
+    post_fix_validator_fn: Callable[[Path], list[str]] | None = None,
 ) -> str:
     """Run a convergence review loop for the current review phase."""
     state.iteration += 1
@@ -535,13 +600,16 @@ def _phase_review(
 
     if converge_fn is not None:
         review_type = _PHASE_TO_REVIEW_TYPE.get(state.current_phase, "plan")
-        result = converge_fn(
-            change_id=state.change_id,
-            review_type=review_type,
-            artifacts_dir=change_dir,
-            worktree_path=worktree_path,
-            fix_mode=fix_mode,
-        )
+        converge_kwargs: dict[str, Any] = {
+            "change_id": state.change_id,
+            "review_type": review_type,
+            "artifacts_dir": change_dir,
+            "worktree_path": worktree_path,
+            "fix_mode": fix_mode,
+        }
+        if post_fix_validator_fn is not None:
+            converge_kwargs["post_fix_validator"] = post_fix_validator_fn
+        result = converge_fn(**converge_kwargs)
         # Support both ConvergenceResult dataclass and dict
         converged = getattr(result, "converged", None)
         if converged is None and isinstance(result, dict):
@@ -619,7 +687,11 @@ def _phase_escalate(
 # ---------------------------------------------------------------------------
 
 _HANDOFF_BOUNDARIES: set[tuple[str, str]] = {
+    ("PLAN_ITERATE", "PLAN_REVIEW"),
+    ("PLAN_ITERATE", "IMPLEMENT"),
     ("PLAN_REVIEW", "IMPLEMENT"),
+    ("IMPL_ITERATE", "IMPL_REVIEW"),
+    ("IMPL_ITERATE", "VALIDATE"),
     ("IMPL_REVIEW", "VALIDATE"),
     ("VALIDATE", "VAL_REVIEW"),
     ("VAL_REVIEW", "SUBMIT_PR"),

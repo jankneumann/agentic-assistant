@@ -23,10 +23,9 @@ from __future__ import annotations
 
 import logging
 import sys
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 # ---------------------------------------------------------------------------
 # Import review_dispatcher and consensus_synthesizer from parallel-infrastructure
@@ -69,6 +68,7 @@ class ConvergenceResult:
     reason: str | None = None
     consensus: dict[str, Any] | None = None
     escalate_findings: list[dict[str, Any]] | None = None
+    validation_errors: list[str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +186,7 @@ def converge(
     fix_callback: Callable[[list[dict[str, Any]], Path], None] | None = None,
     memory_callback: Callable[[str], None] | None = None,
     orchestrator: ReviewOrchestrator | None = None,
+    post_fix_validator: Callable[[Path], list[str]] | None = None,
 ) -> ConvergenceResult:
     """Run the review-fix convergence loop.
 
@@ -201,6 +202,10 @@ def converge(
         fix_callback: Called with (blocking_findings, worktree_path) to apply fixes.
         memory_callback: Called with a summary string each round for episodic memory.
         orchestrator: Pre-built ReviewOrchestrator (for testing/reuse).
+        post_fix_validator: Called with ``(worktree_path)`` after fixes are applied.
+            Returns a list of error strings (e.g. test failures, type errors).
+            Errors are logged and attached to the result but do not alter
+            convergence logic — the next review round will surface them.
 
     Returns:
         ConvergenceResult with convergence status and details.
@@ -216,6 +221,7 @@ def converge(
     trend: list[int] = []
     consensus_dict: dict[str, Any] | None = None
     blocking: list[dict[str, Any]] = []
+    all_validation_errors: list[str] = []
 
     # 2. Loop through rounds
     for round_num in range(1, max_rounds + 1):
@@ -243,6 +249,7 @@ def converge(
                 converged=False,
                 rounds=round_num,
                 reason="quorum_lost",
+                validation_errors=all_validation_errors or None,
             )
 
         # 2c. Convert to VendorResult for synthesizer
@@ -279,6 +286,7 @@ def converge(
                 reason="disagreement",
                 consensus=consensus_dict,
                 escalate_findings=disagreement_findings,
+                validation_errors=all_validation_errors or None,
             )
 
         # 2g. Filter blocking findings (medium+ confirmed/unconfirmed)
@@ -310,6 +318,7 @@ def converge(
                 rounds=round_num,
                 reason=None,
                 consensus=consensus_dict,
+                validation_errors=all_validation_errors or None,
             )
 
         # 2j. 3-point stall detection
@@ -323,6 +332,7 @@ def converge(
                 reason="stalled",
                 consensus=consensus_dict,
                 escalate_findings=blocking,
+                validation_errors=all_validation_errors or None,
             )
 
         # 2k. Dispatch fixes
@@ -332,6 +342,20 @@ def converge(
             )
             fix_callback(blocking, worktree_path)
 
+            # 2l. Post-fix validation (optional)
+            if post_fix_validator is not None:
+                try:
+                    errors = post_fix_validator(worktree_path)
+                except Exception as exc:
+                    logger.warning("post_fix_validator raised: %s", exc)
+                    errors = [f"Validator error: {exc}"]
+                if errors:
+                    logger.warning(
+                        "Post-fix validation found %d issues in round %d",
+                        len(errors), round_num,
+                    )
+                    all_validation_errors.extend(errors)
+
     # 3. Max rounds exhausted
     return ConvergenceResult(
         converged=False,
@@ -339,4 +363,5 @@ def converge(
         reason="max_rounds",
         consensus=consensus_dict,
         escalate_findings=blocking or None,
+        validation_errors=all_validation_errors or None,
     )

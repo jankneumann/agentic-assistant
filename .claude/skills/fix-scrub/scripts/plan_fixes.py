@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fix_models import ClassifiedFinding, FixGroup, FixPlan, severity_rank
+from fix_models import ClassifiedFinding, FixGroup, FixPlan, severity_rank  # noqa: E402
 
 
 def assert_no_file_overlap(auto_groups: list[FixGroup]) -> None:

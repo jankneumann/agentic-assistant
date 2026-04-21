@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
@@ -45,7 +46,7 @@ class Finding:
     vendor: str = ""
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any], vendor: str) -> Finding:
+    def from_dict(cls, data: dict[str, Any], vendor: str) -> "Finding":
         line_range = data.get("line_range", {})
         return cls(
             id=data["id"],

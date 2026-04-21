@@ -18,7 +18,7 @@ import json
 import logging
 import sys
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -88,7 +88,7 @@ def compute_pattern_insights(enrichment: dict[str, Any]) -> dict[str, Any]:
     }
 
     return {
-        "generated_at": datetime.now(UTC).isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "python_patterns": py_summary,
         "typescript_patterns": ts_summary,
         "type_hint_coverage": {

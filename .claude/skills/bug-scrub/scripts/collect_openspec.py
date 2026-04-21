@@ -130,7 +130,7 @@ def collect(project_dir: str) -> SourceResult:
             duration_ms=elapsed,
             messages=["openspec validate timed out after 120 s"],
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         elapsed = int((time.monotonic() - start) * 1000)
         return SourceResult(
             source=_SOURCE,

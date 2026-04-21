@@ -115,7 +115,7 @@ class ApiKeyResolver:
         except ImportError:
             logger.debug("hvac not installed — OpenBao resolution unavailable")
             return None
-        except Exception:
+        except Exception:  # noqa: BLE001
             logger.warning(
                 "OpenBao resolution failed for role '%s'",
                 openbao_role_id,

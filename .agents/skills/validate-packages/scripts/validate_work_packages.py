@@ -234,29 +234,33 @@ def get_parallel_pairs(packages: list[dict[str, Any]]) -> list[tuple[str, str]]:
 
 
 def validate_scope_overlap(packages: list[dict[str, Any]]) -> list[str]:
-    """Check that parallel packages have non-overlapping write_allow scopes."""
-    from fnmatch import fnmatch
+    """Check that parallel packages have non-overlapping write_allow scopes.
+
+    Uses shared primitives from ``roadmap-runtime/scripts/scope_overlap.py``.
+    """
+    import sys as _sys
+    _runtime = str(Path(__file__).resolve().parent.parent.parent / "roadmap-runtime" / "scripts")
+    if _runtime not in _sys.path:
+        _sys.path.insert(0, _runtime)
+    from scope_overlap import glob_overlap  # type: ignore[import-untyped]
 
     pkg_map = {p["package_id"]: p for p in packages}
     pairs = get_parallel_pairs(packages)
     errors = []
 
     for a_id, b_id in pairs:
-        # Skip wp-integration (it's allowed to overlap with everything)
         if a_id == "wp-integration" or b_id == "wp-integration":
             continue
 
         a_writes = pkg_map[a_id].get("scope", {}).get("write_allow", [])
         b_writes = pkg_map[b_id].get("scope", {}).get("write_allow", [])
 
-        # Check if any glob from A matches any glob from B (approximate)
-        for a_glob in a_writes:
-            for b_glob in b_writes:
-                if fnmatch(a_glob, b_glob) or fnmatch(b_glob, a_glob) or a_glob == b_glob:
-                    errors.append(
-                        f"  parallel pair ({a_id}, {b_id}): "
-                        f"write_allow overlap: '{a_glob}' vs '{b_glob}'"
-                    )
+        overlaps = glob_overlap(a_writes, b_writes)
+        for a_glob, b_glob in overlaps:
+            errors.append(
+                f"  parallel pair ({a_id}, {b_id}): "
+                f"write_allow overlap: '{a_glob}' vs '{b_glob}'"
+            )
 
     return errors
 

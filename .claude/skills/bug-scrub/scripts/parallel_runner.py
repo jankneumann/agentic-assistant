@@ -65,7 +65,7 @@ def run_collectors_parallel(
                         f"{timeout_per_collector}s"
                     ],
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 duration_ms = int((time.monotonic() - start) * 1000)
                 result = SourceResult(
                     source=name,
@@ -85,7 +85,7 @@ def _run_one(
     start = time.monotonic()
     try:
         result = func(project_dir)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         duration_ms = int((time.monotonic() - start) * 1000)
         return SourceResult(
             source=name,

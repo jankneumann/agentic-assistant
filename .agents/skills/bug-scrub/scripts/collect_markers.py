@@ -19,7 +19,7 @@ from __future__ import annotations
 import re
 import subprocess
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from models import Finding, SourceResult
@@ -76,7 +76,7 @@ def _file_age_days(filepath: Path, project_dir: str) -> int | None:
 
     try:
         last_commit = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S %z")
-        delta = datetime.now(UTC) - last_commit
+        delta = datetime.now(timezone.utc) - last_commit
         return max(int(delta.total_seconds() / 86400), 0)
     except (ValueError, TypeError):
         return None

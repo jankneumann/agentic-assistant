@@ -24,7 +24,7 @@ Usage:
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -300,7 +300,7 @@ class IntegrationOrchestrator:
 
         return {
             "feature_id": self.feature_id,
-            "generated_at": datetime.now(UTC).isoformat(),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
             "packages": {
                 "total": len(self.packages),
                 "implementation": len(impl_pkgs),
