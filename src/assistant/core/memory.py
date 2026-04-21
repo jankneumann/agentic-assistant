@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -71,7 +71,7 @@ class MemoryManager:
             )
             stmt = stmt.on_conflict_do_update(
                 constraint="uq_memory_persona_key",
-                set_={"value": value, "updated_at": datetime.now(timezone.utc)},
+                set_={"value": value, "updated_at": datetime.now(UTC)},
             )
             await session.execute(stmt)
             await session.commit()
@@ -109,7 +109,7 @@ class MemoryManager:
                 name=f"{persona}:{source}",
                 episode_body=content,
                 source=EpisodeType.text,
-                reference_time=datetime.now(timezone.utc),
+                reference_time=datetime.now(UTC),
             )
         except Exception:
             logger.warning(
