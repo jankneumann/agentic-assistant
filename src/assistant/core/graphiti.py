@@ -44,7 +44,7 @@ def create_graphiti_client(persona: Any) -> Any | None:
         password=password,
         database=database,
     )
-    client = Graphiti(driver=driver)
+    client = Graphiti(graph_driver=driver)
     _graphiti_cache[cache_key] = client
     logger.info(
         "Created Graphiti client for persona '%s' at %s:%d/%s",

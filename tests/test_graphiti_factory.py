@@ -52,7 +52,7 @@ class TestCreateGraphitiClient:
             password="testpass",
             database="test_graph",
         )
-        mock_graphiti_cls.assert_called_once_with(driver=mock_driver)
+        mock_graphiti_cls.assert_called_once_with(graph_driver=mock_driver)
 
     @patch("assistant.core.graphiti.Graphiti")
     @patch("assistant.core.graphiti.FalkorDriver")

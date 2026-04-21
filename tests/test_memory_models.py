@@ -18,9 +18,10 @@ class TestMemoryEntry:
         assert {"id", "persona", "key", "value", "updated_at"} <= cols
 
     def test_unique_constraint_persona_key(self):
+        table = MemoryEntry.__table__
         constraints = [
             c.name
-            for c in MemoryEntry.__table__.constraints
+            for c in table.constraints  # type: ignore[attr-defined]
             if hasattr(c, "name") and c.name
         ]
         assert "uq_memory_persona_key" in constraints
@@ -42,9 +43,10 @@ class TestPreference:
         assert {"id", "persona", "category", "key", "value", "confidence", "updated_at"} <= cols
 
     def test_unique_constraint_persona_category_key(self):
+        table = Preference.__table__
         constraints = [
             c.name
-            for c in Preference.__table__.constraints
+            for c in table.constraints  # type: ignore[attr-defined]
             if hasattr(c, "name") and c.name
         ]
         assert "uq_preferences_persona_category_key" in constraints
