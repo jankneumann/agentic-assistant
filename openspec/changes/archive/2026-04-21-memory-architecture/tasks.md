@@ -7,13 +7,13 @@ phase.
 
 ## Phase 1 — Dependencies, ORM Models, and Test Infrastructure
 
-- [ ] 1.1 Add `graphiti-core`, `alembic`, and `falkordb` to
+- [x] 1.1 Add `graphiti-core`, `alembic`, and `falkordb` to
   `pyproject.toml` dependencies. Run `uv sync` to verify resolution
   alongside existing pins (`sqlalchemy>=2.0`, `asyncpg>=0.29`,
   `langchain>=0.3`). Record exact resolved versions.
   **Dependencies**: none
 
-- [ ] 1.2 Create shared test fixtures in `tests/conftest.py`:
+- [x] 1.2 Create shared test fixtures in `tests/conftest.py`:
   - `mock_async_session` — `AsyncMock` session with query/execute
   - `mock_graphiti_client` — `AsyncMock` Graphiti with search/add_episode
   - `mock_session_factory` — returns `mock_async_session`
@@ -22,7 +22,7 @@ phase.
   **Design decisions**: D9 (shared mock fixtures)
   **Dependencies**: 1.1
 
-- [ ] 1.3 Write `tests/test_db.py` encoding:
+- [x] 1.3 Write `tests/test_db.py` encoding:
   - Engine created for persona with database_url (returns AsyncEngine)
   - Engine dialect uses asyncpg driver
   - Engine cached on second call (same instance returned)
@@ -34,7 +34,7 @@ phase.
   **Design decisions**: D2 (lazy init, cached by URL)
   **Dependencies**: 1.2
 
-- [ ] 1.4 Implement `src/assistant/core/db.py`:
+- [x] 1.4 Implement `src/assistant/core/db.py`:
   - `Base = DeclarativeBase()` for ORM models
   - `create_async_engine(persona)` with per-URL caching, pool_size=2,
     max_overflow=0
@@ -43,7 +43,7 @@ phase.
   **Design decisions**: D2 (lazy init), D6 (ORM models)
   **Dependencies**: 1.3
 
-- [ ] 1.5 Write `tests/test_memory_models.py` encoding:
+- [x] 1.5 Write `tests/test_memory_models.py` encoding:
   - MemoryEntry stores persona + key + JSONB value + updated_at (auto-set)
   - MemoryEntry UNIQUE(persona, key) constraint raises on duplicate
   - Preference stores persona + category + key + value + confidence +
@@ -56,7 +56,7 @@ phase.
   **Design decisions**: D4 (three tables with constraints), D6 (ORM)
   **Dependencies**: 1.4
 
-- [ ] 1.6 Implement ORM models in `src/assistant/core/models.py`:
+- [x] 1.6 Implement ORM models in `src/assistant/core/models.py`:
   - `MemoryEntry(Base)` with columns and UNIQUE(persona, key)
   - `Preference(Base)` with columns and UNIQUE(persona, category, key)
   - `Interaction(Base)` with columns, metadata defaults to {},
@@ -68,7 +68,7 @@ phase.
 
 ## Phase 2 — Alembic Migrations
 
-- [ ] 2.1 Initialize Alembic in `src/assistant/migrations/`:
+- [x] 2.1 Initialize Alembic in `src/assistant/migrations/`:
   - `alembic.ini` co-located with migrations (programmatic access only)
   - `env.py` importing engine factory from `core/db.py`, using
     `run_async()` for async engine support
@@ -78,7 +78,7 @@ phase.
   **Design decisions**: D3 (migrations co-located, programmatic access)
   **Dependencies**: 1.6
 
-- [ ] 2.2 Create initial migration
+- [x] 2.2 Create initial migration
   `src/assistant/migrations/versions/001_initial_memory_schema.py`:
   - Creates `memory`, `preferences`, `interactions` tables matching
     `contracts/db/schema.sql`
@@ -91,7 +91,7 @@ phase.
 
 ## Phase 3 — Graphiti Client Factory (parallel with Phase 1.3-2.2)
 
-- [ ] 3.1 Write `tests/test_graphiti_factory.py` encoding:
+- [x] 3.1 Write `tests/test_graphiti_factory.py` encoding:
   - Client created for persona with graphiti_url + FalkorDB env vars
   - Client uses FalkorDriver
   - Client cached on second call (same instance)
@@ -102,7 +102,7 @@ phase.
   D11 (FalkorDriver config)
   **Dependencies**: 1.1
 
-- [ ] 3.2 Implement `src/assistant/core/graphiti.py`:
+- [x] 3.2 Implement `src/assistant/core/graphiti.py`:
   - `create_graphiti_client(persona)` → `Graphiti | None`
   - Per-persona caching in module-level dict
   - Reads FalkorDB config from `persona.raw["graphiti"]`:
@@ -115,7 +115,7 @@ phase.
 
 ## Phase 4 — MemoryManager
 
-- [ ] 4.1 Write `tests/test_memory_manager.py` encoding Postgres-path
+- [x] 4.1 Write `tests/test_memory_manager.py` encoding Postgres-path
   scenarios:
   - get_context returns string with `## Active Context` section
   - get_context limits Postgres reads to `limit` (default 50)
@@ -132,7 +132,7 @@ phase.
   **Design decisions**: D1, D5, D7
   **Dependencies**: 1.6, 1.2
 
-- [ ] 4.2 Write `tests/test_memory_manager_graphiti.py` encoding
+- [x] 4.2 Write `tests/test_memory_manager_graphiti.py` encoding
   Graphiti-path scenarios:
   - get_context includes `## Semantic Context` when Graphiti available
   - get_context degrades on Graphiti connection error (WARNING log)
@@ -149,7 +149,7 @@ phase.
   store_episode ×3, search ×2, export_memory ×2)
   **Dependencies**: 1.6, 1.2
 
-- [ ] 4.3 Implement `src/assistant/core/memory.py` — `MemoryManager`
+- [x] 4.3 Implement `src/assistant/core/memory.py` — `MemoryManager`
   Postgres path:
   - `__init__(session_factory, graphiti_client=None)`
   - `async get_context(persona, role, limit=50) → str` — queries
@@ -161,7 +161,7 @@ phase.
   **Design decisions**: D1, D7
   **Dependencies**: 4.1
 
-- [ ] 4.4 Implement `src/assistant/core/memory.py` — `MemoryManager`
+- [x] 4.4 Implement `src/assistant/core/memory.py` — `MemoryManager`
   Graphiti path:
   - Extend `get_context` with `## Semantic Context` section from Graphiti
   - Graceful degradation on connection error (WARNING log)
@@ -173,7 +173,7 @@ phase.
 
 ## Phase 5 — PostgresGraphitiMemoryPolicy and Resolver
 
-- [ ] 5.1 Write `tests/test_postgres_memory_policy.py` encoding:
+- [x] 5.1 Write `tests/test_postgres_memory_policy.py` encoding:
   - Satisfies MemoryPolicy protocol (isinstance check)
   - resolve returns MemoryConfig with backend_type="postgres"
   - export_memory_context delegates to MemoryManager.export_memory
@@ -181,14 +181,14 @@ phase.
   **Design decisions**: D1
   **Dependencies**: 4.4
 
-- [ ] 5.2 Implement `PostgresGraphitiMemoryPolicy` in
+- [x] 5.2 Implement `PostgresGraphitiMemoryPolicy` in
   `src/assistant/core/capabilities/memory.py`:
   - Instantiates `MemoryManager` with session factory + Graphiti client
   - `resolve()` returns `MemoryConfig(backend_type="postgres", ...)`
   - `export_memory_context()` calls `MemoryManager.export_memory()`
   **Dependencies**: 5.1
 
-- [ ] 5.3 Write `tests/test_resolver_memory_selection.py` encoding:
+- [x] 5.3 Write `tests/test_resolver_memory_selection.py` encoding:
   - Resolver selects PostgresGraphitiMemoryPolicy when persona has
     database_url
   - Resolver selects FileMemoryPolicy when persona has empty database_url
@@ -196,7 +196,7 @@ phase.
   **Spec scenarios**: capability-resolver delta (3 scenarios)
   **Dependencies**: 5.2
 
-- [ ] 5.4 Update `src/assistant/core/capabilities/resolver.py`:
+- [x] 5.4 Update `src/assistant/core/capabilities/resolver.py`:
   - Default memory selection in `resolve()` checks `persona.database_url`
   - Non-empty → `PostgresGraphitiMemoryPolicy`
   - Empty → `FileMemoryPolicy`
@@ -205,7 +205,7 @@ phase.
 
 ## Phase 6 — CLI Commands (parallel with Phase 5)
 
-- [ ] 6.1 Write `tests/test_cli_db.py` encoding:
+- [x] 6.1 Write `tests/test_cli_db.py` encoding:
   - `assistant db upgrade` invokes Alembic upgrade to head
   - `assistant db upgrade` exits non-zero when database unreachable
   - `assistant db downgrade <revision>` invokes Alembic downgrade
@@ -217,7 +217,7 @@ phase.
   **Design decisions**: D8
   **Dependencies**: 4.3, 2.2
 
-- [ ] 6.2 Add CLI subcommands to `src/assistant/cli.py`:
+- [x] 6.2 Add CLI subcommands to `src/assistant/cli.py`:
   - `db` group with `upgrade` and `downgrade` subcommands
   - `export-memory` command with `-p/--persona` required option
   - `db upgrade` runs `alembic.command.upgrade(config, "head")` with
@@ -230,7 +230,7 @@ phase.
 
 ## Phase 7 — Integration and Validation
 
-- [ ] 7.1 Update existing `tests/test_capabilities.py` and
+- [x] 7.1 Update existing `tests/test_capabilities.py` and
   `tests/test_memory_policy.py` to verify `FileMemoryPolicy` still
   works unchanged. Update `tests/test_capability_resolver.py` to cover
   both branches: mock persona with `database_url=""` (expects
@@ -239,12 +239,12 @@ phase.
   to pass.
   **Dependencies**: 5.4, 6.2
 
-- [ ] 7.2 Run `uv run ruff check .` — zero errors.
+- [x] 7.2 Run `uv run ruff check .` — zero errors.
   **Dependencies**: 7.1
 
-- [ ] 7.3 Run `uv run pytest tests/` — all tests pass (excluding
+- [x] 7.3 Run `uv run pytest tests/` — all tests pass (excluding
   `@pytest.mark.integration` tests).
   **Dependencies**: 7.1 (parallel with 7.2)
 
-- [ ] 7.4 `openspec validate memory-architecture --strict` passes.
+- [x] 7.4 `openspec validate memory-architecture --strict` passes.
   **Dependencies**: 7.2, 7.3

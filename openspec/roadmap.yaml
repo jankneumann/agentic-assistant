@@ -128,18 +128,15 @@ items:
   - item_id: memory-architecture
     change_id: memory-architecture
     title: Memory architecture (memory.md + Postgres + Graphiti hierarchy)
-    status: candidate
+    status: completed
     priority: 5
     effort: XL
     depends_on: [capability-protocols]
     description: >
-      Implement `core/memory.py` `MemoryManager` class with unified
-      `get_context(persona, role)` reading Postgres for operational
-      state + Graphiti for semantic context. Per-persona `AsyncEngine`,
-      schema init (memory/preferences/interactions tables), memory
-      CRUD. `core/graphiti.py` client factory.
-      `scripts/export-memory.sh` regenerates `memory.md` from
-      Postgres+Graphiti as a derived artifact, not source of truth.
+      MemoryManager with dual Postgres + Graphiti/FalkorDB backends,
+      PostgresGraphitiMemoryPolicy, 3 ORM models with Alembic migrations,
+      CLI db upgrade/downgrade + export-memory subcommands.
+      Archived 2026-04-21.
       Perplexity §1.2 + §8.1; supersedes original P3 persona-db-layer.
     acceptance_outcomes:
       - core/memory.py MemoryManager implemented

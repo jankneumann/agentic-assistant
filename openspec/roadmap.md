@@ -34,7 +34,7 @@
 | P1.6 | `sync-test-privacy-boundary-spec` | non-phase (spec-sync) | **archived** (2026-04-13) | — | spec-sync follow-up of P1.5 | Listed for chronological context. Spec-only change that codified five drift items found during P1.5 validation (env-var contract, subprocess `executable=`/`cwd=` kwarg coverage, hygiene-test exclusion list, submodule `parents[N]` abstraction, atomic-push wrapper requirement) |
 | P1.7 | `bootstrap-fixes` | phase | **archived** (2026-04-20) | §7.1–§7.5 | perplexity §7 | All items resolved: §7.1 CLI `-H` fix landed in P1; §7.3 `deepagents` v0.5.2 confirmed valid; §7.4 entry point landed in P1; §7.5 `src_name` fix landed in P1. §7.2 (`sqlalchemy.text()`) is deferred to P2 — no database code exists yet |
 | P1.8 | `capability-protocols` | phase | **archived** (2026-04-20) | — | new (harness architecture redesign) | Five capability protocols (GuardrailProvider, SandboxProvider, MemoryPolicy, ToolPolicy, ContextProvider) + CapabilityResolver + two-tier harness split (SDK vs Host) + ClaudeCodeHarness + CLI export subcommand + delegation guardrail integration |
-| P2 | `memory-architecture` | phase | pending | §1.2, §8.1 | perplexity §8.1 + old P3 | `core/memory.py` MemoryManager + `core/graphiti.py` client factory + per-persona AsyncEngine + `memory`/`preferences`/`interactions` tables + `scripts/export-memory.sh` that regenerates `memory.md` from Postgres+Graphiti. Implements `MemoryPolicy` protocol from P1.8 |
+| P2 | `memory-architecture` | phase | **archived** (2026-04-21) | §1.2, §8.1 | perplexity §8.1 + old P3 | `core/memory.py` MemoryManager + `core/graphiti.py` Graphiti/FalkorDB client factory + per-persona AsyncEngine + `memory`/`preferences`/`interactions` tables + CLI `db upgrade/downgrade` + `export-memory` subcommands. Implements `MemoryPolicy` protocol from P1.8. `PostgresGraphitiMemoryPolicy` auto-selected when `database_url` configured |
 | P3 | `http-tools-layer` | phase | pending | §8.2 | perplexity §8.2 + old P2 | `src/assistant/http_tools/` — `/help`-based discovery, `_build_tool()` Pydantic-model + async-callable generator, auth header handling, registry, `--list-tools` CLI command, integration tests against mock server |
 | P4 | `observability` | phase | pending | §1.1, §8.3 | perplexity §8.3 (new) | `core/observability.py` — `@traced` decorator, spans on `HarnessAdapter.invoke()` and `DelegationSpawner.delegate()`, token + latency + cost tracking per persona/role. Langfuse backend default; OpenLLMetry adapter optional |
 | P5 | `ms-graph-extension` | phase | pending | §8.4 | perplexity §8.4 + old P5 | Real `ms_graph`, `teams`, `sharepoint`, `outlook` extensions (replaces P1 stubs). MSAL auth, httpx client, OAuth refresh. Full MS Agent Framework harness implementation replacing P1's `NotImplementedError` stub |
@@ -87,7 +87,7 @@ P1 bootstrap-vertical-slice (archived)
  ├─→ P4 observability                        (independent of P1.7/P1.8; lands early for tracing)
  ├─→ P10 extension-lifecycle                 (independent of P1.7/P1.8; initialize/shutdown hooks)
  │
- ├─→ P2 memory-architecture ──┬─→ P7 scheduler         (needs memory for briefings)
+ ├─→ P2 memory-architecture (archived) ──┬─→ P7 scheduler         (needs memory for briefings)
  │                            ├─→ P8 obsidian-vault    (needs memory for indexing backend)
  │                            └─→ P12 delegation-context  (needs memory for context snippets;
  │                                                        scope includes delegation/router.py

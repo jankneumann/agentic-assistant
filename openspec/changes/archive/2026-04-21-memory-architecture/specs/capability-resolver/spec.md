@@ -1,6 +1,6 @@
 # capability-resolver Specification Delta — memory-architecture
 
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: SDK Harness Memory Policy Selection
 
