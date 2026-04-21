@@ -159,3 +159,50 @@ def pytest_collection_modifyitems(
         if _is_excluded(rel_posix):
             continue
         _scan_file(rel_posix, abs_path)
+
+
+# ── Memory-architecture fixtures ─────────────────────────────────────
+
+from unittest.mock import AsyncMock, MagicMock
+
+
+@pytest.fixture(autouse=True)
+def _clear_memory_caches():
+    """Clear module-level engine and graphiti caches between tests."""
+    yield
+    try:
+        from assistant.core.db import _clear_engine_cache
+        _clear_engine_cache()
+    except ImportError:
+        pass
+    try:
+        from assistant.core.graphiti import _clear_graphiti_cache
+        _clear_graphiti_cache()
+    except ImportError:
+        pass
+
+
+@pytest.fixture
+def mock_async_session():
+    session = AsyncMock()
+    session.execute = AsyncMock()
+    session.commit = AsyncMock()
+    session.rollback = AsyncMock()
+    session.close = AsyncMock()
+    return session
+
+
+@pytest.fixture
+def mock_graphiti_client():
+    client = AsyncMock()
+    client.add_episode = AsyncMock()
+    client.search = AsyncMock(return_value=[])
+    return client
+
+
+@pytest.fixture
+def mock_session_factory(mock_async_session):
+    factory = MagicMock()
+    factory.return_value.__aenter__ = AsyncMock(return_value=mock_async_session)
+    factory.return_value.__aexit__ = AsyncMock(return_value=False)
+    return factory
