@@ -93,12 +93,15 @@ are append-only with time-range queries.
 `MemoryManager.__init__` accepts optional `graphiti_client`. Degradation
 covers two cases:
 
-1. **Client is None** (empty `graphiti_url`): all Graphiti methods return
-   empty results silently.
-2. **Client raises connection error** (FalkorDB unreachable): Graphiti
-   methods catch connection errors, emit a `logging.WARNING`-level
-   message including the persona name, and return empty results. The
-   call never raises to the caller.
+1. **Client is None** (empty `graphiti_url`): `get_context`, `search`,
+   and `export_memory` return empty/omitted results silently.
+   `store_episode` is the exception — it emits a `logging.WARNING`
+   because a write was attempted but discarded, and the caller should
+   know context was lost.
+2. **Client raises connection error** (FalkorDB unreachable): all
+   Graphiti methods catch connection errors, emit a `logging.WARNING`-
+   level message including the persona name, and return empty results.
+   The call never raises to the caller.
 
 `get_context()` returns Postgres-only context in both cases.
 `export_memory()` omits the Knowledge Graph Summary section.

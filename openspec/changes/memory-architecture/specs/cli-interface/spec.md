@@ -26,6 +26,13 @@ and `downgrade` subcommands for Alembic migration management.
   revision identifier
 - **THEN** Alembic MUST roll back to the specified revision
 
+#### Scenario: db downgrade fails gracefully on unreachable database
+
+- **WHEN** `assistant db downgrade <revision>` is invoked and the
+  database is unreachable
+- **THEN** the command MUST exit non-zero with an error message
+  identifying the failure cause
+
 ### Requirement: CLI export-memory Command
 
 The system SHALL add an `export-memory` command that generates
