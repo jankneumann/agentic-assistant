@@ -1,0 +1,92 @@
+openapi: 3.1.0
+info:
+  title: "Service Manifest Profile"
+  version: "1.0.0"
+  description: |
+    Minimal OpenAPI 3.1 profile that agentic-assistant's http_tools
+    layer consumes at discovery. Documents the shape the discovery
+    client expects; services advertising tools SHOULD conform.
+
+    This is a shape contract, not a concrete service. The
+    `components.schemas` block below illustrates the expected fields.
+
+paths:
+  /openapi.json:
+    get:
+      operationId: get_manifest
+      summary: Return this service's OpenAPI document.
+      responses:
+        "200":
+          description: OpenAPI 3.x document.
+          content:
+            application/json:
+              schema:
+                type: object
+              examples:
+                minimal:
+                  summary: Minimal 3.1 doc with one POST operation
+                  value:
+                    openapi: "3.1.0"
+                    info: { title: "Example", version: "1.0.0" }
+                    paths:
+                      "/items":
+                        post:
+                          operationId: create_item
+                          summary: Create an item.
+                          requestBody:
+                            required: true
+                            content:
+                              application/json:
+                                schema:
+                                  $ref: "#/components/schemas/ItemCreate"
+                          responses:
+                            "200":
+                              description: Created.
+                              content:
+                                application/json:
+                                  schema:
+                                    $ref: "#/components/schemas/Item"
+                    components:
+                      schemas:
+                        ItemCreate:
+                          type: object
+                          required: [name]
+                          properties:
+                            name: { type: string }
+                            quantity: { type: integer, minimum: 0 }
+                        Item:
+                          type: object
+                          properties:
+                            id: { type: string }
+                            name: { type: string }
+                            quantity: { type: integer }
+
+components:
+  schemas:
+    DiscoveredTool:
+      type: object
+      description: |
+        Logical shape produced by the discovery client for each
+        OpenAPI operation. Not served by the remote service — this is
+        the internal representation.
+      required: [source_name, operation_id, method, path]
+      properties:
+        source_name:
+          type: string
+          description: The key from persona.tool_sources.
+        operation_id:
+          type: string
+          description: OpenAPI operationId, or synthesized slug.
+        method:
+          type: string
+          enum: [GET, POST, PUT, PATCH, DELETE]
+        path:
+          type: string
+          description: URL template relative to base_url.
+        summary:
+          type: string
+        description:
+          type: string
+        args_schema:
+          type: object
+          description: JSON-Schema used to build the Pydantic args model.
