@@ -1,0 +1,245 @@
+schema_version: 1
+change_id: http-tools-layer
+
+defaults:
+  auto_loop:
+    # Total LOC across packages will be ~1000 (new package + new tests +
+    # modifications across policy/resolver/cli + integration tests).
+    # Raise the ceiling so autopilot doesn't require --force on an
+    # effort-M roadmap phase.
+    max_loc: 1500
+    max_packages: 4
+    max_external_deps: 2
+
+packages:
+  # ──────────────────────────────────────────────────────────
+  # wp-http-tools-leaves — independent leaf modules (no internal deps)
+  # Runs first; wp-http-tools-composite and wp-policy depend on it.
+  # ──────────────────────────────────────────────────────────
+  - id: wp-http-tools-leaves
+    name: "http_tools leaf modules: auth, openapi, registry"
+    description: >
+      Implement the three independent leaf modules of the http_tools
+      package (auth.py, openapi.py, registry.py) along with their unit
+      tests. Also seeds the http_tools package __init__.py and the
+      tests/http_tools/ package (including conftest.py for the
+      pytest-httpserver fixture).
+    tasks:
+      - "1.1"
+      - "1.2"
+      - "1.3"
+      - "1.4"
+      - "2.1"
+      - "2.2"
+      - "2.3"
+      - "3.1"
+      - "3.2"
+      - "5.1"
+      - "5.2"
+    priority: 1
+    dependencies: []
+    scope:
+      write_allow:
+        - "src/assistant/http_tools/__init__.py"
+        - "src/assistant/http_tools/auth.py"
+        - "src/assistant/http_tools/openapi.py"
+        - "src/assistant/http_tools/registry.py"
+        - "tests/http_tools/__init__.py"
+        - "tests/http_tools/conftest.py"
+        - "tests/http_tools/test_auth.py"
+        - "tests/http_tools/test_openapi.py"
+        - "tests/http_tools/test_registry.py"
+      read_allow:
+        - "**"
+    locks:
+      files:
+        - "src/assistant/http_tools/__init__.py"
+      keys:
+        - "package:http_tools:leaves"
+      ttl_minutes: 120
+      reason: >
+        Owns the http_tools package __init__.py for the leaf-module
+        exports; downstream packages add their own exports by editing
+        this file after this package merges.
+    verification: tier_b
+    metadata:
+      loc_estimate: 320
+      external_deps: []
+
+  # ──────────────────────────────────────────────────────────
+  # wp-http-tools-composite — builder + discovery
+  # Parallel with wp-policy after wp-http-tools-leaves.
+  # ──────────────────────────────────────────────────────────
+  - id: wp-http-tools-composite
+    name: "http_tools composite modules: builder, discovery"
+    description: >
+      Implement the composite modules that depend on the leaves:
+      builder.py (runtime Pydantic generation + StructuredTool
+      construction) and discovery.py (orchestrates fetch + parse +
+      build per source). Includes the end-to-end integration test
+      against pytest-httpserver.
+    tasks:
+      - "4.1"
+      - "4.2"
+      - "6.1"
+      - "6.2"
+    priority: 2
+    dependencies:
+      - wp-http-tools-leaves
+    scope:
+      write_allow:
+        - "src/assistant/http_tools/builder.py"
+        - "src/assistant/http_tools/discovery.py"
+        - "tests/http_tools/test_builder.py"
+        - "tests/http_tools/test_discovery.py"
+      read_allow:
+        - "**"
+    locks:
+      files:
+        - "src/assistant/http_tools/builder.py"
+        - "src/assistant/http_tools/discovery.py"
+      keys:
+        - "package:http_tools:composite"
+      ttl_minutes: 120
+      reason: >
+        Composite modules depend on the leaf APIs finalized in
+        wp-http-tools-leaves. Locked to prevent mid-flight API drift
+        between the leaves and their consumers.
+    verification: tier_b
+    metadata:
+      loc_estimate: 330
+      external_deps:
+        - pytest-httpserver
+
+  # ──────────────────────────────────────────────────────────
+  # wp-policy — extend DefaultToolPolicy + CapabilityResolver
+  # Parallel with wp-http-tools-composite after wp-http-tools-leaves.
+  # ──────────────────────────────────────────────────────────
+  - id: wp-policy
+    name: "DefaultToolPolicy + CapabilityResolver extension"
+    description: >
+      Extend DefaultToolPolicy to accept an optional http_tool_registry
+      and merge its tools with extension-provided tools; thread the
+      registry through CapabilityResolver construction. Only depends on
+      the registry type from wp-http-tools-leaves, so runs in parallel
+      with wp-http-tools-composite.
+    tasks:
+      - "7.1"
+      - "7.2"
+      - "7.3"
+    priority: 2
+    dependencies:
+      - wp-http-tools-leaves
+    scope:
+      write_allow:
+        - "src/assistant/core/capabilities/tools.py"
+        - "src/assistant/core/capabilities/resolver.py"
+        - "tests/core/capabilities/test_tool_policy.py"
+        - "tests/core/capabilities/test_tool_policy_http.py"
+      read_allow:
+        - "**"
+    locks:
+      files:
+        - "src/assistant/core/capabilities/tools.py"
+        - "src/assistant/core/capabilities/resolver.py"
+      keys:
+        - "capability:tool_policy:interface"
+        - "capability:resolver:constructor"
+      ttl_minutes: 120
+      reason: >
+        Modifies the DefaultToolPolicy constructor signature and
+        CapabilityResolver.__init__ parameters. Concurrent changes to
+        either file would conflict on the constructor-parameter shape.
+    verification: tier_b
+    metadata:
+      loc_estimate: 140
+      external_deps: []
+
+  # ──────────────────────────────────────────────────────────
+  # wp-cli — CLI startup wiring + --list-tools flag
+  # Depends on both composite and policy.
+  # ──────────────────────────────────────────────────────────
+  - id: wp-cli
+    name: "CLI discovery wiring + --list-tools subcommand"
+    description: >
+      Remove the pre-P3 "HTTP tool discovery deferred to P2" warning,
+      call discover_tools at CLI startup, pass the resulting registry
+      through CapabilityResolver, and add a new --list-tools flag that
+      runs discovery and prints a per-source tool catalog. Includes CLI
+      and end-to-end tests against pytest-httpserver.
+    tasks:
+      - "8.1"
+      - "8.2"
+      - "8.3"
+      - "8.4"
+    priority: 3
+    dependencies:
+      - wp-http-tools-composite
+      - wp-policy
+    scope:
+      write_allow:
+        - "src/assistant/cli.py"
+        - "tests/test_cli.py"
+        - "tests/http_tools/test_cli_list_tools.py"
+      read_allow:
+        - "**"
+    locks:
+      files:
+        - "src/assistant/cli.py"
+      keys:
+        - "cli:entry-point"
+        - "cli:flag:--list-tools"
+      ttl_minutes: 120
+      reason: >
+        Modifies the CLI entry point and adds a new group-level flag.
+        Conflicts with any other feature that touches cli.py (none
+        currently in flight).
+    verification: tier_b
+    metadata:
+      loc_estimate: 210
+      external_deps: []
+
+  # ──────────────────────────────────────────────────────────
+  # wp-integration — pyproject + docs + full suite + validate
+  # Final serial step; depends on wp-cli.
+  # ──────────────────────────────────────────────────────────
+  - id: wp-integration
+    task_type: integration
+    name: "Integration: deps, docs, validation, final suite"
+    description: >
+      Add pytest-httpserver to dev dependencies, update CLAUDE.md
+      "What's Not Yet Wired", update the roadmap status for P3, and
+      run the full test suite + ruff + openspec validate --strict.
+    tasks:
+      - "9.1"
+      - "9.2"
+      - "10.1"
+      - "10.2"
+      - "11.1"
+      - "11.2"
+      - "11.3"
+      - "11.4"
+    priority: 4
+    dependencies:
+      - wp-cli
+    scope:
+      write_allow:
+        - "pyproject.toml"
+        - "uv.lock"
+        - "CLAUDE.md"
+        - "openspec/roadmap.md"
+      read_allow:
+        - "**"
+    locks:
+      files:
+        - "pyproject.toml"
+        - "uv.lock"
+      keys:
+        - "deps:pyproject"
+      ttl_minutes: 60
+      reason: >
+        Adds pytest-httpserver to dev deps; regenerates uv.lock.
+    verification: tier_a
+    metadata:
+      loc_estimate: 30
+      external_deps: []
