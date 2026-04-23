@@ -41,12 +41,30 @@ default_role: chief_of_staff
 disabled_roles: []
 
 tool_sources:
+  # New structured form — preferred going forward. ``env`` names an
+  # environment variable; resolve_auth_header() reads the value at
+  # discovery time.
   content_analyzer:
     base_url_env: CONTENT_ANALYZER_URL
+    auth_header:
+      type: bearer
+      env: TEST_BEARER_TOKEN
     allowed_tools: []
 
+  # New structured form with api-key + custom header.
+  search_api:
+    base_url_env: SEARCH_API_URL
+    auth_header:
+      type: api-key
+      env: TEST_API_KEY
+      header: X-Api-Key
+    allowed_tools: []
+
+  # Legacy flat form — auto-normalized to {type: bearer, env: ...} to
+  # prove backwards compatibility.
   coding_tools:
     base_url_env: CODING_TOOLS_URL
+    auth_header_env: TEST_CODING_TOKEN
     allowed_tools: []
 
 extensions:
