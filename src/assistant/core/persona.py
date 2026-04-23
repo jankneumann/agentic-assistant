@@ -26,6 +26,18 @@ class PersonaConfig:
     auth_provider: str
     auth_config: dict[str, str]
     harnesses: dict[str, dict[str, Any]]
+    # ``tool_sources`` entry shape:
+    #   {
+    #     "base_url":      str,                 # eagerly resolved env var
+    #     "auth_header":   dict | None,         # structured, env var NAME only
+    #     "allowed_tools": list[str],
+    #   }
+    # ``auth_header`` is either ``None`` or a dict
+    # ``{"type": str, "env": str, "header"?: str}`` where ``env`` is the
+    # name of the environment variable that holds the credential — NOT
+    # the resolved value. ``resolve_auth_header()`` reads the env var at
+    # discovery time so a late-arriving credential (e.g. via bao/vault)
+    # is picked up without reloading the persona.
     tool_sources: dict[str, dict[str, Any]]
     extensions: list[dict[str, Any]]
     extensions_dir: Path
@@ -106,7 +118,7 @@ class PersonaRegistry:
             tool_sources={
                 src_name: {
                     "base_url": _env(src.get("base_url_env", "")),
-                    "auth_header": _env(src.get("auth_header_env", "")),
+                    "auth_header": _normalize_auth_header(src),
                     "allowed_tools": src.get("allowed_tools", []) or [],
                 }
                 for src_name, src in tool_sources_raw.items()
@@ -191,3 +203,34 @@ def _env(var_name: str | None) -> str:
     if not var_name:
         return ""
     return os.environ.get(var_name, "")
+
+
+def _normalize_auth_header(src: dict[str, Any]) -> dict[str, Any] | None:
+    """Normalize a tool-source's auth header to the structured form.
+
+    Returns one of:
+
+    * ``None`` — when neither ``auth_header`` nor ``auth_header_env`` is
+      present (anonymous source).
+    * ``{"type": "bearer", "env": VAR_NAME}`` — when only the legacy
+      ``auth_header_env: VAR_NAME`` is set. ``VAR_NAME`` is the **name**
+      of the environment variable, not the resolved credential; the
+      resolver reads the value at discovery time.
+    * The source's ``auth_header`` dict **as-is** when it is already a
+      mapping with ``type`` / ``env`` (and optional ``header``). Extra
+      keys are preserved so future auth types can round-trip without a
+      schema bump.
+
+    If both forms are present, the structured ``auth_header`` wins —
+    this keeps migration safe for personas that redeclare the header in
+    the new shape but leave the legacy key behind.
+    """
+    structured = src.get("auth_header")
+    if isinstance(structured, dict):
+        return dict(structured)
+
+    legacy_env = src.get("auth_header_env")
+    if legacy_env:
+        return {"type": "bearer", "env": legacy_env}
+
+    return None
