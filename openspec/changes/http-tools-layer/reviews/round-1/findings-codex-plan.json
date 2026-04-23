@@ -1,0 +1,114 @@
+{
+  "findings": [
+    {
+      "id": 1,
+      "type": "architecture",
+      "criticality": "high",
+      "description": "`design.md:71-88` chooses one shared `httpx.AsyncClient` across all sources, while `specs/http-tools/spec.md:86-89` and `proposal.md:51-55` say the tool coroutine calls `client.request(method, path, ...)` with only the OpenAPI path. With multiple `base_url`s, a single client cannot supply per-source base URLs, and a relative path such as `/items` will fail unless the client has exactly one `base_url`.",
+      "disposition": "fix",
+      "resolution": "Make base URL handling explicit: either store each source's normalized `base_url` in `ParsedOperation`/the built tool and call the shared client with an absolute URL, or use per-source clients with `base_url`. Add a test with two sources on different hosts/ports to prove requests go to the right service.",
+      "file_path": "openspec/changes/http-tools-layer/design.md",
+      "line_start": 71,
+      "line_end": 88
+    },
+    {
+      "id": 2,
+      "type": "spec_gap",
+      "criticality": "high",
+      "description": "`specs/http-tools/spec.md:15-17` requires `discover_tools` to swallow per-source failures and return only a registry, but `specs/http-tools/spec.md:202-206` requires `--list-tools` to exit 1 when any source fails and print the failed source/reason. The planned API does not provide the CLI enough diagnostics to distinguish all-success from partial-success after failures are omitted.",
+      "disposition": "fix",
+      "resolution": "Change the discovery contract to return diagnostics alongside the registry, or add a `discover_tools_with_status`/strict mode for CLI listing. Then update tasks 6.1, 8.2, and 8.4 to assert the failure status path rather than relying only on logs.",
+      "file_path": "openspec/changes/http-tools-layer/specs/http-tools/spec.md",
+      "line_start": 15,
+      "line_end": 17
+    },
+    {
+      "id": 3,
+      "type": "security",
+      "criticality": "high",
+      "description": "`proposal.md:5-7` identifies `allowed_tools` as part of the persona tool-source config, but `design.md:40-42` explicitly defers persona-level `allowed_tools` filtering and `specs/tool-policy/spec.md:15-19` returns all HTTP tools when `role.preferred_tools` is empty. That means enabling discovery can expose every operation advertised by a configured service even if the persona config intended an allowlist.",
+      "disposition": "fix",
+      "resolution": "Specify and implement `allowed_tools` as an authorization boundary for HTTP tools, intersected with `role.preferred_tools` when both are present. Add policy and CLI/listing tests for non-empty `allowed_tools` and for the empty-list semantics.",
+      "file_path": "openspec/changes/http-tools-layer/design.md",
+      "line_start": 40,
+      "line_end": 42
+    },
+    {
+      "id": 4,
+      "type": "spec_gap",
+      "criticality": "high",
+      "description": "`specs/http-tools/spec.md:115-122` defines `auth_header_config` as structured data with `type` and `env`, but `tasks.md:42-60` only covers a pure `auth.py` helper and does not include any persona schema/parser/config fixture work to produce that structure inside `tool_sources`. Implementors have no planned path from persona YAML to the required auth config shape.",
+      "disposition": "fix",
+      "resolution": "Add explicit persona config requirements and tasks for the auth header shape, including migration from the current `base_url_env`/env-driven style if needed. Cover this with PersonaRegistry tests plus a discovery test proving credentials are resolved per source without leaking secret values.",
+      "file_path": "openspec/changes/http-tools-layer/tasks.md",
+      "line_start": 42,
+      "line_end": 60
+    },
+    {
+      "id": 5,
+      "type": "security",
+      "criticality": "medium",
+      "description": "`specs/http-tools/spec.md:86-89` requires substituting path parameters into `{placeholder}` segments, and `design.md:268` says simple format-string replacement is safe because OpenAPI forbids nested braces. That only addresses template syntax, not user-supplied path values; an `id` containing `/`, `..`, `?`, or `#` can alter the request path/query unless percent-encoded.",
+      "disposition": "fix",
+      "resolution": "Require URL-encoding for each path parameter value before substitution, while leaving path separators from the OpenAPI template intact. Add builder tests for values containing slashes, spaces, `?`, and `..`.",
+      "file_path": "openspec/changes/http-tools-layer/design.md",
+      "line_start": 268,
+      "line_end": 268
+    },
+    {
+      "id": 6,
+      "type": "feasibility",
+      "criticality": "medium",
+      "description": "`work-packages.yaml:10-14` sets `max_packages: 4`, but the file defines five packages: `wp-http-tools-leaves`, `wp-http-tools-composite`, `wp-policy`, `wp-cli`, and `wp-integration` at lines 19, 76, 130, 174, and 218. If the coordinator enforces this default literally, the package plan will fail its own complexity gate.",
+      "disposition": "fix",
+      "resolution": "Set `max_packages` to 5, or document and encode that integration packages are excluded from the limit. Keep the package count and gate value consistent before dispatching implementation workers.",
+      "file_path": "openspec/changes/http-tools-layer/work-packages.yaml",
+      "line_start": 10,
+      "line_end": 14
+    },
+    {
+      "id": 7,
+      "type": "feasibility",
+      "criticality": "medium",
+      "description": "`work-packages.yaml:27-34` assigns fixture tasks 1.1-1.4 to `wp-http-tools-leaves`, but its `write_allow` list at lines 45-55 omits `openspec/changes/http-tools-layer/contracts/fixtures/*.json`. The package claims ownership of contract fixtures but cannot write the files under its declared scope.",
+      "disposition": "fix",
+      "resolution": "Add the four fixture paths, or a scoped `openspec/changes/http-tools-layer/contracts/fixtures/*.json` entry, to `wp-http-tools-leaves.scope.write_allow`. If fixtures are already intentionally pre-seeded, mark tasks 1.1-1.4 as verification tasks instead of write tasks.",
+      "file_path": "openspec/changes/http-tools-layer/work-packages.yaml",
+      "line_start": 27,
+      "line_end": 55
+    },
+    {
+      "id": 8,
+      "type": "testability",
+      "criticality": "medium",
+      "description": "The 3.1 fixture uses `$ref` for request and response schemas (`contracts/fixtures/sample_openapi_v3_1.json:33` and `:62-80`), but `tasks.md:91-94` only requires `_json_schema_to_pydantic` support for primitive/object/array types and does not require local `$ref` resolution. A conforming implementation could follow the task text and fail against the provided fixture.",
+      "disposition": "fix",
+      "resolution": "Add an explicit requirement and builder/openapi task for resolving local `#/components/schemas/...` references at least for parameters and JSON request bodies. Include a focused test that the `create_item` fixture produces fields from `ItemCreate`.",
+      "file_path": "openspec/changes/http-tools-layer/tasks.md",
+      "line_start": 91,
+      "line_end": 94
+    },
+    {
+      "id": 9,
+      "type": "completeness",
+      "criticality": "medium",
+      "description": "`specs/cli-interface/spec.md:14-22` includes scenarios for bare invocation defaulting to `run` and explicit `run`, but `tasks.md:181-189` only maps cli-interface coverage for the list-tools short-circuit scenario. The plan's stated rule that every spec scenario is covered by a task is not satisfied for these modified CLI entry-point scenarios.",
+      "disposition": "fix",
+      "resolution": "Add test task references for bare `assistant -p personal` and `assistant run -p personal` behavior, or explicitly cite existing tests that already cover them. Include a regression assertion that adding `--list-tools` does not change default-run parsing.",
+      "file_path": "openspec/changes/http-tools-layer/specs/cli-interface/spec.md",
+      "line_start": 14,
+      "line_end": 22
+    },
+    {
+      "id": 10,
+      "type": "performance",
+      "criticality": "medium",
+      "description": "`design.md:267` acknowledges huge OpenAPI documents and explicitly sets no P3 performance target, while discovery loads OpenAPI documents before parsing. There is no planned response-size cap, operation-count cap, or test for oversized/truncated discovery responses, so a misconfigured or hostile source can cause slow startup or high memory use.",
+      "disposition": "fix",
+      "resolution": "Specify bounded discovery behavior now: request timeout, maximum OpenAPI response bytes, and optionally maximum operations per source with a warning when exceeded. Add pytest-httpserver tests for oversized and truncated JSON responses.",
+      "file_path": "openspec/changes/http-tools-layer/design.md",
+      "line_start": 267,
+      "line_end": 267
+    }
+  ]
+}

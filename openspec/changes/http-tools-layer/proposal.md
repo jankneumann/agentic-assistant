@@ -3,9 +3,18 @@
 ## Why
 
 P1 ships the skeleton of persona-scoped HTTP tool sources: every persona
-config carries a `tool_sources` map (`base_url`, `auth_header`,
-`allowed_tools`) and the `DefaultToolPolicy` from P1.8 is ready to
-filter authorized tools per role. **But no discovery layer exists.**
+config carries a `tool_sources` map and the `DefaultToolPolicy` from
+P1.8 is ready to filter authorized tools per role. **But no discovery
+layer exists.**
+
+P3 also evolves the `tool_sources.auth_header` shape from the legacy
+flat `auth_header_env: VAR_NAME` (bearer-only) to a structured
+`{type, env, header?}` dict that supports both bearer and api-key auth,
+with custom header names. The legacy flat form is auto-normalized for
+backwards compatibility (see design decision D11). The per-source
+`allowed_tools` field remains unchanged — it continues to flow through
+`DefaultToolPolicy.preferred_tools` filtering at the role level; no
+new per-source authorization behavior lands in P3.
 
 `src/assistant/cli.py:181-195` is explicit about the gap:
 
@@ -120,8 +129,11 @@ Extend `src/assistant/core/capabilities/tools.py:DefaultToolPolicy`:
   `StructuredTool` has the right Pydantic input model, calls the right
   URL/method/headers, and raises on 4xx/5xx.
 - `tests/http_tools/test_auth.py` — bearer, api-key, custom header.
-- `tests/http_tools/test_cli_list_tools.py` — end-to-end: pytest-httpserver
-  + `CliRunner().invoke(cli, ["--list-tools", "-p", "fixture"])`.
+- `tests/test_cli.py` — end-to-end CLI behavior: `CliRunner().invoke(cli,
+  ["--list-tools", "-p", "fixture"])` against a pytest-httpserver
+  fixture. CLI tests live alongside other `tests/test_cli.py` cases
+  rather than under `tests/http_tools/` to keep CLI entry-point
+  coverage in one place.
 
 ### 7. Spec deltas
 

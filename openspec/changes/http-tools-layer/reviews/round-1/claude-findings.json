@@ -1,0 +1,169 @@
+{
+  "findings": [
+    {
+      "id": 1,
+      "type": "architecture",
+      "criticality": "critical",
+      "description": "Schema mismatch between PersonaRegistry and the planned auth resolution. `src/assistant/core/persona.py:106-113` builds `tool_sources[name]` as `{base_url: str, auth_header: str (env-resolved), allowed_tools: list}`. But `specs/http-tools/spec.md` Auth Header Resolution requirement and design.md both describe `auth_header_config` as a structured dict `{type: bearer|api-key, env: VAR_NAME, header?: str}` that `resolve_auth_header` consumes. As written, `discover_tools(pc.tool_sources)` would receive a flat string where it expects a typed dict — the whole auth pipeline will break on first real persona. Neither proposal/tasks/design calls out a required change to `persona.py` to carry the structured auth config through, nor is there a task to update the persona.yaml → `PersonaConfig` mapping. This is the single biggest integration gap in the plan.",
+      "disposition": "fix",
+      "resolution": "Add a task to Phase 2 (or a new phase) that changes `persona.py` to parse `tool_sources[*].auth_header` as a structured dict (preserving `type`, `env`, `header`) rather than eagerly resolving to a string; update the PersonaConfig field type accordingly and the three fixture persona.yaml files under `tests/fixtures/personas/`. Add a scope entry on a package (probably wp-http-tools-leaves, since auth.py lives there) so this file is write-allowed and explicitly coordinated against the memory-architecture phase that also touches persona.py.",
+      "file_path": "openspec/changes/http-tools-layer/specs/http-tools/spec.md",
+      "line_start": 113,
+      "line_end": 147
+    },
+    {
+      "id": 2,
+      "type": "security",
+      "criticality": "high",
+      "description": "The plan specifies no HTTP request timeout, no response-size cap, and no TLS-verify posture for either the OpenAPI discovery call or the per-tool invocation. `design.md` D2 describes one shared `httpx.AsyncClient` but gives no `timeout=` or `limits=` argument. `httpx`'s default timeout is 5 seconds but the `AsyncClient(**kwargs)` constructor frequently receives `timeout=None` in code left unspecified, which means an unresponsive `tool_source` could hang discovery indefinitely and block CLI startup. Similarly, a hostile/buggy service returning a 2GB `/openapi.json` would OOM the parser with no guard. Risks listed only mentions '1000+ operations' as a registry concern, not payload size. This is a real denial-of-service surface for any persona whose `tool_source` is untrusted (which is literally the use case — arbitrary configured endpoints).",
+      "disposition": "fix",
+      "resolution": "Add a design decision D9: default `httpx.AsyncClient(timeout=httpx.Timeout(connect=5, read=10, write=5, pool=5), limits=httpx.Limits(max_connections=10))`. Add a spec scenario under HTTP Tool Discovery: 'Source timeout skipped with warning'. Add a cap on the OpenAPI document size (e.g., 10MB via reading `Content-Length` or stream+size-check) and a spec scenario 'Oversized OpenAPI document skipped with warning'. Add matching test tasks + fixtures.",
+      "file_path": "openspec/changes/http-tools-layer/design.md",
+      "line_start": 72,
+      "line_end": 90
+    },
+    {
+      "id": 3,
+      "type": "architecture",
+      "criticality": "high",
+      "description": "`design.md:265` claims the httpx client lifecycle is handled via `weakref.finalize` and `asyncio.get_event_loop().run_until_complete(client.aclose())`. This is broken in two ways: (1) `AsyncClient.aclose()` is a coroutine and must be awaited from an async context; `weakref.finalize` callbacks are called from arbitrary finalizer threads (GC or process exit) and cannot await. (2) `asyncio.get_event_loop()` at finalization time typically raises `DeprecationWarning` on Python 3.12+ and will fail if the loop is already closed (which it will be after `asyncio.run(_run_repl(...))` returns). The documented cleanup strategy will either leak sockets (asyncio warnings on exit) or raise in finalization.",
+      "disposition": "fix",
+      "resolution": "Replace the `weakref.finalize`+`run_until_complete` pattern with an explicit async context manager: the CLI `_run_repl` (or a new `_run_with_http_tools` wrapper) should `async with httpx.AsyncClient(...) as client:` and pass the client into `discover_tools(client=client)` and through to the StructuredTool closures. This both aligns with httpx docs and guarantees the client is closed deterministically before the event loop exits. Remove the `weakref.finalize` risk-mitigation language.",
+      "file_path": "openspec/changes/http-tools-layer/design.md",
+      "line_start": 261,
+      "line_end": 269
+    },
+    {
+      "id": 4,
+      "type": "spec_gap",
+      "criticality": "high",
+      "description": "OpenAPI `$ref` resolution is never specified. The `sample_openapi_v3_1.json` contract fixture relies on `$ref: '#/components/schemas/ItemCreate'` and `#/components/schemas/Item` for both requestBody and response schemas, but `specs/http-tools/spec.md` 'OpenAPI Operation Parsing' requirement makes no mention of `$ref`, task 3.2 describes a 'minimal OpenAPI 3.x walker yielding ParsedOperation(...)' with no reference-resolution sub-task, and task 4.1's 'POST-with-body' test will necessarily hit the ref. Two outcomes: either (a) the walker silently passes `$ref` strings through as if they were a type, producing broken Pydantic models, or (b) an implementer adds ad-hoc ref resolution that nobody reviewed. External `$ref` (relative URLs or absolute URLs) and nested `$ref` (ref inside components/schemas/X pointing at Y) are both plausible in real services and need an explicit scope decision.",
+      "disposition": "fix",
+      "resolution": "Add an explicit requirement to the http-tools spec: 'The system SHALL resolve intra-document `$ref` pointers of the form `#/components/schemas/Name` before passing schemas to the Pydantic builder. External `$ref` (non-fragment URIs) SHALL be logged and the containing operation SHALL be skipped.' Add a dedicated test task in Phase 3 covering both the nested-ref case and the external-ref-skip case. Optionally use `openapi-spec-validator` or `jsonschema`'s `RefResolver`.",
+      "file_path": "openspec/changes/http-tools-layer/specs/http-tools/spec.md",
+      "line_start": 57,
+      "line_end": 77
+    },
+    {
+      "id": 5,
+      "type": "security",
+      "criticality": "high",
+      "description": "Credentials in URLs / redirect-leak scenario is unspecified. `httpx.AsyncClient` follows redirects by default when `follow_redirects=True` is passed, and if Auth headers are attached as request headers (which is the plan), a 3xx to an attacker-controlled domain would leak the bearer token. Additionally, the plan resolves `base_url` from user env (OK) but does not cap the scheme (an accidental `ftp://` or `file://` base_url could be sent through httpx transports that do not validate). No mention of scheme allow-list (`https:`, `http:` only). No mention of stripping the `Authorization` header on cross-origin redirect.",
+      "disposition": "fix",
+      "resolution": "In design.md, add: 'D10: Discovery and tool invocation SHALL use `follow_redirects=False` (or equivalently a redirect handler that drops Authorization on host-change). `base_url` scheme SHALL be validated as `http`/`https`; anything else logs a warning and skips the source.' Add two spec scenarios: 'Non-http(s) scheme skipped with warning' and 'Cross-host redirect does not forward Authorization header'. Add matching tests in Phase 2 (auth) and Phase 6 (discovery).",
+      "file_path": "openspec/changes/http-tools-layer/design.md",
+      "line_start": 47,
+      "line_end": 90
+    },
+    {
+      "id": 6,
+      "type": "spec_gap",
+      "criticality": "medium",
+      "description": "Response content-type handling is unspecified for per-tool invocation. The Tool Builder requirement says the tool 'return[s] the parsed JSON response body', but real services return `204 No Content`, `application/xml`, HTML error pages with `text/html`, binary streams, etc. The plan does not cover: what happens when `response.json()` raises `json.JSONDecodeError` on a 200 with non-JSON body, or when the body is empty (`b''`). Unspecified behavior here is how LangChain tools surface cryptic internal errors to the LLM; it's worth nailing down before implementation.",
+      "disposition": "fix",
+      "resolution": "Add a scenario under Tool Builder: 'When the response status is 2xx and the response body cannot be parsed as JSON, the coroutine SHALL return the response body as a string (or raise a clearly-typed exception — pick one). When the response is 204 or has an empty body, the coroutine SHALL return None.' Update the matching test task 4.1 to cover these two cases.",
+      "file_path": "openspec/changes/http-tools-layer/specs/http-tools/spec.md",
+      "line_start": 78,
+      "line_end": 112
+    },
+    {
+      "id": 7,
+      "type": "feasibility",
+      "criticality": "medium",
+      "description": "Task 9.2 is logically inconsistent. It says 'Add `openapi-spec-validator>=0.7` (dev only) if used in 1.4, else skip' — but task 1.4 is the *Swagger 2.0* fixture, not an OpenAPI 3.x fixture, and task 1.5 is the one that actually proposes fixture validation with 'openapi-spec-validator (or equivalent)' for the 3.x fixtures (1.1, 1.2). The reference from 9.2 → 1.4 is wrong and probably a typo for 1.5. As stated, an implementer reading the task list will correctly observe that 1.4 doesn't use openapi-spec-validator and skip adding the dep, leaving 1.5 orphaned or silently using `json.loads` + manual checks.",
+      "disposition": "fix",
+      "resolution": "Change the dependency in task 9.2 to read 'if used in 1.5'. Consider also promoting this to unconditional: openapi-spec-validator is a well-scoped dev dep and removes ambiguity from task 1.5's 'or equivalent'.",
+      "file_path": "openspec/changes/http-tools-layer/tasks.md",
+      "line_start": 211,
+      "line_end": 213
+    },
+    {
+      "id": 8,
+      "type": "spec_gap",
+      "criticality": "medium",
+      "description": "JSON Schema → Pydantic mapping is underspecified for required/optional fields and default values. Task 4.2 says 'supporting string/integer/number/boolean/array/object types', but the spec and tests don't nail down: how are `required` arrays in the JSON Schema mapped to Pydantic required-vs-default? How are `default` values copied? How are nullable fields (`type: ['string', 'null']` in 3.1; `nullable: true` in 3.0) handled — these differ between 3.0 and 3.1 and a naive walker mishandles them. How are `enum` constraints preserved? None of the three test scenarios under Tool Builder exercise these, yet the 3.0 fixture has `required: ['name']` already.",
+      "disposition": "fix",
+      "resolution": "Add a spec scenario under Tool Builder: 'WHEN the operation schema declares `required: [\"name\"]` and a `quantity` field with `default: 1`, THEN the Pydantic model MUST raise ValidationError if `name` is omitted AND MUST supply `quantity=1` when omitted.' Add a scenario for a nullable field (pick 3.1 union-syntax since that is the fixture version). Extend task 4.1 to cover these cases.",
+      "file_path": "openspec/changes/http-tools-layer/specs/http-tools/spec.md",
+      "line_start": 78,
+      "line_end": 112
+    },
+    {
+      "id": 9,
+      "type": "testability",
+      "criticality": "medium",
+      "description": "The plan assumes `pytest-httpserver` for integration tests but does not pin it in `[project.optional-dependencies.dev]` until task 9.1, which runs in `wp-integration` (the *last* work package). Meanwhile wp-http-tools-composite (priority 2) and wp-cli (priority 3) both declare test tasks (6.1, 6.3, 8.1, 8.2) that depend on pytest-httpserver. If the DAG is executed literally, those packages' tests will `ImportError` when running verification because the dep is not yet in pyproject. Either (a) dep must be added in the first write that references it (wp-http-tools-leaves), or (b) wp-integration must run before verification of the intermediate packages — but that contradicts the declared DAG.",
+      "disposition": "fix",
+      "resolution": "Move task 9.1 (add pytest-httpserver to pyproject.toml + uv sync) into `wp-http-tools-leaves` (priority 1) so every downstream package can import the fixture. Add `pyproject.toml` and `uv.lock` to that package's `write_allow`. Alternatively, reorder: put `wp-integration` deps (9.1, 9.2) into a tiny priority-0 package that everything else depends on.",
+      "file_path": "openspec/changes/http-tools-layer/work-packages.yaml",
+      "line_start": 218,
+      "line_end": 257
+    },
+    {
+      "id": 10,
+      "type": "feasibility",
+      "criticality": "medium",
+      "description": "CLI `--list-tools` as a *group-level* flag is claimed (specs/cli-interface/spec.md and proposal §5), but the existing `_DefaultGroup.parse_args` (cli.py:30-35) rewrites `[]` or `['-p', ...]` to `['run', '-p', ...]`. A user typing `assistant -p personal --list-tools` would be rewritten to `assistant run -p personal --list-tools`, and `--list-tools` would hit the `run` subcommand — not a group-level hook. Design says 'mutually-exclusive with the default REPL' but doesn't describe the routing mechanism. Without an explicit plan to special-case `--list-tools` in `_DefaultGroup.parse_args`, this will silently become an unknown option on the `run` subcommand.",
+      "disposition": "fix",
+      "resolution": "In tasks.md 8.4, specify the routing approach: either (a) register `--list-tools` as an option on the `run` subcommand with short-circuit behavior (matching the existing `--list-personas` / `--list-roles` pattern), or (b) extend `_DefaultGroup.parse_args` to detect `--list-tools` and rewrite args to `['list-tools', ...]` and register a new subcommand. Option (a) is consistent with the existing pattern and requires less wiring.",
+      "file_path": "openspec/changes/http-tools-layer/specs/cli-interface/spec.md",
+      "line_start": 5,
+      "line_end": 29
+    },
+    {
+      "id": 11,
+      "type": "testability",
+      "criticality": "medium",
+      "description": "The `test_cli_list_tools.py` file is declared in *two* different work packages' `write_allow`: wp-http-tools-composite lists `tests/http_tools/test_discovery.py`, and wp-cli lists `tests/http_tools/test_cli_list_tools.py`. But in tasks.md, phase 6.1/6.3 is in composite (correct — no CLI) and 8.2 places CLI tests at `tests/test_cli.py::test_list_tools_*`. Yet wp-cli's scope declares `tests/http_tools/test_cli_list_tools.py`. That file is referenced in proposal.md §6 but no task actually creates it — its creation is split across an ambiguous line in 8.2 which says 'at tests/test_cli.py'. Ambiguity: does `test_cli_list_tools.py` exist or not? If it does, which task creates it?",
+      "disposition": "fix",
+      "resolution": "Pick one: either (a) remove `tests/http_tools/test_cli_list_tools.py` from wp-cli scope and put all CLI discovery tests in `tests/test_cli.py`, or (b) rename task 8.2's referenced file to `tests/http_tools/test_cli_list_tools.py` to match the work-package scope. Also rationalize proposal.md §6 which references the latter.",
+      "file_path": "openspec/changes/http-tools-layer/work-packages.yaml",
+      "line_start": 191,
+      "line_end": 213
+    },
+    {
+      "id": 12,
+      "type": "spec_gap",
+      "criticality": "medium",
+      "description": "Discovery concurrency / fan-out is claimed but unspecified. proposal.md line 159 says 'Fast startup: one parallel fan-out of httpx GETs', design.md says nothing about the concurrency model, and tasks.md 6.2 says only 'orchestrates fetch + parse + build per source' with no mention of `asyncio.gather`. If an implementer writes a naive for-loop, discovery of N sources will take N × RTT instead of max-RTT; this is especially bad given the missing timeout finding (#2). No spec scenario ensures concurrent behavior.",
+      "disposition": "fix",
+      "resolution": "Add a design decision: 'D11: Per-source discovery SHALL be parallel via `asyncio.gather(*[_discover_source(...) for src in sources], return_exceptions=True)`, so source A's slow response does not block source B.' Task 6.2 should explicitly mention this. A unit test can assert using a pytest-httpserver with `time.sleep(2)` on source A and `time.sleep(0)` on source B that the total wallclock is ~2s not ~4s.",
+      "file_path": "openspec/changes/http-tools-layer/tasks.md",
+      "line_start": 130,
+      "line_end": 135
+    },
+    {
+      "id": 13,
+      "type": "security",
+      "criticality": "medium",
+      "description": "Secret leakage in error/warning logs is unspecified. `specs/http-tools/spec.md` says sources that fail discovery MUST log a warning 'referencing the failing source'; but if the source's base_url contains a token in the query string, or the auth header is accidentally included in the default `httpx` repr of a response, the warning path will leak credentials to stdout/log files. The plan has no scrubbing/sanitization requirement.",
+      "disposition": "fix",
+      "resolution": "Add a scenario under HTTP Tool Discovery: 'WHEN a source's base_url contains a token-like query parameter or the auth header is set, AND the source fails discovery, THEN the logged warning MUST NOT contain the bearer token, api-key value, or any `Authorization: Bearer ...` header content.' Implementation note: explicitly construct the log message rather than string-formatting the entire `httpx.Request` object.",
+      "file_path": "openspec/changes/http-tools-layer/specs/http-tools/spec.md",
+      "line_start": 34,
+      "line_end": 55
+    },
+    {
+      "id": 14,
+      "type": "openspec_compliance",
+      "criticality": "low",
+      "description": "Per G5 in CLAUDE.md gotchas, `openspec validate --strict` requires SHALL/MUST in the *opening clause* of the Requirement body. The 'Tool Manifest Export' requirement in specs/tool-policy/spec.md:55 opens with 'The `export_tool_manifest(persona, role)` method SHALL return…' which is fine. But 'DefaultToolPolicy Implementation' in specs/tool-policy/spec.md:7 opens with 'The `DefaultToolPolicy` SHALL accept…' — also fine. However, the second paragraph of that same requirement opens with 'When `role.preferred_tools` is empty, both extension tools and HTTP tools MUST be returned…' — the qualifier precedes the MUST, which `openspec validate --strict` has historically flagged. Likely still passes because the opening sentence is SHALL-led, but worth double-checking with `openspec validate http-tools-layer --strict` before calling the plan done.",
+      "disposition": "accept",
+      "resolution": "Run `openspec validate http-tools-layer --strict` as part of the round-1 review loop; if it passes, no change needed. If it flags the second paragraph, reflow to lead with MUST: 'The returned list MUST contain every authorized tool when `role.preferred_tools` is empty...'.",
+      "file_path": "openspec/changes/http-tools-layer/specs/tool-policy/spec.md",
+      "line_start": 15,
+      "line_end": 20
+    },
+    {
+      "id": 15,
+      "type": "testability",
+      "criticality": "low",
+      "description": "Deterministic-order claim for `list_all()` is in the spec (specs/http-tools/spec.md:161 'MUST return a list of length 2 containing both tools in deterministic order') but no invariant is declared — is it insertion order, alphabetical key order, or stable-by-source-then-op? A test that asserts 'deterministic' without specifying which ordering will either pass trivially (any order is deterministic within one run) or fail across dict hash seeds in edge-case environments.",
+      "disposition": "fix",
+      "resolution": "Amend the scenario to be explicit: 'THEN `list_all()` MUST return tools in lexicographic order of registry key.' Update task 5.1 to assert that specific ordering in the test.",
+      "file_path": "openspec/changes/http-tools-layer/specs/http-tools/spec.md",
+      "line_start": 155,
+      "line_end": 162
+    }
+  ]
+}

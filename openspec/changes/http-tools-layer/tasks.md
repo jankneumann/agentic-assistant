@@ -4,38 +4,81 @@ Tasks are grouped by phase. Within each phase, test tasks precede the
 implementation tasks they verify. Implementation task dependencies
 are declared explicitly.
 
-## Phase 1: Contracts + fixtures
+## Phase 0: Dependencies + persona schema evolution
 
-- [ ] 1.1 Write sample OpenAPI 3.1 fixture at
-  `openspec/changes/http-tools-layer/contracts/fixtures/sample_openapi_v3_1.json`
-  with three operations: `GET /items`, `GET /items/{id}`, `POST /items`.
-  **Spec scenarios**: http-tools — OpenAPI Operation Parsing (both),
+- [ ] 0.1 Add `pytest-httpserver>=1.0` to
+  `[project.optional-dependencies.dev]` in `pyproject.toml` and run
+  `uv sync --dev` so later phases' tests can import it.
+  **Why early**: Phase 6 and Phase 8 tests import `pytest_httpserver`;
+  adding it after those tasks run breaks TDD ordering.
+  **Dependencies**: None.
+
+- [ ] 0.2 Extend `src/assistant/core/persona.py:106-113` to accept a
+  structured `auth_header` dict (`{type, env, header?}`) alongside the
+  legacy flat `auth_header_env: VAR_NAME` form (auto-normalized to
+  `{type: "bearer", env: VAR_NAME}`). Preserve backwards compatibility;
+  update `PersonaConfig.tool_sources` type hint accordingly.
+  **Design decisions**: D11.
+  **Dependencies**: None.
+
+- [ ] 0.3 Add tests for persona auth-header normalization at
+  `tests/core/test_persona_auth_header.py`: structured dict form
+  preserved as-is, legacy flat form normalized to bearer, absent
+  `auth_header` returns `None`.
+  **Dependencies**: 0.2.
+
+- [ ] 0.4 Update the fixture personas under `tests/fixtures/personas/`
+  to carry both a legacy `auth_header_env` source and a structured
+  `auth_header` source so integration tests exercise both paths. Do
+  NOT touch real persona submodules; only `tests/fixtures/personas/`.
+  **Dependencies**: 0.2.
+
+## Phase 1: Contracts + fixtures (verification only)
+
+> The four OpenAPI fixtures below were authored during the plan phase
+> and already exist in `openspec/changes/http-tools-layer/contracts/fixtures/`.
+> The Phase 1 tasks verify their presence and shape — no new JSON is
+> written here.
+
+- [ ] 1.1 Verify `contracts/fixtures/sample_openapi_v3_1.json` exists,
+  declares `openapi: "3.1.0"`, and contains three operations:
+  `GET /items`, `GET /items/{id}`, `POST /items`. The POST operation
+  uses `$ref: "#/components/schemas/ItemCreate"`.
+  **Spec scenarios**: http-tools — OpenAPI Operation Parsing (all),
   HTTP Tool Discovery (Successful discovery).
   **Dependencies**: None.
 
-- [ ] 1.2 Write sample OpenAPI 3.0 fixture at
-  `openspec/changes/http-tools-layer/contracts/fixtures/sample_openapi_v3_0.json`
-  to verify cross-version parsing.
+- [ ] 1.2 Verify `contracts/fixtures/sample_openapi_v3_0.json` exists
+  and declares `openapi: "3.0.x"` for cross-version parsing coverage.
   **Spec scenarios**: http-tools — OpenAPI Operation Parsing.
   **Dependencies**: None.
 
-- [ ] 1.3 Write malformed-OpenAPI fixture (missing `paths`) at
-  `openspec/changes/http-tools-layer/contracts/fixtures/malformed_openapi.json`
-  for negative discovery test.
+- [ ] 1.3 Verify `contracts/fixtures/malformed_openapi.json` is present
+  and intentionally missing `paths` for the negative discovery test.
   **Spec scenarios**: http-tools — HTTP Tool Discovery (Source-level failure).
   **Dependencies**: None.
 
-- [ ] 1.4 Write Swagger 2.0 fixture at
-  `openspec/changes/http-tools-layer/contracts/fixtures/sample_swagger_v2_0.json`
-  (top-level `"swagger": "2.0"`) for the 2.0-skip test.
-  **Spec scenarios**: http-tools — HTTP Tool Discovery (Swagger 2.0 document skipped).
+- [ ] 1.4 Verify `contracts/fixtures/sample_swagger_v2_0.json` exists
+  with top-level `"swagger": "2.0"` for the 2.0-skip test.
+  **Spec scenarios**: http-tools — HTTP Tool Discovery (Swagger 2.0 skip).
   **Dependencies**: None.
 
-- [ ] 1.5 Validate OpenAPI fixtures with `openapi-spec-validator` (or
-  equivalent) to confirm they really are OpenAPI 3.x and not drifted.
-  Applies only to the 3.x fixtures (1.1, 1.2), not 1.3 or 1.4 which
-  are intentionally non-conforming.
+- [ ] 1.5 Validate the two 3.x fixtures (1.1, 1.2) with
+  `openapi-spec-validator` to confirm they are spec-compliant and have
+  not drifted. Skip fixtures 1.3 and 1.4 (intentionally non-conforming).
   **Dependencies**: 1.1, 1.2.
+
+- [ ] 1.6 Add a cyclic-ref fixture at
+  `contracts/fixtures/cyclic_ref_openapi.json` whose `components.schemas`
+  contains `A → B → A` (two schemas each referencing the other).
+  **Spec scenarios**: http-tools — OpenAPI Operation Parsing (Cyclic $ref detected).
+  **Dependencies**: None.
+
+- [ ] 1.7 Add an external-ref fixture at
+  `contracts/fixtures/external_ref_openapi.json` whose single operation's
+  `requestBody.schema` is `{"$ref": "https://example.com/foo.json"}`.
+  **Spec scenarios**: http-tools — OpenAPI Operation Parsing (External $ref skipped).
+  **Dependencies**: None.
 
 ## Phase 2: Package skeleton + auth
 
@@ -65,7 +108,8 @@ are declared explicitly.
   `tests/http_tools/test_openapi.py`: parses 3.1 + 3.0 fixtures,
   extracts operations with method/path/operationId/parameters/
   requestBody schema, synthesizes operationId fallback from method+path.
-  **Spec scenarios**: http-tools — OpenAPI Operation Parsing (both).
+  **Spec scenarios**: http-tools — OpenAPI Operation Parsing
+  (Operation with operationId, Operation without operationId).
   **Design decisions**: D5 (operationId slug fallback).
   **Dependencies**: 1.1, 1.2.
 
@@ -75,6 +119,35 @@ are declared explicitly.
   tuples from a loaded spec dict.
   **Dependencies**: 3.1.
 
+- [ ] 3.3 Write tests for intra-document `$ref` resolution at
+  `tests/http_tools/test_openapi.py::test_intra_ref_resolved` and
+  `::test_intra_ref_nested_recursively`: against the 3.1 fixture
+  (which uses `$ref: "#/components/schemas/ItemCreate"`), assert the
+  ParsedOperation's `request_body_schema` has the inlined fields
+  `name: str` and `quantity: int`. Against a synthetic nested fixture
+  (built in-test), assert transitive resolution.
+  **Spec scenarios**: http-tools — OpenAPI Operation Parsing
+  (Intra-document $ref resolved recursively).
+  **Design decisions**: D10.
+  **Dependencies**: 1.1, 3.2.
+
+- [ ] 3.4 Write tests for external and cyclic `$ref` handling at
+  `tests/http_tools/test_openapi.py::test_external_ref_skipped` and
+  `::test_cyclic_ref_raises`: use fixtures 1.6 and 1.7; assert the
+  external-ref operation is omitted (with `caplog` WARNING) and the
+  cyclic-ref case raises `ValueError`.
+  **Spec scenarios**: http-tools — OpenAPI Operation Parsing
+  (External $ref skipped, Cyclic $ref detected).
+  **Design decisions**: D10.
+  **Dependencies**: 1.6, 1.7, 3.2.
+
+- [ ] 3.5 Extend `src/assistant/http_tools/openapi.py`: add a
+  `_resolve_ref(spec, ref_value, visited=None)` helper that walks
+  JSON Pointer strings beginning with `#/`, detects cycles via the
+  `visited` set, and raises `ValueError` on external refs (with an
+  exception that the caller translates to a warning-and-skip).
+  **Dependencies**: 3.3, 3.4.
+
 ## Phase 4: Tool builder
 
 - [ ] 4.1 Write tests for `builder.py` at
@@ -83,7 +156,8 @@ are declared explicitly.
   substitution, validates 5xx raises HTTPStatusError, validates
   description fallback (D6), validates args_schema is usable Pydantic.
   **Spec scenarios**: http-tools — Tool Builder Generates Typed
-  StructuredTool (all three).
+  StructuredTool (POST with JSON body, GET with path + query,
+  Non-2xx response raises).
   **Design decisions**: D1 (runtime create_model), D2 (shared client),
   D6 (description fallback).
   **Dependencies**: 3.2.
@@ -91,23 +165,56 @@ are declared explicitly.
 - [ ] 4.2 Implement `src/assistant/http_tools/builder.py`: `_build_tool`
   factory + `_json_schema_to_pydantic` helper supporting
   string/integer/number/boolean/array/object types (recursive for
-  nested objects) + path parameter substitution via format-string.
+  nested objects) + path parameter substitution via
+  `urllib.parse.quote` + format-string replacement.
+  Sets `StructuredTool.name = f"{source_name}:{op_id}"`.
   **Dependencies**: 4.1.
+
+- [ ] 4.3 Write tests for content-type + empty-body handling at
+  `tests/http_tools/test_builder.py::test_non_json_content_type_raises`,
+  `::test_204_returns_none`, and `::test_empty_body_returns_none`:
+  stub httpx response objects with various Content-Type headers.
+  **Spec scenarios**: http-tools — Tool Builder (Non-JSON 2xx raises,
+  Empty-body 2xx returns None).
+  **Dependencies**: 4.2.
+
+- [ ] 4.4 Write tests for tool name and path-encoding at
+  `tests/http_tools/test_builder.py::test_tool_name_matches_registry_key`
+  and `::test_path_param_url_encoded`: assert
+  `tool.name == "{source}:{op_id}"` and that invoking with
+  `{"id": "foo/bar"}` produces a URL with `foo%2Fbar`.
+  **Spec scenarios**: http-tools — Tool Builder (StructuredTool name
+  matches registry key, Path parameter URL-encoded).
+  **Dependencies**: 4.2.
+
+- [ ] 4.5 Write tests for required/optional/default handling in
+  `_json_schema_to_pydantic` at
+  `tests/http_tools/test_builder.py::test_required_fields`,
+  `::test_optional_field_uses_default`, and `::test_typeless_field_is_any`:
+  build a schema with each case and assert the Pydantic model's
+  `model_fields` metadata.
+  **Spec scenarios**: http-tools — Tool Builder (Required JSON Schema
+  fields produce required Pydantic fields).
+  **Dependencies**: 4.2.
 
 ## Phase 5: Registry
 
 - [ ] 5.1 Write tests for `registry.py` at
-  `tests/http_tools/test_registry.py`: list_all returns deterministic
-  order, by_source filters, by_preferred filters by exact key match,
+  `tests/http_tools/test_registry.py`: `list_all` returns tools in
+  lexicographic key order (byte-identical across repeated calls),
+  `by_source` filters, `by_preferred` filters by exact key match,
   empty registry returns `[]`.
-  **Spec scenarios**: http-tools — HttpToolRegistry API (both).
+  **Spec scenarios**: http-tools — HttpToolRegistry API (list_all
+  returns every tool in key order, by_preferred filters by exact key
+  match).
   **Design decisions**: D3 (`{source}:{op}` key format), D7 (concrete
   class, not Protocol).
   **Dependencies**: None.
 
 - [ ] 5.2 Implement `src/assistant/http_tools/registry.py`:
-  `HttpToolRegistry` class with `list_all`, `by_source`, `by_preferred`;
-  key-builder helper `tool_key(source, op_id)`.
+  `HttpToolRegistry` class with `list_all` (lexicographic key sort),
+  `by_source`, `by_preferred`; key-builder helper
+  `tool_key(source, op_id)`.
   **Dependencies**: 5.1.
 
 ## Phase 6: Discovery
@@ -141,6 +248,37 @@ are declared explicitly.
   **Spec scenarios**: http-tools — HTTP Tool Discovery (Swagger 2.0
   document skipped with warning).
   **Dependencies**: 1.4, 6.2.
+
+- [ ] 6.4 Write integration tests for the HTTP client security posture
+  at `tests/http_tools/test_discovery.py::test_redirect_refused`,
+  `::test_oversized_response_skipped`, and
+  `::test_timeout_skipped`: configure pytest-httpserver to return
+  302 / 11MB body / 15s delay respectively and assert the source is
+  skipped with a `caplog` WARNING. The WARNING record's message
+  MUST NOT contain the auth-header value.
+  **Spec scenarios**: http-tools — HTTP Client Security Posture (all).
+  **Design decisions**: D9.
+  **Dependencies**: 6.2.
+
+- [ ] 6.5 Write integration test for missing auth env at
+  `tests/http_tools/test_discovery.py::test_missing_auth_env_skipped`:
+  configure a source whose `auth_header.env` names a variable that is
+  unset; assert the source is skipped with a WARNING naming both the
+  source and the missing variable, and that `discover_tools` does
+  NOT raise.
+  **Spec scenarios**: http-tools — HTTP Tool Discovery (Missing auth
+  env var at discovery time).
+  **Dependencies**: 6.2, 0.2.
+
+- [ ] 6.6 Write integration test for credential redaction in logs at
+  `tests/http_tools/test_discovery.py::test_auth_value_absent_from_logs`:
+  trigger a discovery failure on a source with
+  `auth_header: {type: bearer, env: TEST_TOKEN}` where
+  `TEST_TOKEN=s3cr3t-t0k3n-DO-NOT-LEAK`; assert no `caplog` record's
+  rendered message contains `s3cr3t-t0k3n-DO-NOT-LEAK` or `Bearer`.
+  **Spec scenarios**: http-tools — HTTP Client Security Posture (Auth
+  header value absent from logs).
+  **Dependencies**: 6.2.
 
 ## Phase 7: Policy integration
 
@@ -203,14 +341,16 @@ are declared explicitly.
 
 ## Phase 9: Dependencies + packaging
 
-- [ ] 9.1 Add `pytest-httpserver>=1.0` to `pyproject.toml` under
-  `[project.optional-dependencies.dev]`. Run `uv sync` to update the
-  lockfile.
-  **Dependencies**: None.
+- [ ] 9.1 Confirm Phase 0.1 landed the `pytest-httpserver>=1.0` dev
+  dependency and `uv sync --dev` produced a clean lockfile. No new
+  deps expected at this point; if any leaf module pulled in an
+  unexpected transitive, audit here.
+  **Dependencies**: 0.1.
 
-- [ ] 9.2 Add `openapi-spec-validator>=0.7` (dev only) if used in
-  1.4, else skip.
-  **Dependencies**: 1.4.
+- [ ] 9.2 Add `openapi-spec-validator>=0.7` to
+  `[project.optional-dependencies.dev]` if tasks 1.5 use it (they do —
+  for fixture drift protection).
+  **Dependencies**: 1.5.
 
 ## Phase 10: Docs
 
