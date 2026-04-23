@@ -60,6 +60,7 @@ packages:
       loc_estimate: 90
       external_deps:
         - pytest-httpserver
+        - openapi-spec-validator
 
   # ──────────────────────────────────────────────────────────
   # wp-http-tools-leaves — independent leaf modules (no internal deps)
@@ -152,6 +153,7 @@ packages:
       - "4.3"
       - "4.4"
       - "4.5"
+      - "4.6"
       - "6.1"
       - "6.2"
       - "6.3"

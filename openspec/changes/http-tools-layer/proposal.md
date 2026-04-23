@@ -72,7 +72,12 @@ per-role filtering as extension tools.
   `dict[str, StructuredTool]` with lookup helpers
   (`by_source(name)`, `by_preferred(preferred_tools)`).
 
-- **`__init__.py`** — public API: `discover_tools`, `HttpToolRegistry`.
+- **`__init__.py`** — re-exports **only the leaf symbols**
+  (`AuthHeaderConfig`, `resolve_auth_header`, `HttpToolRegistry`).
+  Composite symbols such as `discover_tools` are imported via their
+  explicit module path (`from assistant.http_tools.discovery import
+  discover_tools`) — see design decision D8 for the DAG-import
+  rationale.
 
 ### 2. `DefaultToolPolicy` accepts a registry
 

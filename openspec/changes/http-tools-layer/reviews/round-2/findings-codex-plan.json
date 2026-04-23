@@ -1,0 +1,81 @@
+{
+  "findings": [
+    {
+      "id": "R2-001",
+      "type": "correctness",
+      "criticality": "high",
+      "description": "Task 1.5 requires `openapi-spec-validator` during the `wp-http-tools-leaves` package, but the dependency is still added later in Phase 9 / `wp-integration`. A literal DAG run can fail leaf-package verification before the validator dependency exists. This is the same ordering class fixed for `pytest-httpserver` but left unresolved for the validator.",
+      "disposition": "fix",
+      "resolution": "Move `openapi-spec-validator>=0.7` into Phase 0 / `wp-prep` alongside `pytest-httpserver`, or change task 1.5 to use only already-available validation tooling. Update `work-packages.yaml` metadata accordingly.",
+      "file_path": "openspec/changes/http-tools-layer/tasks.md",
+      "line_start": 66,
+      "line_end": 69
+    },
+    {
+      "id": "R2-002",
+      "type": "security",
+      "criticality": "high",
+      "description": "D9 says the 10 MiB response cap is enforced by reading `response.content` and then checking length. That buffers the full body before enforcing the cap, so a multi-gigabyte response can still exhaust memory. The same lines also use `10MB` / `ValueError(\"response exceeds 10MB\")`, while the spec requires 10 MiB and `ValueError(\"response exceeds 10MiB\")`.",
+      "disposition": "fix",
+      "resolution": "Specify streaming enforcement via `async with client.stream(...)` / `aiter_bytes()`, count bytes before appending beyond `10 * 1024 * 1024`, and align the exception text/unit with the spec.",
+      "file_path": "openspec/changes/http-tools-layer/design.md",
+      "line_start": 118,
+      "line_end": 122
+    },
+    {
+      "id": "R2-003",
+      "type": "security",
+      "criticality": "medium",
+      "description": "The spec describes `httpx.Timeout(10.0, connect=5.0)` as a 10s total timeout. HTTPX does not enforce a total wall-clock timeout with that configuration; it applies per-operation timeouts, so slow streaming/trickling responses can exceed 10 seconds and weaken the stated slowloris protection.",
+      "disposition": "fix",
+      "resolution": "Either reword the requirement to say per-operation/read timeout, or require an outer wall-clock guard such as `asyncio.timeout(10.0)` around discovery and per-tool requests.",
+      "file_path": "openspec/changes/http-tools-layer/specs/http-tools/spec.md",
+      "line_start": 209,
+      "line_end": 210
+    },
+    {
+      "id": "R2-004",
+      "type": "spec_gap",
+      "criticality": "medium",
+      "description": "Task 6.4 adds `test_timeout_skipped` and claims it maps to `HTTP Client Security Posture (all)`, but that requirement has named scenarios for redirect refusal, oversized response, and auth redaction only. There is no named timeout scenario despite the task requiring one.",
+      "disposition": "fix",
+      "resolution": "Add a named `Discovery timeout skipped with warning` scenario under HTTP Client Security Posture, or remove the timeout test from the named-scenario mapping.",
+      "file_path": "openspec/changes/http-tools-layer/tasks.md",
+      "line_start": 252,
+      "line_end": 260
+    },
+    {
+      "id": "R2-005",
+      "type": "spec_gap",
+      "criticality": "medium",
+      "description": "Task 4.5 tests required fields, optional defaults, and typeless fields, but maps only to the named scenario `Required JSON Schema fields produce required Pydantic fields`. Optional-default and typeless-Any behavior is requirement prose without named scenarios, so the Round 2 mapping is incomplete.",
+      "disposition": "fix",
+      "resolution": "Add named scenarios for optional fields using defaults and typeless fields producing `Any`, or narrow task 4.5 to the existing required-fields scenario.",
+      "file_path": "openspec/changes/http-tools-layer/tasks.md",
+      "line_start": 190,
+      "line_end": 198
+    },
+    {
+      "id": "R2-006",
+      "type": "correctness",
+      "criticality": "medium",
+      "description": "The C10 fix is incomplete: tasks and `work-packages.yaml` now consolidate CLI tests in `tests/test_cli.py`, but the design test layout still declares `tests/http_tools/test_cli_list_tools.py`. That stale reference conflicts with the narrowed `wp-cli` scope and can lead implementors to create a denied/dead test file.",
+      "disposition": "fix",
+      "resolution": "Update the design test layout and testing strategy to reference `tests/test_cli.py` for `--list-tools` coverage and remove `test_cli_list_tools.py`.",
+      "file_path": "openspec/changes/http-tools-layer/design.md",
+      "line_start": 363,
+      "line_end": 374
+    },
+    {
+      "id": "R2-007",
+      "type": "correctness",
+      "criticality": "medium",
+      "description": "The proposal still says `src/assistant/http_tools/__init__.py` public API includes `discover_tools`, contradicting D8 and task 2.2, which require package-root exports to stay leaf-only. This can reintroduce the import-DAG break that iteration 1/2 intended to prevent.",
+      "disposition": "fix",
+      "resolution": "Update the proposal so `__init__.py` exports only `AuthHeaderConfig`, `resolve_auth_header`, and `HttpToolRegistry`; document `discover_tools` imports via `assistant.http_tools.discovery`.",
+      "file_path": "openspec/changes/http-tools-layer/proposal.md",
+      "line_start": 71,
+      "line_end": 76
+    }
+  ]
+}

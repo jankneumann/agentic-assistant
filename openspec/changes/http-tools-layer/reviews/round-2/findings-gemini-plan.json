@@ -1,0 +1,70 @@
+{
+  "findings": [
+    {
+      "id": "G2-1",
+      "type": "completeness",
+      "criticality": "high",
+      "description": "The 'openapi-spec-validator' dependency is used in task 1.5 (Phase 1, 'wp-http-tools-leaves') for fixture verification, but it is not added to the dev dependencies until task 9.2 (Phase 9, 'wp-integration'). This mismatch in the DAG will cause validation failures for early-stage implementation and tests during both parallel and sequential execution, as the necessary tool is not yet installed in the environment.",
+      "disposition": "fix",
+      "resolution": "Move the addition of the 'openapi-spec-validator' dependency from task 9.2 to Phase 0 (task 0.1) within 'wp-prep', ensuring all contract validation tools are available before they are invoked by the worker packages.",
+      "file_path": "openspec/changes/http-tools-layer/tasks.md",
+      "line_start": 350,
+      "line_end": 353
+    },
+    {
+      "id": "G2-2",
+      "type": "spec_gap",
+      "criticality": "medium",
+      "description": "Task 4.5 in 'tasks.md' explicitly cross-references a spec scenario titled 'Tool Builder (Required JSON Schema fields produce required Pydantic fields)' which does not exist in 'specs/http-tools/spec.md'. While the requirement prose on lines 152-155 describes the logic, the lack of a named #### Scenario: entry breaks the plan's consistency and makes it harder for automated tools to verify spec-to-test traceability.",
+      "disposition": "fix",
+      "resolution": "Add a new scenario 'Required JSON Schema fields produce required Pydantic fields' under the 'Tool Builder Generates Typed StructuredTool' Requirement in 'spec.md'. Consider also adding scenarios for optional/default and Any type mapping as exercised in task 4.5.",
+      "file_path": "openspec/changes/http-tools-layer/specs/http-tools/spec.md",
+      "line_start": 152,
+      "line_end": 155
+    },
+    {
+      "id": "G2-3",
+      "type": "spec_gap",
+      "criticality": "medium",
+      "description": "The 'HTTP Client Security Posture' Requirement mandates a 10s timeout, and task 6.4 includes an integration test for a 15s delay. However, there is no corresponding #### Scenario: for timeout behavior in 'spec.md' (only redirects and oversized responses are named), leaving the 'timeout' security posture without a formal verification contract.",
+      "disposition": "fix",
+      "resolution": "Add a #### Scenario: Discovery timeout skipped' under the 'HTTP Client Security Posture' Requirement in 'specs/http-tools/spec.md' to formalize the expected skip-and-warning behavior for slow services.",
+      "file_path": "openspec/changes/http-tools-layer/specs/http-tools/spec.md",
+      "line_start": 204,
+      "line_end": 223
+    },
+    {
+      "id": "G2-4",
+      "type": "clarity",
+      "criticality": "medium",
+      "description": "Task 3.5 specifies that '_resolve_ref' should raise a generic 'ValueError' for both cyclic references and external references. However, 'design.md' D10 and 'spec.md' define diverging outcomes: external refs trigger a per-operation skip with a warning, while cyclic refs trigger a source-level skip. Distinguishing these two distinct failure modes in the caller using only 'ValueError' is error-prone and brittle.",
+      "disposition": "fix",
+      "resolution": "Update task 3.5 and D10 to require distinct exception subclasses (e.g., 'CyclicRefError', 'ExternalRefError') or unique error messages that allow 'discover_tools' and the operation parser to distinguish and handle them correctly.",
+      "file_path": "openspec/changes/http-tools-layer/tasks.md",
+      "line_start": 144,
+      "line_end": 149
+    },
+    {
+      "id": "G2-5",
+      "type": "security",
+      "criticality": "low",
+      "description": "Task 4.2 specifies path parameter substitution via 'urllib.parse.quote' but omits the critical detail that it must be called with 'safe=''' to encode forward slashes. Without this, a path parameter value containing a '/' (e.g., a file path or ID) would alter the request's structural URL path, potentially leading to unauthorized access or SSRF-like behavior, violating the security requirement in 'spec.md' (line 144).",
+      "disposition": "fix",
+      "resolution": "Update task 4.2 to explicitly specify using 'safe=''' for 'urllib.parse.quote' to ensure all unsafe path characters are escaped.",
+      "file_path": "openspec/changes/http-tools-layer/tasks.md",
+      "line_start": 165,
+      "line_end": 171
+    },
+    {
+      "id": "G2-6",
+      "type": "consistency",
+      "criticality": "low",
+      "description": "Stale test cross-reference in 'design.md': The Consequence section of D9 still claims 'tests 6.1 and 4.1 cover the scenarios' for security posture. In the current task list, task 6.4 was added to specifically cover security, while 6.1 is a general discovery test and 4.1 is a builder unit test.",
+      "disposition": "fix",
+      "resolution": "Update 'design.md' line 140 to reference task 6.4 (and 6.6 for credentials) as the relevant coverage for the HTTP security posture scenarios.",
+      "file_path": "openspec/changes/http-tools-layer/design.md",
+      "line_start": 140,
+      "line_end": 141
+    }
+  ]
+}
