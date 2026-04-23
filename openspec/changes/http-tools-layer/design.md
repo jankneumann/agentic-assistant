@@ -160,6 +160,35 @@ minimally informative default.
 implementer in sight for P3. P17 `mcp-server-exposure` can refactor
 when it needs to.
 
+### D8: Minimal `http_tools/__init__.py` — no eager re-exports of composite modules
+
+**Choice**: `src/assistant/http_tools/__init__.py` re-exports only the
+**leaf** module symbols (`resolve_auth_header`, `HttpToolRegistry`,
+`AuthHeaderConfig`). Consumers import composite symbols
+(`discover_tools`) directly from their module:
+`from assistant.http_tools.discovery import discover_tools`.
+
+**Rejected**: Eager re-export of the full public API from
+`__init__.py`.
+
+**Reason**: Under the coordinated-tier work-package DAG,
+`wp-http-tools-leaves` lands before `wp-http-tools-composite`. If
+`__init__.py` eagerly imports `from .discovery import discover_tools`,
+the package would fail to import for every intermediate state between
+the two merges. Minimal re-export keeps the package importable at every
+point in the DAG. As a side benefit, explicit module imports produce
+cleaner stack traces and make ownership (which package provides the
+symbol) visible at the call site.
+
+**Consequence**:
+- `wp-http-tools-leaves` owns `__init__.py` exclusively; it is **not**
+  modified by `wp-http-tools-composite` or later packages.
+- `cli.py` and any tests import composite symbols via the explicit
+  module path, never via the package root.
+- If a future phase wants to promote `discover_tools` to the package
+  root, it is additive and done in a single commit that post-dates
+  both leaf and composite modules landing.
+
 ## Component Layout
 
 ```

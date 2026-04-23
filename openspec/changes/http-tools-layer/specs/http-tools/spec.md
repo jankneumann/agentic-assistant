@@ -45,6 +45,15 @@ sources or raise from `discover_tools`.
 - **WHEN** `discover_tools({})` is called
 - **THEN** an empty `HttpToolRegistry` MUST be returned
 
+#### Scenario: Swagger 2.0 document skipped with warning
+
+- **WHEN** a source returns a JSON document whose top-level key is
+  `"swagger": "2.0"` (or is otherwise not an OpenAPI 3.x document)
+- **THEN** a warning MUST be logged naming the source and the
+  unsupported version
+- **AND** the source MUST be omitted from the returned registry
+- **AND** `discover_tools` MUST NOT raise
+
 ### Requirement: OpenAPI Operation Parsing
 
 The system SHALL parse each operation from the OpenAPI document and

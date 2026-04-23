@@ -25,8 +25,16 @@ are declared explicitly.
   **Spec scenarios**: http-tools — HTTP Tool Discovery (Source-level failure).
   **Dependencies**: None.
 
-- [ ] 1.4 Validate OpenAPI fixtures with `openapi-spec-validator` (or
+- [ ] 1.4 Write Swagger 2.0 fixture at
+  `openspec/changes/http-tools-layer/contracts/fixtures/sample_swagger_v2_0.json`
+  (top-level `"swagger": "2.0"`) for the 2.0-skip test.
+  **Spec scenarios**: http-tools — HTTP Tool Discovery (Swagger 2.0 document skipped).
+  **Dependencies**: None.
+
+- [ ] 1.5 Validate OpenAPI fixtures with `openapi-spec-validator` (or
   equivalent) to confirm they really are OpenAPI 3.x and not drifted.
+  Applies only to the 3.x fixtures (1.1, 1.2), not 1.3 or 1.4 which
+  are intentionally non-conforming.
   **Dependencies**: 1.1, 1.2.
 
 ## Phase 2: Package skeleton + auth
@@ -39,7 +47,11 @@ are declared explicitly.
   **Dependencies**: None.
 
 - [ ] 2.2 Create `src/assistant/http_tools/__init__.py` re-exporting
-  the public API (initially empty, filled as modules land).
+  **only the leaf symbols** (`AuthHeaderConfig`, `resolve_auth_header`,
+  `HttpToolRegistry`). Composite symbols (`discover_tools`) MUST NOT
+  be imported here — see D8.
+  **Design decisions**: D8 (minimal __init__ to preserve DAG import
+  invariant).
   **Dependencies**: None.
 
 - [ ] 2.3 Implement `src/assistant/http_tools/auth.py`:
@@ -102,11 +114,17 @@ are declared explicitly.
 
 - [ ] 6.1 Write integration tests for `discovery.py` at
   `tests/http_tools/test_discovery.py` using pytest-httpserver:
-  successful discovery builds registry, /openapi.json 404 falls back
-  to /help, source 5xx skipped with warning, invalid JSON skipped
-  with warning, empty tool_sources returns empty registry.
-  **Spec scenarios**: http-tools — HTTP Tool Discovery (all four).
-  **Design decisions**: D4 (skip on failure).
+  successful discovery builds registry, `/openapi.json` 404 falls back
+  to `/help`, source 5xx skipped with warning, invalid JSON skipped
+  with warning, empty tool_sources returns empty registry. **Use the
+  `caplog` fixture**: for each "skipped with warning" scenario, assert
+  that `caplog.records` contains at least one record with
+  `levelname == "WARNING"` and a `message` or `getMessage()` that
+  includes the source name.
+  **Spec scenarios**: http-tools — HTTP Tool Discovery (Successful
+  discovery, openapi.json 404 fallback, Source-level failure, No
+  tool_sources).
+  **Design decisions**: D4 (skip on failure, log warning).
   **Dependencies**: 5.2, 4.2, 2.3.
 
 - [ ] 6.2 Implement `src/assistant/http_tools/discovery.py`:
@@ -114,6 +132,15 @@ are declared explicitly.
   + parse + build per source. Uses a single shared
   `httpx.AsyncClient` (D2) passed in or constructed internally.
   **Dependencies**: 6.1.
+
+- [ ] 6.3 Write integration test for Swagger 2.0 skip at
+  `tests/http_tools/test_discovery.py::test_swagger_2_0_skipped`:
+  serve the 1.4 fixture from pytest-httpserver, assert the source is
+  omitted from the returned registry, and assert a `caplog` WARNING
+  record names the source and the string `"swagger"` or `"2.0"`.
+  **Spec scenarios**: http-tools — HTTP Tool Discovery (Swagger 2.0
+  document skipped with warning).
+  **Dependencies**: 1.4, 6.2.
 
 ## Phase 7: Policy integration
 

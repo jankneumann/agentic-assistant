@@ -27,10 +27,13 @@ until discovery + tool construction exists.
 
 This change implements the HTTP discovery + tool-building path:
 `src/assistant/http_tools/` queries each persona's configured service
-for an OpenAPI document, generates a Pydantic input model per
-operation, wraps the async HTTP call as a LangChain `StructuredTool`,
-and feeds the resulting registry into `DefaultToolPolicy`. After this
-lands, `assistant --list-tools` becomes a real command, `cli.py` calls
+for an **OpenAPI 3.x document at `{base_url}/openapi.json`** (falling
+back to `{base_url}/help` if the primary path 404s — the legacy
+endpoint referenced in earlier roadmap drafts serves the same OpenAPI
+document). The layer generates a Pydantic input model per operation,
+wraps the async HTTP call as a LangChain `StructuredTool`, and feeds
+the resulting registry into `DefaultToolPolicy`. After this lands,
+`assistant --list-tools` becomes a real command, `cli.py` calls
 `discover_tools()` at startup, and HTTP tools flow through the same
 per-role filtering as extension tools.
 
