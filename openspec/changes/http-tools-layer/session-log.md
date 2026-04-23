@@ -77,3 +77,45 @@ Plan authored via `/autopilot http-tools-layer` — the PLAN phase of the autopi
 ### Context
 
 Iteration 1 addressed 1 high-parallelizability finding (H1), 1 high-completeness finding (H2), and 2 medium findings (M1 clarity, M2 testability). One low finding (L1 — per-invocation debug logging) deferred to P4 `observability`. Validation green. Ready for vendor review dispatch.
+
+---
+
+## Phase: Plan Iteration 2 (2026-04-24) — Round 1 Convergence Review
+
+**Agent**: claude-code (Opus 4.7, 1M context) + codex-local (gpt-5.5) + gemini-local | **Session**: autopilot-run-1
+
+### Decisions
+
+1. **D9 added — HTTP client security posture.** Explicit `timeout=Timeout(10.0, connect=5.0)`, `follow_redirects=False`, `verify=True`, 10 MiB response-size cap, credential redaction in all warning logs. Raised by claude + gemini independently as a critical security surface gap. The assistant makes outbound HTTP calls with credentials; permissive defaults are a direct attack surface.
+2. **D10 added — OpenAPI `$ref` resolution.** Intra-document pointers are resolved; external refs skip the operation with a warning; cyclic refs raise. All three vendors (claude, codex, gemini) flagged this independently after noticing `sample_openapi_v3_1.json` itself uses `$ref: "#/components/schemas/ItemCreate"`. Two new contract fixtures (cyclic + external) added under tasks 1.6 and 1.7.
+3. **D11 added — persona `auth_header` schema evolution.** The existing `persona.py:109` flattens `auth_header_env` to a bare string via `_env(...)`; the spec's `resolve_auth_header` expects a `{type, env, header?}` dict. Rather than forcing one shape, P3 supports both — the legacy flat form auto-normalizes to `{type: "bearer", env: VAR_NAME}`. Flagged as critical by claude and high by codex.
+4. **D2 rewritten.** Removed the `weakref.finalize` + `asyncio.get_event_loop().run_until_complete(client.aclose())` pattern from the risks table. `aclose()` is async and weakref callbacks run synchronously outside the event loop; the pattern cannot work. Replaced with `async with httpx.AsyncClient(...)` scoped to `_run_repl` and `_list_tools`.
+5. **New Phase 0 added — persona schema + pytest-httpserver dev dep.** Moving the dep install from Phase 9 (last) to Phase 0 (first) reflects the real dependency ordering: Phase 6 and Phase 8 tests import `pytest_httpserver`. Phase 0 also covers the `persona.py` extension from D11 and updates to `tests/fixtures/personas/`.
+6. **New work-package `wp-prep` at priority 0.** Owns Phase 0 tasks (persona schema + dev dep + fixture personas). All other packages now depend on it. Locked on `core:persona:tool_sources` and `deps:pyproject` keys.
+7. **`wp-cli` scope narrowed.** Removed `tests/http_tools/test_cli_list_tools.py` from `write_allow` — the file name appeared in proposal.md §6 but no task actually created it; 8.1/8.2 place the tests in `tests/test_cli.py`. Claude flagged the scope ambiguity.
+8. **`defaults.auto_loop` thresholds raised.** `max_loc` 1500 → 1800; `max_packages` 4 → 5. The added security posture, `$ref` resolution, content-type handling, and persona schema tasks expand the implementation from ~1000 LOC to ~1200 LOC. Complexity-gate pre-check confirmed the raised thresholds still pass with `val_review_enabled=true` (unchanged) and `security-review` checkpoint (unchanged).
+9. **10 of 14 substantive findings addressed in this iteration; 4 accepted as non-blocking.** Full accounting in `reviews/round-1/synthesis.md`. Accepted items are all either (a) low-criticality nits, (b) deferred performance targets already documented in D9, (c) CLI subcommand scenarios inherited from the P1 spec that are out of P3 scope, or (d) false positives like the `max_packages=4` warning (integration packages are excluded by complexity_gate).
+10. **Spec additions are all `ADDED` clauses or new scenarios under existing Requirements; no MODIFIED existing behavior.** This keeps the diff reviewable and preserves the existing contract. `openspec validate --strict` green after all edits.
+
+### Alternatives Considered
+
+- **Only support structured `auth_header` dict (no legacy flat form compat)**: rejected. Every existing persona fixture uses `auth_header_env`; breaking them all just to simplify the auth resolver is a poor trade. D11 compromise adds ~5 lines of normalization logic.
+- **Keep the `weakref.finalize` pattern with a different callback shape**: rejected. The fundamental problem is that weakref callbacks run synchronously and `aclose()` is a coroutine. No callback shape fixes that; structural `async with` is the only clean answer.
+- **Add a dedicated persona-level `allowed_tools` authorization layer in P3**: rejected. Codex flagged a proposal/design mismatch; the resolution is to clarify (proposal Why paragraph) that per-source authorization is deferred, with per-role `preferred_tools` filtering covering the P3 need. No new component needed.
+- **Fold the new security scenarios into existing Requirements rather than adding a new Requirement**: rejected. "HTTP Client Security Posture" is load-bearing enough to warrant its own Requirement; bundling it under an existing one would bury the 10 MiB cap and redirect refusal in unrelated prose.
+
+### Trade-offs
+
+- Accepted a larger plan surface (three new design decisions, six new scenarios, four new tasks) in exchange for eliminating three categories of implementation ambiguity (security posture, `$ref` semantics, auth schema). The alternative — defer to implementation-time discovery — would bleed rework into the IMPLEMENT phase where it's harder to review in aggregate.
+- Accepted one extra work-package (`wp-prep`) and the serialization cost it introduces (everything depends on it) because the persona schema change is genuinely blocking for downstream tests. The serialization is unavoidable; the only alternative is duplicating the schema evolution across three later packages.
+- Accepted raising `max_packages` from 4 to 5 rather than collapsing packages. Collapsing `wp-http-tools-composite` and `wp-policy` would merge two non-overlapping `write_allow` scopes into one, removing parallelism; collapsing `wp-prep` into `wp-http-tools-leaves` would put persona.py edits into a package whose lock is already on `http_tools/__init__.py`.
+
+### Open Questions
+
+- [ ] Will any real persona fixture hit the 10 MiB response cap during `--list-tools` smoke-testing in task 11.4? Unlikely for typical OpenAPI docs; noted as a manual-test observation item.
+- [ ] When P9 `error-resilience` lands, does retry policy apply to discovery calls (which skip on failure anyway) or only to per-tool invocations? Design decision for P9; not blocking here.
+- [ ] Should `AuthHeaderConfig` eventually grow to support OAuth refresh flows in P5, or will that be a separate `OAuthConfig` type? Leaving that to P5's design phase.
+
+### Context
+
+Iteration 2 addressed the Round 1 multi-vendor plan review. Three vendors dispatched in parallel (claude, codex gpt-5.5, gemini) produced 32 raw findings. The ConsensusSynthesizer's string-similarity clustering did not match findings across vendors (different prose, same underlying issue), so clustering was done manually against the source findings JSONs. Ten substantive issues addressed; four accepted as non-blocking with rationale documented in `reviews/round-1/synthesis.md`. Validation green. Ready for Round 2 review dispatch.

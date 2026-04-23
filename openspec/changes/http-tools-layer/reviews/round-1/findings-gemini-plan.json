@@ -1,0 +1,81 @@
+{
+  "findings": [
+    {
+      "id": 1,
+      "type": "security",
+      "criticality": "high",
+      "description": "Requirement 'Tool Builder Generates Typed StructuredTool' in specs/http-tools/spec.md and Task 4.2 in tasks.md specify path parameter substitution via 'format-string' (f-string). This is vulnerable to path traversal (e.g., if a tool is called with id='../admin') because it does not specify URL-encoding for the substituted values.",
+      "disposition": "fix",
+      "resolution": "Update the requirement and task 4.2 to explicitly require URL-encoding of path parameters before substitution into the path template.",
+      "file_path": "openspec/changes/http-tools-layer/specs/http-tools/spec.md",
+      "line_start": 113,
+      "line_end": 147
+    },
+    {
+      "id": 2,
+      "type": "spec_gap",
+      "criticality": "high",
+      "description": "The plan does not specify support for OpenAPI `$ref` resolution. The `sample_openapi_v3_1.json` contract fixture uses `$ref` for its `requestBody` and `responses`, but the minimal walker (Task 3.2) and Pydantic builder (Task 4.2) are not tasked with resolving these pointers. Implementation will fail on the project's own sample fixtures.",
+      "disposition": "fix",
+      "resolution": "Add a requirement to the http-tools spec for local `$ref` resolution (e.g. `#/components/schemas/Name`) and update tasks 3.2 and 4.2 to handle reference resolution.",
+      "file_path": "openspec/changes/http-tools-layer/tasks.md",
+      "line_start": 65,
+      "line_end": 88
+    },
+    {
+      "id": 3,
+      "type": "feasibility",
+      "criticality": "medium",
+      "description": "Inconsistent exception handling in `discover_tools`. Requirement 'Auth Header Resolution' specifies that missing environment variables raise `KeyError`, but Design D4 only specifies that `discover_tools` catches `httpx.HTTPError` and `ValueError`. A single misconfigured persona (missing env var) would thus crash the entire discovery process instead of being skipped with a warning.",
+      "disposition": "fix",
+      "resolution": "Update Design D4 and the `discover_tools` implementation task (6.2) to also catch `KeyError` during source-level processing.",
+      "file_path": "openspec/changes/http-tools-layer/design.md",
+      "line_start": 91,
+      "line_end": 105
+    },
+    {
+      "id": 4,
+      "type": "architecture",
+      "criticality": "low",
+      "description": "Contradiction in `HttpToolRegistry` definition. `proposal.md` \u00a71 describes it as a 'TypedDict wrapper over `dict[str, StructuredTool]`', while `design.md` D7 and `specs/http-tools/spec.md` describe it as a concrete class with methods (`list_all`, `by_source`, etc.). TypedDicts cannot have methods.",
+      "disposition": "fix",
+      "resolution": "Clarify in `proposal.md` that `HttpToolRegistry` is a concrete class as specified in the design and spec.",
+      "file_path": "openspec/changes/http-tools-layer/proposal.md",
+      "line_start": 44,
+      "line_end": 63
+    },
+    {
+      "id": 5,
+      "type": "clarity",
+      "criticality": "medium",
+      "description": "Unspecified `StructuredTool` name in builder. The 'Tool Builder' requirement does not explicitly state that the generated tool's internal `name` must be set to the registry key `\"{source_name}:{operation_id}\"`. If the builder only uses the `operation_id`, the `DefaultToolPolicy` filtering (which expects the full key) and LLM dispatch will be ambiguous or broken.",
+      "disposition": "fix",
+      "resolution": "Explicitly state in the 'Tool Builder' requirement that the generated `StructuredTool` MUST have its `name` attribute set to `\"{source_name}:{operation_id}\"`.",
+      "file_path": "openspec/changes/http-tools-layer/specs/http-tools/spec.md",
+      "line_start": 113,
+      "line_end": 147
+    },
+    {
+      "id": 6,
+      "type": "clarity",
+      "criticality": "low",
+      "description": "Ambiguous fallback trigger for discovery. `specs/http-tools/spec.md` states fallback to `/help` occurs if `/openapi.json` returns 404. It is unclear if other non-success codes (e.g. 401, 500) should also trigger fallback or if they should skip the source immediately.",
+      "disposition": "fix",
+      "resolution": "Clarify in the 'HTTP Tool Discovery' requirement that ONLY a 404 response on the primary endpoint triggers the fallback to `/help`.",
+      "file_path": "openspec/changes/http-tools-layer/specs/http-tools/spec.md",
+      "line_start": 12,
+      "line_end": 20
+    },
+    {
+      "id": 7,
+      "type": "clarity",
+      "criticality": "low",
+      "description": "Collision risk in synthesized Operation IDs. The 'slash -> underscore, non-alphanumeric stripped' fallback slug for missing `operationId` (Design D5) can lead to collisions (e.g., `/items-history` and `/items/history` both becoming `get_items_history`).",
+      "disposition": "fix",
+      "resolution": "Update the fallback slug requirement to use a more robust slugification that replaces all non-alphanumeric characters with underscores and avoids double underscores.",
+      "file_path": "openspec/changes/http-tools-layer/specs/http-tools/spec.md",
+      "line_start": 89,
+      "line_end": 111
+    }
+  ]
+}

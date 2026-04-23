@@ -70,22 +70,159 @@ JSON-Schema usable by the LLM; field types map via a small
 
 ### D2: Single shared `httpx.AsyncClient` per process
 
-**Choice**: One `httpx.AsyncClient` instance created at CLI startup,
-shared across all discovered tools and closed via an
-`atexit`/lifecycle hook.
+**Choice**: One `httpx.AsyncClient` instance owned by the CLI's async
+entry point as an `async with` context manager. All discovered tools
+capture it by closure reference; lifecycle is scoped to the session.
 
-**Rejected**: Per-tool or per-source clients.
+**Rejected**:
+- Per-tool or per-source clients (socket leaks, pool fragmentation).
+- `weakref.finalize(client, asyncio.run_until_complete(client.aclose()))`
+  — `aclose()` is a coroutine and weakref callbacks run synchronously
+  outside the event loop, typically after the loop is closed. This
+  pattern cannot work.
 
 **Reason**: HTTPX reuses the underlying connection pool across hosts,
-so a single client handles multi-source traffic efficiently. Per-tool
-clients would leak sockets and complicate lifecycle. Per-source
-clients add bookkeeping with no benefit at our scale (<10 sources per
-persona).
+so a single client handles multi-source traffic efficiently. An
+`async with` scope in `cli._run_repl` (and `cli._list_tools`) yields
+deterministic shutdown without finalizer gymnastics.
 
-**Consequence**: Tool coroutines capture the shared client as a
-closure. Tests inject a test client. On CLI shutdown, the client is
-closed (added via `weakref.finalize` to avoid requiring persona
-cleanup hooks).
+**Client configuration** (see D9 for security posture):
+
+```python
+async with httpx.AsyncClient(
+    timeout=httpx.Timeout(10.0, connect=5.0),
+    follow_redirects=False,
+    verify=True,
+    limits=httpx.Limits(max_connections=20, max_keepalive_connections=5),
+) as client:
+    registry = await discover_tools(pc.tool_sources, client=client)
+    # ... create_agent, enter REPL ...
+```
+
+**Consequence**: Tool coroutines close over the shared client. Tests
+inject a test client via the `client=` parameter. No finalizer is
+registered; shutdown is structural (the `async with` block).
+
+### D9: HTTP client security posture
+
+**Choice**: The shared `httpx.AsyncClient` defaults to conservative
+posture for all discovery + tool invocations:
+
+- **Timeout**: `httpx.Timeout(10.0, connect=5.0)` — total 10s, connect
+  5s. Overridable per persona in a future phase; P3 uses these defaults.
+- **`follow_redirects=False`** — a 3xx from a configured service is
+  treated as a failed request. Prevents silent credential forwarding
+  across origins if a service redirects to an attacker-controlled host.
+- **`verify=True`** — TLS verification is mandatory. No per-persona
+  opt-out in P3.
+- **Response size cap**: 10 MB per response (both discovery documents
+  and per-tool responses). Enforced by reading `response.content` with
+  an explicit length check; responses exceeding the cap raise
+  `ValueError("response exceeds 10MB")`. Discovery treats this as a
+  source-skip; per-tool invocation propagates the error.
+- **Credential redaction in logs**: Any warning log emitted by
+  `discovery.py` or `builder.py` MUST log the source name and status
+  code only — never the request URL query string, request body,
+  response body, or `Authorization` / custom auth-header values.
+
+**Rejected**: Permissive defaults (no timeout, `follow_redirects=True`,
+no size cap). Matches most HTTP library defaults but leaves the
+assistant vulnerable to slowloris, SSRF-via-redirect, and memory
+exhaustion from a misbehaving or hostile service.
+
+**Reason**: The assistant makes outbound HTTP calls with credentials on
+behalf of the user. A permissive client is a direct attack surface —
+particularly given personas can be configured by less-technical users.
+
+**Consequence**: Integration tests against pytest-httpserver exercise
+each posture (timeout firing, redirect refused, oversized response
+rejected). The spec declares a dedicated "HTTP Client Security Posture"
+requirement; tests 6.1 and 4.1 cover the scenarios.
+
+### D10: OpenAPI `$ref` resolution
+
+**Choice**: `openapi.py` resolves intra-document JSON Pointer `$ref`
+values (starting with `#/`) against the OpenAPI document's
+`components.schemas` before yielding a `ParsedOperation`. External
+`$ref` values (HTTP URLs or file paths) are **not** resolved — the
+operation is skipped with a warning.
+
+**Rejected**:
+- Passing `$ref` strings through untouched. Pydantic
+  `create_model` has no concept of `$ref`; the resulting schema would
+  reject any LLM-provided input.
+- Full external `$ref` resolution. Would require recursive HTTP
+  fetches at discovery time, expanding the attack surface and
+  complicating offline tests.
+
+**Reason**: Every non-trivial OpenAPI document uses `$ref` for
+`requestBody` and response schemas —
+`openspec/changes/http-tools-layer/contracts/fixtures/sample_openapi_v3_1.json`
+itself references `#/components/schemas/ItemCreate`. The parser
+cannot be correct without intra-document resolution. External refs are
+rare in the `/openapi.json` endpoint output and add risk without
+P3-level demand.
+
+**Consequence**: `openapi.py` exposes a small `_resolve_ref(spec,
+ref)` helper that walks the JSON Pointer. Cyclic refs are detected
+via a visited-set and raise `ValueError`, surfaced to `discover_tools`
+as a source-level skip. Spec scenarios under
+"OpenAPI Operation Parsing" and "HTTP Tool Discovery" cover intra- and
+external-ref cases.
+
+### D11: Persona `auth_header` schema evolution
+
+**Choice**: Extend `src/assistant/core/persona.py` to accept the
+structured `auth_header` dict (`{type, env, header?}`) described in
+the spec while preserving the existing flat `auth_header_env` shortcut
+for backwards compatibility.
+
+**Before**:
+
+```yaml
+tool_sources:
+  backend:
+    base_url_env: BACKEND_URL
+    auth_header_env: BACKEND_TOKEN    # legacy: assumed bearer, env-resolved to string
+```
+
+**After** (structured form — P3 adds this):
+
+```yaml
+tool_sources:
+  backend:
+    base_url_env: BACKEND_URL
+    auth_header:
+      type: bearer
+      env: BACKEND_TOKEN
+  analyzer:
+    base_url_env: ANALYZER_URL
+    auth_header:
+      type: api-key
+      env: ANALYZER_KEY
+      header: X-API-Key
+```
+
+**Legacy form still works**: Personas that keep `auth_header_env:
+BACKEND_TOKEN` are auto-normalized to `{type: bearer, env:
+BACKEND_TOKEN}` when loaded.
+
+**Rejected**:
+- Only supporting the structured form — breaks every existing persona
+  fixture.
+- Only supporting the flat form — cannot express `api-key` or custom
+  header names, which are in the spec and confirmed at Gate 1.
+
+**Reason**: `persona.py` currently resolves `auth_header_env` to a
+flat string via `_env(...)` at load time. The spec's
+`resolve_auth_header` receives a structured `AuthHeaderConfig` dict.
+Without reconciliation, discovery would blow up on first real call.
+
+**Consequence**: Phase 0 gains a task to extend `persona.py` +
+`PersonaConfig` schema + fixtures. The existing `tool_sources` type
+in `persona.py:106-113` changes shape (flat `auth_header: str` →
+`auth_header: AuthHeaderConfig`). Tests under
+`tests/fixtures/personas/` are updated to exercise both forms.
 
 ### D3: Registry key `"{source_name}:{operation_id}"`
 
@@ -193,9 +330,12 @@ symbol) visible at the call site.
 
 ```
 src/assistant/http_tools/
-├── __init__.py          # re-exports: discover_tools, HttpToolRegistry
+├── __init__.py          # LEAF re-exports only: AuthHeaderConfig,
+│                        #   resolve_auth_header, HttpToolRegistry (D8)
 ├── discovery.py         # discover_tools(), _fetch_openapi()
+│                        #   — imported via full path, NOT from package root
 ├── openapi.py           # minimal OpenAPI 3.x walker (paths → operations)
+│                        #   + intra-document $ref resolver (D10)
 ├── builder.py           # _build_tool(), _json_schema_to_pydantic()
 ├── auth.py              # resolve_auth_header(), AuthHeaderConfig
 └── registry.py          # HttpToolRegistry, key naming helpers
@@ -262,7 +402,10 @@ already present.
 | Risk | Mitigation |
 |------|-----------|
 | OpenAPI variants (Swagger 2.0, OpenAPI 3.0 vs 3.1) differ subtly | Document explicit 3.x support; fail with warning on 2.0; test against both 3.0 and 3.1 fixtures |
-| Async `httpx.AsyncClient` lifecycle leaks if CLI crashes | Register `weakref.finalize` and `asyncio.get_event_loop().run_until_complete(client.aclose())` in the Click context teardown |
+| Async `httpx.AsyncClient` lifecycle leaks if CLI crashes | Scope the client to an `async with` block inside `_run_repl` and `_list_tools`; exceptions unwind through the context manager and release sockets deterministically |
+| Service returns 3xx redirect to an attacker-controlled host, leaking credentials | `follow_redirects=False` (D9). A redirect is treated as a failed request at discovery time and propagated as an HTTPStatusError at invocation time |
+| Service returns a multi-gigabyte OpenAPI document (intentionally or by mistake) | 10 MB response-size cap (D9). Source is skipped with a warning; other sources and the CLI remain operational |
+| Service returns an OpenAPI document with a cyclic `$ref` chain | `_resolve_ref` detects via visited-set and raises `ValueError`; discovery skips the source with a warning (D10) |
 | Runtime `create_model` produces pickle-unfriendly models | We never pickle these; LangChain uses `model_json_schema()` which works on dynamic models. Documented in D1. |
 | Service returns huge OpenAPI (1000+ operations) | Registry and filtering handle it; no perf target set for P3. If this becomes an issue, add a `max_operations_per_source` config field in a future phase. |
 | Path parameter substitution breaks on regex-unsafe names | Use simple `{name}` format-string replacement; OpenAPI spec forbids nested braces, so this is safe |

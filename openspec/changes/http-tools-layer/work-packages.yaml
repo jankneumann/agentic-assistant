@@ -3,18 +3,67 @@ change_id: http-tools-layer
 
 defaults:
   auto_loop:
-    # Total LOC across packages will be ~1000 (new package + new tests +
-    # modifications across policy/resolver/cli + integration tests).
-    # Raise the ceiling so autopilot doesn't require --force on an
-    # effort-M roadmap phase.
-    max_loc: 1500
-    max_packages: 4
+    # Round-1 plan-review added security posture, $ref resolution,
+    # content-type handling, and persona schema evolution — expanding
+    # the total to ~1200 LOC across six packages (five impl + one
+    # integration). Integration package is exempted from
+    # max_packages (see complexity_gate._count_impl_packages).
+    max_loc: 1800
+    max_packages: 5
     max_external_deps: 2
 
 packages:
   # ──────────────────────────────────────────────────────────
+  # wp-prep — persona schema evolution + dev deps
+  # Runs first. All later packages depend on this.
+  # ──────────────────────────────────────────────────────────
+  - id: wp-prep
+    name: "Persona auth_header schema + dev deps (Phase 0)"
+    description: >
+      Extend persona.py to accept the structured auth_header dict
+      (D11), install pytest-httpserver as a dev dependency, add the
+      normalization test, and update fixture personas to exercise
+      both the legacy flat form and the structured form. Must land
+      before any test phase that depends on pytest-httpserver or the
+      new auth_header shape.
+    tasks:
+      - "0.1"
+      - "0.2"
+      - "0.3"
+      - "0.4"
+    priority: 0
+    dependencies: []
+    scope:
+      write_allow:
+        - "pyproject.toml"
+        - "uv.lock"
+        - "src/assistant/core/persona.py"
+        - "tests/core/test_persona_auth_header.py"
+        - "tests/fixtures/personas/**"
+      read_allow:
+        - "**"
+    locks:
+      files:
+        - "src/assistant/core/persona.py"
+        - "pyproject.toml"
+        - "uv.lock"
+      keys:
+        - "deps:pyproject"
+        - "core:persona:tool_sources"
+      ttl_minutes: 90
+      reason: >
+        Changes PersonaConfig.tool_sources shape and adds a dev
+        dependency. Every downstream package reads the new shape and
+        imports pytest-httpserver.
+    verification: tier_b
+    metadata:
+      loc_estimate: 90
+      external_deps:
+        - pytest-httpserver
+
+  # ──────────────────────────────────────────────────────────
   # wp-http-tools-leaves — independent leaf modules (no internal deps)
-  # Runs first; wp-http-tools-composite and wp-policy depend on it.
+  # Runs after wp-prep; wp-http-tools-composite and wp-policy depend on it.
   # ──────────────────────────────────────────────────────────
   - id: wp-http-tools-leaves
     name: "http_tools leaf modules: auth, openapi, registry"
@@ -24,23 +73,30 @@ packages:
       tests. Also seeds the http_tools package __init__.py (exporting
       only the leaf symbols per D8 — composite modules are NOT imported
       here) and the tests/http_tools/ package (including conftest.py
-      for the pytest-httpserver fixture). Owns all contract fixtures
-      including the Swagger 2.0 skip fixture.
+      for the pytest-httpserver fixture). Verifies contract fixtures
+      authored at plan time and adds two new fixtures (cyclic + external
+      $ref) from tasks 1.6 and 1.7.
     tasks:
       - "1.1"
       - "1.2"
       - "1.3"
       - "1.4"
       - "1.5"
+      - "1.6"
+      - "1.7"
       - "2.1"
       - "2.2"
       - "2.3"
       - "3.1"
       - "3.2"
+      - "3.3"
+      - "3.4"
+      - "3.5"
       - "5.1"
       - "5.2"
     priority: 1
-    dependencies: []
+    dependencies:
+      - wp-prep
     scope:
       write_allow:
         - "src/assistant/http_tools/__init__.py"
@@ -52,6 +108,8 @@ packages:
         - "tests/http_tools/test_auth.py"
         - "tests/http_tools/test_openapi.py"
         - "tests/http_tools/test_registry.py"
+        - "openspec/changes/http-tools-layer/contracts/fixtures/cyclic_ref_openapi.json"
+        - "openspec/changes/http-tools-layer/contracts/fixtures/external_ref_openapi.json"
       read_allow:
         - "**"
     locks:
@@ -62,11 +120,12 @@ packages:
       ttl_minutes: 120
       reason: >
         Owns the http_tools package __init__.py for the leaf-module
-        exports; downstream packages add their own exports by editing
-        this file after this package merges.
+        exports; downstream packages are denied write access to it
+        (per D8) so eager re-export of composite symbols cannot break
+        the DAG import invariant.
     verification: tier_b
     metadata:
-      loc_estimate: 320
+      loc_estimate: 380
       external_deps: []
 
   # ──────────────────────────────────────────────────────────
@@ -80,16 +139,25 @@ packages:
       builder.py (runtime Pydantic generation + StructuredTool
       construction) and discovery.py (orchestrates fetch + parse +
       build per source). Includes the end-to-end integration test
-      against pytest-httpserver and the Swagger 2.0 skip-with-warning
-      test. **Does NOT modify `__init__.py`** (per D8): downstream
-      consumers import discovery symbols via
+      against pytest-httpserver, the Swagger 2.0 skip-with-warning
+      test, the HTTP client security posture tests (redirect refused,
+      oversized response, timeout, credential-redacted logs), the
+      missing-auth-env skip test, and the builder content-type /
+      tool-name / path-encoding tests. **Does NOT modify `__init__.py`**
+      (per D8): downstream consumers import discovery symbols via
       `from assistant.http_tools.discovery import discover_tools`.
     tasks:
       - "4.1"
       - "4.2"
+      - "4.3"
+      - "4.4"
+      - "4.5"
       - "6.1"
       - "6.2"
       - "6.3"
+      - "6.4"
+      - "6.5"
+      - "6.6"
     priority: 2
     dependencies:
       - wp-http-tools-leaves
@@ -119,9 +187,8 @@ packages:
         merge points.
     verification: tier_b
     metadata:
-      loc_estimate: 330
-      external_deps:
-        - pytest-httpserver
+      loc_estimate: 430
+      external_deps: []  # pytest-httpserver installed in wp-prep
 
   # ──────────────────────────────────────────────────────────
   # wp-policy — extend DefaultToolPolicy + CapabilityResolver
@@ -175,10 +242,14 @@ packages:
     name: "CLI discovery wiring + --list-tools subcommand"
     description: >
       Remove the pre-P3 "HTTP tool discovery deferred to P2" warning,
-      call discover_tools at CLI startup, pass the resulting registry
-      through CapabilityResolver, and add a new --list-tools flag that
-      runs discovery and prints a per-source tool catalog. Includes CLI
-      and end-to-end tests against pytest-httpserver.
+      call discover_tools at CLI startup within an `async with
+      httpx.AsyncClient(...)` block (D2, D9), pass the resulting
+      registry through CapabilityResolver, and add a new --list-tools
+      flag that runs discovery and prints a per-source tool catalog.
+      All CLI-discovery tests live in `tests/test_cli.py` — no
+      `tests/http_tools/test_cli_list_tools.py` file is created (the
+      prior mention in proposal.md §6 was an early sketch; consolidated
+      here).
     tasks:
       - "8.1"
       - "8.2"
@@ -192,7 +263,6 @@ packages:
       write_allow:
         - "src/assistant/cli.py"
         - "tests/test_cli.py"
-        - "tests/http_tools/test_cli_list_tools.py"
       read_allow:
         - "**"
     locks:
@@ -217,11 +287,13 @@ packages:
   # ──────────────────────────────────────────────────────────
   - id: wp-integration
     task_type: integration
-    name: "Integration: deps, docs, validation, final suite"
+    name: "Integration: docs, final validation, smoke test"
     description: >
-      Add pytest-httpserver to dev dependencies, update CLAUDE.md
-      "What's Not Yet Wired", update the roadmap status for P3, and
-      run the full test suite + ruff + openspec validate --strict.
+      Runtime deps were landed in wp-prep. This package confirms clean
+      final state, updates CLAUDE.md "What's Not Yet Wired", updates
+      the roadmap status for P3, and runs the full test suite + ruff
+      + openspec validate --strict. Optionally adds
+      openapi-spec-validator if task 1.5 needs it.
     tasks:
       - "9.1"
       - "9.2"
@@ -231,7 +303,7 @@ packages:
       - "11.2"
       - "11.3"
       - "11.4"
-    priority: 4
+    priority: 5
     dependencies:
       - wp-cli
     scope:
@@ -250,7 +322,7 @@ packages:
         - "deps:pyproject"
       ttl_minutes: 60
       reason: >
-        Adds pytest-httpserver to dev deps; regenerates uv.lock.
+        May add openapi-spec-validator dev dep; regenerates uv.lock.
     verification: tier_a
     metadata:
       loc_estimate: 30
