@@ -44,3 +44,36 @@
 ### Context
 
 Plan authored via `/autopilot http-tools-layer` — the PLAN phase of the autopilot state machine. The coordinator is available at `coord.rotkohl.ai` over HTTP transport; tier selection yielded coordinated because all capabilities are present and three vendor CLIs are available for downstream review convergence. The dependency `capability-protocols` was archived 2026-04-20 and provides the `ToolPolicy` protocol that this change's registry plugs into.
+
+---
+
+## Phase: Plan Iteration 1 (2026-04-23)
+
+**Agent**: claude-code (Opus 4.7, 1M context) | **Session**: autopilot-run-1
+
+### Decisions
+
+1. **D8 added to design — minimal `http_tools/__init__.py`.** `__init__.py` re-exports only the leaf symbols (`AuthHeaderConfig`, `resolve_auth_header`, `HttpToolRegistry`). Consumers import composite symbols via their specific module path. Fixes a real problem the DAG had: under coordinated tier, `wp-http-tools-leaves` merges before `wp-http-tools-composite`, and an eager `from .discovery import discover_tools` in `__init__.py` would break package imports at every intermediate state.
+2. Work-packages `deny` scope entry added to `wp-http-tools-composite` explicitly forbidding writes to `__init__.py`. The lock rationale now cites D8 so reviewers do not re-open the question.
+3. New spec scenario — Swagger 2.0 skip-with-warning. Design already said this was the intended behavior; it was unspecified. Added under the HTTP Tool Discovery requirement and matching tasks 1.4 (fixture) and 6.3 (test).
+4. The `caplog` assertion pattern is now explicitly required in task 6.1 and 6.3. Implementors have a concrete pytest mechanism to verify the warning-log scenarios.
+5. Proposal Why section reworded to state OpenAPI at `{base_url}/openapi.json` is the primary discovery endpoint, with `{base_url}/help` as a 404 fallback. Removes the ambiguity introduced by the roadmap shorthand that referred to help-based discovery as primary.
+
+### Alternatives Considered
+
+- **Move `__init__.py` ownership to `wp-integration` (final package)**: rejected because leaves would have no importable package surface, breaking its own tests.
+- **Delete `__init__.py` re-exports entirely; require fully-qualified imports everywhere**: rejected because `HttpToolRegistry` is widely consumed and benefits from the shorter path. Compromise is the minimal re-export in D8.
+- **Pre-seed `__init__.py` with `from .discovery import discover_tools  # noqa: lazy`**: rejected — lazy-import gymnastics are fragile and the naïve reader assumes the symbol is always importable.
+
+### Trade-offs
+
+- Accepted a small import-style asymmetry (leaf symbols via package root, composite symbols via module) for a strict DAG-import invariant: `python -c "import assistant.http_tools"` never fails between merge points.
+- Accepted an extra fixture + test task (roughly 50 LOC) to keep the Swagger 2.0 behavior specified rather than silently correct.
+
+### Open Questions
+
+- [ ] Should `__init__.py` eventually re-export `discover_tools` once the composite package lands? Proposed: yes, as an additive follow-up after P3 archives. Tracked in D8 consequence section.
+
+### Context
+
+Iteration 1 addressed 1 high-parallelizability finding (H1), 1 high-completeness finding (H2), and 2 medium findings (M1 clarity, M2 testability). One low finding (L1 — per-invocation debug logging) deferred to P4 `observability`. Validation green. Ready for vendor review dispatch.

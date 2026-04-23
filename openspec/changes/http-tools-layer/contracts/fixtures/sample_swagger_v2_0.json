@@ -1,0 +1,20 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "Legacy Swagger 2.0 Service",
+    "version": "0.1.0"
+  },
+  "basePath": "/api",
+  "paths": {
+    "/items": {
+      "get": {
+        "operationId": "list_items_legacy",
+        "summary": "List items (legacy swagger 2.0 shape — should be skipped).",
+        "parameters": [],
+        "responses": {
+          "200": { "description": "OK" }
+        }
+      }
+    }
+  }
+}

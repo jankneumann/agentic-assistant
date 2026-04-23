@@ -21,14 +21,17 @@ packages:
     description: >
       Implement the three independent leaf modules of the http_tools
       package (auth.py, openapi.py, registry.py) along with their unit
-      tests. Also seeds the http_tools package __init__.py and the
-      tests/http_tools/ package (including conftest.py for the
-      pytest-httpserver fixture).
+      tests. Also seeds the http_tools package __init__.py (exporting
+      only the leaf symbols per D8 — composite modules are NOT imported
+      here) and the tests/http_tools/ package (including conftest.py
+      for the pytest-httpserver fixture). Owns all contract fixtures
+      including the Swagger 2.0 skip fixture.
     tasks:
       - "1.1"
       - "1.2"
       - "1.3"
       - "1.4"
+      - "1.5"
       - "2.1"
       - "2.2"
       - "2.3"
@@ -77,12 +80,16 @@ packages:
       builder.py (runtime Pydantic generation + StructuredTool
       construction) and discovery.py (orchestrates fetch + parse +
       build per source). Includes the end-to-end integration test
-      against pytest-httpserver.
+      against pytest-httpserver and the Swagger 2.0 skip-with-warning
+      test. **Does NOT modify `__init__.py`** (per D8): downstream
+      consumers import discovery symbols via
+      `from assistant.http_tools.discovery import discover_tools`.
     tasks:
       - "4.1"
       - "4.2"
       - "6.1"
       - "6.2"
+      - "6.3"
     priority: 2
     dependencies:
       - wp-http-tools-leaves
@@ -94,6 +101,8 @@ packages:
         - "tests/http_tools/test_discovery.py"
       read_allow:
         - "**"
+      deny:
+        - "src/assistant/http_tools/__init__.py"
     locks:
       files:
         - "src/assistant/http_tools/builder.py"
@@ -104,7 +113,10 @@ packages:
       reason: >
         Composite modules depend on the leaf APIs finalized in
         wp-http-tools-leaves. Locked to prevent mid-flight API drift
-        between the leaves and their consumers.
+        between the leaves and their consumers. __init__.py ownership
+        is explicitly denied here per D8 — eager re-export of
+        composite symbols would break package imports between DAG
+        merge points.
     verification: tier_b
     metadata:
       loc_estimate: 330
