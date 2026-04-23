@@ -139,9 +139,12 @@ The returned tool's async `coroutine` SHALL invoke
 substituting path parameters from the Pydantic model into `{placeholder}`
 path segments, and return the parsed JSON response body.
 
-Path parameter values SHALL be URL-encoded via `urllib.parse.quote`
-before substitution into the path template, so values containing `/`,
-`#`, `?`, or whitespace do not alter the request path structure.
+Path parameter values SHALL be URL-encoded via
+`urllib.parse.quote(value, safe="")` before substitution into the path
+template. The explicit `safe=""` argument is required — the library
+default `safe="/"` leaves `/` un-encoded, which would allow a
+path-parameter value like `"foo/bar"` to alter the request path
+structure.
 
 If the 2xx response's `Content-Type` header is not `application/json`
 (or a JSON-compatible variant such as `application/problem+json`), the
@@ -201,6 +204,48 @@ produce `Any` typed fields.
 - **AND** the tool is invoked with `{"id": "foo/bar"}`
 - **THEN** the request URL MUST be `{base_url}/items/foo%2Fbar`
 
+#### Scenario: Required JSON Schema field is required in Pydantic
+
+- **WHEN** an operation's `requestBody` schema declares
+  `{"required": ["name"], "properties": {"name": {"type": "string"}}}`
+- **THEN** the generated Pydantic model's `name` field MUST be
+  required (no default, model validation fails when absent)
+
+#### Scenario: Optional JSON Schema field uses declared default
+
+- **WHEN** an operation's schema declares a property
+  `{"type": "integer", "default": 1}` that is NOT in `required`
+- **THEN** the generated Pydantic model's field MUST have default
+  value `1`
+- **AND** when the schema declares no `default`, the Pydantic field
+  default MUST be `None`
+
+#### Scenario: Typeless JSON Schema field is Any
+
+- **WHEN** an operation's schema declares a property with neither
+  `type` nor `$ref`
+- **THEN** the generated Pydantic field type MUST be `Any`
+
+#### Scenario: Oversized response at invocation time raises
+
+- **WHEN** a tool's HTTP call returns a 2xx body exceeding 10 MiB
+- **THEN** the tool's coroutine MUST raise
+  `ValueError("response exceeds 10MiB")`
+
+#### Scenario: Redirect at invocation time raises
+
+- **WHEN** a tool's HTTP call returns HTTP 302 with a `Location`
+  header
+- **THEN** the tool's coroutine MUST raise `httpx.HTTPStatusError`
+- **AND** no request to the redirect target MUST be issued
+
+#### Scenario: Timeout at invocation time raises
+
+- **WHEN** a tool's HTTP call exceeds the configured 10-second
+  read timeout
+- **THEN** the tool's coroutine MUST raise `httpx.TimeoutException`
+  (or a subclass thereof)
+
 ### Requirement: HTTP Client Security Posture
 
 The system SHALL configure the shared `httpx.AsyncClient` used for
@@ -211,9 +256,14 @@ discovery and all per-tool invocations with the following posture:
 - **Redirects**: `follow_redirects=False`. Any 3xx response SHALL be
   treated as a failed request.
 - **TLS verification**: `verify=True`. No per-persona override in P3.
-- **Response size cap**: Responses exceeding 10 MiB SHALL raise
-  `ValueError("response exceeds 10MiB")`. Discovery treats this as a
-  source-skip; per-tool invocation propagates the error.
+- **Response size cap**: Responses SHALL be enforced to a 10 MiB
+  limit (10,485,760 bytes) via **streaming** — `response.aiter_bytes`
+  with a running byte counter that aborts the stream and raises
+  `ValueError("response exceeds 10MiB")` as soon as the cap is
+  exceeded. The system SHALL NOT read `response.content` on
+  unverified responses (which would buffer the full body before any
+  size check). Discovery treats cap violations as a source-skip;
+  per-tool invocation propagates the error.
 
 Warning logs emitted by `discovery.py` or `builder.py` SHALL NOT
 include the request URL's query string, the request body, the
@@ -234,8 +284,17 @@ brief reason phrase.
 #### Scenario: Oversized discovery response skipped
 
 - **WHEN** a source returns an OpenAPI document larger than 10 MiB
+  (10 × 1024 × 1024 = 10,485,760 bytes)
 - **THEN** the source MUST be omitted from the registry
 - **AND** a warning MUST be logged naming the source
+
+#### Scenario: Discovery timeout skipped with warning
+
+- **WHEN** a source's `/openapi.json` endpoint does not respond
+  within the configured 10-second read timeout
+- **THEN** the source MUST be omitted from the registry
+- **AND** a warning MUST be logged naming the source and indicating
+  a timeout
 
 #### Scenario: Auth header value absent from logs
 

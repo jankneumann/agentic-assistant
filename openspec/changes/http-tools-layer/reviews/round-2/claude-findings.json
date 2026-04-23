@@ -1,0 +1,70 @@
+{
+  "findings": [
+    {
+      "id": 1,
+      "type": "clarity",
+      "criticality": "high",
+      "description": "Response-size cap units are inconsistent between design.md and spec.md. design.md D9 (line 118) states '10 MB per response' and its sample code uses ValueError(\"response exceeds 10MB\") (line 121); the risks-table at line 407 also says '10 MB'. spec.md (lines 214-216, 236) and session-log.md (lines 89, 105, 115) consistently say '10 MiB' and ValueError(\"response exceeds 10MiB\"). 10 MB = 10,000,000 bytes; 10 MiB = 10,485,760 bytes. A test asserting the exact error message or behavior at the 10,000,000-10,485,760 byte boundary will disagree across the two specs. Task 6.4's '11MB' trips either cap, so it hides the inconsistency rather than exposing it.",
+      "disposition": "fix",
+      "resolution": "Pick one unit. Prefer MiB (binary, unambiguous, already used in spec). Update design.md line 118 ('10 MB per response' -> '10 MiB per response'), line 121 (error string '10MB' -> '10MiB'), and line 407 (risks table '10 MB response-size cap' -> '10 MiB response-size cap') to match spec.md.",
+      "file_path": "openspec/changes/http-tools-layer/design.md",
+      "line_start": 118,
+      "line_end": 121
+    },
+    {
+      "id": 2,
+      "type": "spec_gap",
+      "criticality": "medium",
+      "description": "Task 4.5 (tasks.md lines 190-198) claims a spec scenario 'Tool Builder (Required JSON Schema fields produce required Pydantic fields)' exists, but no such #### Scenario: entry is in specs/http-tools/spec.md. The required/optional/default handling is only in the Requirement body prose (lines 152-155). Every other new task (3.3, 3.4, 4.3, 4.4, 6.4, 6.5, 6.6) maps to a named Scenario; 4.5 breaks that invariant and trips the plan's self-imposed rule 'Every #### Scenario: in the spec deltas MUST be covered by at least one test' inverted: a test task without a scenario.",
+      "disposition": "fix",
+      "resolution": "Add three scenarios under the 'Tool Builder Generates Typed StructuredTool' Requirement to match task 4.5's three test functions: 'Required fields produce required Pydantic fields', 'Optional field with declared default uses the default', and 'Typeless/refless field maps to Any'. Alternatively, relax task 4.5's Spec scenarios line to cite the Requirement's normative prose (lines 152-155) rather than a phantom Scenario.",
+      "file_path": "openspec/changes/http-tools-layer/specs/http-tools/spec.md",
+      "line_start": 152,
+      "line_end": 155
+    },
+    {
+      "id": 3,
+      "type": "spec_gap",
+      "criticality": "medium",
+      "description": "Task 6.4 tests three security scenarios (redirect, oversized, timeout) but spec.md's 'HTTP Client Security Posture' Requirement only names two Scenarios (Discovery redirect refused, Oversized discovery response skipped). There is no named Scenario for the timeout case, even though the Requirement body at line 209 mandates 'httpx.Timeout(10.0, connect=5.0)' and task 6.4 tests '15s delay'. Additionally, the Requirement body says per-tool invocation propagates the size-cap / redirect / timeout errors, but no Scenario or task verifies invocation-time behavior (all three security scenarios are discovery-only).",
+      "disposition": "fix",
+      "resolution": "Add a 'Discovery timeout skipped' Scenario under 'HTTP Client Security Posture' (analogous to the oversized/redirect scenarios). Consider adding one Scenario and one test (task in wp-http-tools-composite) for per-tool invocation-time oversized response propagation, since the Requirement body explicitly separates discovery-skip from invocation-propagate semantics and neither tasks nor scenarios cover the latter.",
+      "file_path": "openspec/changes/http-tools-layer/specs/http-tools/spec.md",
+      "line_start": 204,
+      "line_end": 246
+    },
+    {
+      "id": 4,
+      "type": "clarity",
+      "criticality": "low",
+      "description": "design.md D9 Consequence (line 140) says 'tests 6.1 and 4.1 cover the scenarios' for security posture, but the iteration-2 edits moved security-posture tests to task 6.4 (added new), not 6.1/4.1. Task 6.1 is the general discovery integration test; 4.1 is builder unit tests and does not cover security. Reference is stale.",
+      "disposition": "fix",
+      "resolution": "Change design.md line 140 to reference task 6.4 (and 6.6 for credential redaction) as the security-posture coverage tasks.",
+      "file_path": "openspec/changes/http-tools-layer/design.md",
+      "line_start": 137,
+      "line_end": 141
+    },
+    {
+      "id": 5,
+      "type": "clarity",
+      "criticality": "low",
+      "description": "work-packages.yaml priority numbering has a gap: wp-prep=0, wp-http-tools-leaves=1, wp-http-tools-composite=2, wp-policy=2, wp-cli=3, wp-integration=5. Priority 4 is unused. Not a correctness bug (priorities are comparative, not contiguous), but it is an oddity that a scheduler-aware reviewer will flag; also, session-log.md Iteration 2 decision 10 lists the total max_packages as 5 (5 impl + 1 integration), so the numbering is an artifact of an earlier draft that placed wp-integration at 5 before the integration exemption clarified the count.",
+      "disposition": "accept",
+      "resolution": "Either renumber wp-integration from 5 to 4 for contiguity, or leave as-is. No functional impact.",
+      "file_path": "openspec/changes/http-tools-layer/work-packages.yaml",
+      "line_start": 306,
+      "line_end": 306
+    },
+    {
+      "id": 6,
+      "type": "testability",
+      "criticality": "low",
+      "description": "Task 0.4 updates 'fixture personas under tests/fixtures/personas/' to carry both legacy and structured auth-header forms, but none of the fixture personas currently declare tool_sources (only the manual smoke-test in task 11.4 references '<fixture-persona> ... OpenAPI service'). Without task 0.4 explicitly listing which fixture persona gets which shape, downstream package authors will have to guess; also, the privacy-guard conftest must still pass. Risk is low (task 0.4 is clear about 'only tests/fixtures/personas/') but the shape of the fixture edit is underspecified.",
+      "disposition": "accept",
+      "resolution": "Optional: clarify task 0.4 to name the specific fixture persona files and which shape each should declare. This reduces ambiguity for the implementor but is not blocking.",
+      "file_path": "openspec/changes/http-tools-layer/tasks.md",
+      "line_start": 30,
+      "line_end": 34
+    }
+  ]
+}

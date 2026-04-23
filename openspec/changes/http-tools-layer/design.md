@@ -108,18 +108,34 @@ registered; shutdown is structural (the `async with` block).
 **Choice**: The shared `httpx.AsyncClient` defaults to conservative
 posture for all discovery + tool invocations:
 
-- **Timeout**: `httpx.Timeout(10.0, connect=5.0)` — total 10s, connect
-  5s. Overridable per persona in a future phase; P3 uses these defaults.
+- **Timeouts**: `httpx.Timeout(10.0, connect=5.0)` sets per-operation
+  limits — **read=10s, write=10s, pool=10s, connect=5s**. HTTPX does
+  not natively enforce a wall-clock *total* budget; each operation can
+  take up to its named limit independently. A slow trickling response
+  could therefore exceed the sum if the server stalls between reads.
+  The 10 MiB response cap (below) plus the per-read timeout keep
+  worst-case wall-clock bounded in practice. A future phase may wrap
+  `discover_tools()` in `asyncio.wait_for(..., 15.0)` for a hard total
+  budget; P3 does not.
 - **`follow_redirects=False`** — a 3xx from a configured service is
   treated as a failed request. Prevents silent credential forwarding
   across origins if a service redirects to an attacker-controlled host.
 - **`verify=True`** — TLS verification is mandatory. No per-persona
   opt-out in P3.
-- **Response size cap**: 10 MB per response (both discovery documents
-  and per-tool responses). Enforced by reading `response.content` with
-  an explicit length check; responses exceeding the cap raise
-  `ValueError("response exceeds 10MB")`. Discovery treats this as a
+- **Response size cap**: 10 MiB (10 × 2²⁰ = 10,485,760 bytes) per
+  response, applied to both discovery documents and per-tool
+  responses. Enforced by **streaming** the response body via
+  `response.aiter_bytes(chunk_size=65_536)` with a running byte
+  counter; as soon as the counter exceeds 10 MiB the stream is
+  aborted and `ValueError("response exceeds 10MiB")` is raised.
+  `response.content` is NOT called on unverified responses (it would
+  buffer the entire body into memory before any size check could
+  fire, defeating the defense). Discovery treats this as a
   source-skip; per-tool invocation propagates the error.
+
+  Additionally, if `Content-Length` is present and exceeds 10 MiB, the
+  request MAY be rejected pre-read; if it is absent or underreported,
+  the streaming check is authoritative.
 - **Credential redaction in logs**: Any warning log emitted by
   `discovery.py` or `builder.py` MUST log the source name and status
   code only — never the request URL query string, request body,
@@ -136,8 +152,10 @@ particularly given personas can be configured by less-technical users.
 
 **Consequence**: Integration tests against pytest-httpserver exercise
 each posture (timeout firing, redirect refused, oversized response
-rejected). The spec declares a dedicated "HTTP Client Security Posture"
-requirement; tests 6.1 and 4.1 cover the scenarios.
+rejected, credentials absent from logs). The spec declares a
+dedicated "HTTP Client Security Posture" requirement; tasks 6.4 / 6.5
+/ 6.6 cover the discovery-side scenarios and task 4.6 covers the
+invocation-side propagation scenarios.
 
 ### D10: OpenAPI `$ref` resolution
 
@@ -366,12 +384,14 @@ Tests:
 tests/http_tools/
 ├── __init__.py
 ├── conftest.py              # pytest-httpserver fixtures + sample OpenAPI
-├── test_discovery.py
-├── test_openapi.py
-├── test_builder.py
+├── test_discovery.py        # incl. security posture + missing-env
+├── test_openapi.py          # incl. $ref resolution (intra/external/cyclic)
+├── test_builder.py          # incl. content-type, name, URL-encode, sec
 ├── test_auth.py
-├── test_registry.py
-└── test_cli_list_tools.py   # end-to-end: CliRunner + httpserver
+└── test_registry.py
+
+tests/test_cli.py             # CLI discovery + --list-tools end-to-end
+                              # (CliRunner + pytest-httpserver)
 ```
 
 ## Dependencies
@@ -389,10 +409,10 @@ already present.
 
 - **Unit**: `openapi.py`, `auth.py`, `registry.py`, `builder.py`
   tested against in-memory fixtures (no network).
-- **Integration**: `test_discovery.py` and `test_cli_list_tools.py`
-  use pytest-httpserver — a real HTTP server on a random port with
-  `expect_request().respond_with_json(...)`. This exercises the full
-  httpx call path including DNS/socket resolution.
+- **Integration**: `tests/http_tools/test_discovery.py` and
+  `tests/test_cli.py` use pytest-httpserver — a real HTTP server on a
+  random port with `expect_request().respond_with_json(...)`. This
+  exercises the full httpx call path including DNS/socket resolution.
 - **Spec coverage**: Every `#### Scenario:` in the spec deltas MUST be
   covered by at least one test. Task list cross-references scenarios
   to test tasks.
@@ -404,7 +424,7 @@ already present.
 | OpenAPI variants (Swagger 2.0, OpenAPI 3.0 vs 3.1) differ subtly | Document explicit 3.x support; fail with warning on 2.0; test against both 3.0 and 3.1 fixtures |
 | Async `httpx.AsyncClient` lifecycle leaks if CLI crashes | Scope the client to an `async with` block inside `_run_repl` and `_list_tools`; exceptions unwind through the context manager and release sockets deterministically |
 | Service returns 3xx redirect to an attacker-controlled host, leaking credentials | `follow_redirects=False` (D9). A redirect is treated as a failed request at discovery time and propagated as an HTTPStatusError at invocation time |
-| Service returns a multi-gigabyte OpenAPI document (intentionally or by mistake) | 10 MB response-size cap (D9). Source is skipped with a warning; other sources and the CLI remain operational |
+| Service returns a multi-gigabyte OpenAPI document (intentionally or by mistake) | 10 MiB response-size cap (D9). Source is skipped with a warning; other sources and the CLI remain operational |
 | Service returns an OpenAPI document with a cyclic `$ref` chain | `_resolve_ref` detects via visited-set and raises `ValueError`; discovery skips the source with a warning (D10) |
 | Runtime `create_model` produces pickle-unfriendly models | We never pickle these; LangChain uses `model_json_schema()` which works on dynamic models. Documented in D1. |
 | Service returns huge OpenAPI (1000+ operations) | Registry and filtering handle it; no perf target set for P3. If this becomes an issue, add a `max_operations_per_source` config field in a future phase. |

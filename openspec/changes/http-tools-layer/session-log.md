@@ -119,3 +119,45 @@ Iteration 1 addressed 1 high-parallelizability finding (H1), 1 high-completeness
 ### Context
 
 Iteration 2 addressed the Round 1 multi-vendor plan review. Three vendors dispatched in parallel (claude, codex gpt-5.5, gemini) produced 32 raw findings. The ConsensusSynthesizer's string-similarity clustering did not match findings across vendors (different prose, same underlying issue), so clustering was done manually against the source findings JSONs. Ten substantive issues addressed; four accepted as non-blocking with rationale documented in `reviews/round-1/synthesis.md`. Validation green. Ready for Round 2 review dispatch.
+
+---
+
+## Phase: Plan Iteration 3 (2026-04-24) — Round 2 Convergence Review
+
+**Agent**: claude-code (Opus 4.7, 1M context) + codex-local (gpt-5.5) + gemini-local | **Session**: autopilot-run-1
+
+### Decisions
+
+1. **Convergence achieved in round 2.** 32 round-1 findings → 19 round-2 findings (↓ 41%). No critical findings in round 2. All high findings resolved in iteration 3; remaining items are low-criticality nits accepted with documented rationale. Transition PLAN_REVIEW → IMPLEMENT.
+2. **Streaming size-cap enforcement (R2-C5).** Codex flagged that the round-1 D9 wording used `response.content` which buffers the entire body before any size check runs — defeating the defense. D9 and the spec now specify streaming via `response.aiter_bytes(chunk_size=65_536)` with a running byte counter that aborts and raises `ValueError` at the 10 MiB threshold. `response.content` is explicitly forbidden on unverified responses. This is the single most important substantive correction in iteration 3.
+3. **httpx.Timeout wall-clock clarification (R2-C6).** The phrase "total 10s, connect 5s" in round-1 D9 was misleading; HTTPX's Timeout constructor sets per-operation limits (read, write, pool, connect) independently. Updated wording to document what the call actually does and to flag that a wall-clock total budget would require wrapping discovery in `asyncio.wait_for(...)` — left as a future add-on.
+4. **Dependencies moved fully to Phase 0 (R2-C3).** Both codex and gemini flagged that `openapi-spec-validator` was used in task 1.5 but not installed until Phase 9 — same bug pattern as the pytest-httpserver fix we already applied in iteration 2. Merged both deps into task 0.1 so the entire Phase 0 `wp-prep` package owns the dev-dep installation.
+5. **`urllib.parse.quote(safe="")` explicit (R2-C10).** Gemini caught that the default `safe="/"` leaves `/` un-encoded. The path-encoding scenario (`"foo/bar"` → `"foo%2Fbar"`) would fail with the default. Spec + task 4.2 now name the argument explicitly.
+6. **Stale narrative references cleaned up (R2-C7, R2-C8, R2-C9).** Iteration-2 edits updated the load-bearing clauses (scope, tasks, spec) but left stale references in the design.md test-layout diagram, Testing Strategy paragraph, D9 Consequence sentence, and proposal.md's bullet about `__init__.py` public API. All reconciled with D8.
+7. **MB/MiB unit mismatch (R2-C1) fixed preemptively.** All three vendors independently found this in round 2. I applied the fix between round-2 dispatch and when codex/gemini returned findings, so the vendors were reviewing an already-fixed-in-my-local-edit state. 3-way confirmation validates the autopilot review pattern.
+8. **Task 4.5 scenario names (R2-C2) fixed preemptively.** Added three new scenarios to the spec — Required JSON Schema field, Optional field uses declared default, Typeless field is Any — plus renamed task 4.5's scenario references. 3-way vendor agreement.
+9. **New task 4.6 — invocation-side security propagation tests.** The round-1 "HTTP Client Security Posture" Requirement body said per-tool invocation propagates the error, but no scenarios tested that path. Added three invocation-side scenarios (oversized response raises, redirect raises, timeout raises) plus task 4.6 that tests them via stubbed httpx responses. Fills a real testability gap that slipped past round 1.
+10. **Acceptance list documented in `reviews/round-2/synthesis.md`**: (a) `ValueError` ambiguity between cyclic and external `$ref` cases — can use exception subclasses at implementation time if useful, not a plan blocker; (b) work-packages.yaml priority numbering gap — cosmetic, DAG scheduler doesn't require gapless numbering; (c) task 0.4 fixture-persona update lacks specific file names — the task directory pointer is clear enough, specific YAML edits are implementation-level detail.
+
+### Alternatives Considered
+
+- **Run a third review round to absorb the iteration-3 edits**: rejected. Convergence signal is strong (32 → 19 findings, no round-2 criticals, all highs fixed, no new architectural issues surfaced). Additional rounds would likely surface ever-diminishing low-criticality nits; marginal value less than the ~5 minutes of review time. The autopilot skill's convergence criteria (no critical, all high addressed) are met.
+- **Add an `asyncio.wait_for` wall-clock wrapper in P3** (R2-C6): deferred. Per-operation timeouts + 10 MiB cap give a bounded-in-practice guarantee; the incremental safety of a hard wall-clock budget is not worth the added complexity for P3. P9 `error-resilience` can add it.
+- **Use exception subclasses for `$ref` errors** (gemini accepted-medium): deferred to implementation phase. A single `ValueError` with a descriptive message is sufficient for the spec; if IMPL_ITERATE surfaces a need to distinguish programmatically, a small refactor is cheap.
+- **Commit the two preemptive-fix items (R2-C1, R2-C2) as a separate iteration-2.5 commit**: rejected. The work is logically one iteration-3 bundle; splitting the commit would fragment the autopilot evidence trail.
+
+### Trade-offs
+
+- Accepted ~120 additional LOC of plan-document edits (streaming detail in D9, precise timeout wording, three new scenarios, task 4.6, stale-reference cleanup) in exchange for eliminating the last substantive category of security ambiguity. The streaming vs. buffering distinction would have been a real CVE-class bug if shipped as-is under codex's catch.
+- Accepted the `$ref` exception-type nit as deferred rather than spending another round on it. Exception taxonomy is more naturally decided when writing the parser, not when specifying it.
+- Accepted stopping at round 2 rather than running round 3. Round-1 → round-2 regression ratio (findings introduced by fixes, divided by findings addressed) was 3/10 = 30%; projecting forward suggests round-3 would surface 1–2 low-criticality regressions at most — below the autopilot threshold for an additional round.
+
+### Open Questions
+
+- [ ] Will `httpx.Response.aiter_bytes` be available with the pinned `httpx` version? (Almost certainly yes — it has been stable since httpx 0.11; our pin is much newer. Verify in implementation.)
+- [ ] Does pytest-httpserver support the "delayed response" used in task 6.4's timeout test? (Yes, via `respond_with_handler` with an explicit `time.sleep`. Noting here so implementors don't rediscover.)
+- [ ] Should the 10 MiB cap be persona-configurable in a future phase, or is it a hard-coded security invariant? Left for P9 `error-resilience` to decide.
+
+### Context
+
+Iteration 3 addressed the Round 2 multi-vendor plan review. Three vendors dispatched in parallel (claude, codex gpt-5.5, gemini) produced 19 raw findings — a 41% reduction from round 1. Ten substantive issues addressed, three accepted with documented rationale. The most consequential fix was R2-C5 (streaming enforcement of the 10 MiB cap), which would have been a real security regression had it shipped. Multi-vendor review caught three iteration-2-introduced regressions (R2-C1, R2-C2, R2-C4) that a single-vendor pass would have missed. `openspec validate --strict` green. Transitioning PLAN_REVIEW → IMPLEMENT per the autopilot state machine.

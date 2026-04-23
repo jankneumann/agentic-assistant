@@ -6,11 +6,15 @@ are declared explicitly.
 
 ## Phase 0: Dependencies + persona schema evolution
 
-- [ ] 0.1 Add `pytest-httpserver>=1.0` to
-  `[project.optional-dependencies.dev]` in `pyproject.toml` and run
-  `uv sync --dev` so later phases' tests can import it.
-  **Why early**: Phase 6 and Phase 8 tests import `pytest_httpserver`;
-  adding it after those tasks run breaks TDD ordering.
+- [ ] 0.1 Add `pytest-httpserver>=1.0` AND `openapi-spec-validator>=0.7`
+  to `[project.optional-dependencies.dev]` in `pyproject.toml` and
+  run `uv sync --dev` so later phases' tests can import them.
+  **Why early**: Phase 1 task 1.5 uses `openapi-spec-validator` for
+  fixture drift protection; Phase 6 and Phase 8 tests import
+  `pytest_httpserver`. Both live under `wp-http-tools-leaves` and
+  `wp-http-tools-composite`, which run BEFORE `wp-integration`, so
+  deferring these deps to the integration phase would break TDD
+  ordering.
   **Dependencies**: None.
 
 - [ ] 0.2 Extend `src/assistant/core/persona.py:106-113` to accept a
@@ -166,7 +170,8 @@ are declared explicitly.
   factory + `_json_schema_to_pydantic` helper supporting
   string/integer/number/boolean/array/object types (recursive for
   nested objects) + path parameter substitution via
-  `urllib.parse.quote` + format-string replacement.
+  `urllib.parse.quote(value, safe="")` (explicit `safe=""` required
+  so `/` is encoded) + format-string replacement.
   Sets `StructuredTool.name = f"{source_name}:{op_id}"`.
   **Dependencies**: 4.1.
 
@@ -189,12 +194,25 @@ are declared explicitly.
 
 - [ ] 4.5 Write tests for required/optional/default handling in
   `_json_schema_to_pydantic` at
-  `tests/http_tools/test_builder.py::test_required_fields`,
-  `::test_optional_field_uses_default`, and `::test_typeless_field_is_any`:
-  build a schema with each case and assert the Pydantic model's
-  `model_fields` metadata.
+  `tests/http_tools/test_builder.py::test_required_field_is_required`,
+  `::test_optional_field_uses_declared_default`, and
+  `::test_typeless_field_is_any`: build a schema with each case and
+  assert the Pydantic model's `model_fields` metadata.
   **Spec scenarios**: http-tools — Tool Builder (Required JSON Schema
-  fields produce required Pydantic fields).
+  field is required in Pydantic, Optional JSON Schema field uses
+  declared default, Typeless JSON Schema field is Any).
+  **Dependencies**: 4.2.
+
+- [ ] 4.6 Write tests for invocation-side security error propagation
+  at `tests/http_tools/test_builder.py::test_oversized_response_raises`,
+  `::test_redirect_response_raises`, and `::test_timeout_raises`:
+  stub httpx responses for the oversized / 302 / TimeoutException
+  cases and assert the tool's coroutine propagates the error (does
+  NOT silently return).
+  **Spec scenarios**: http-tools — Tool Builder (Oversized response
+  at invocation time raises, Redirect at invocation time raises,
+  Timeout at invocation time raises).
+  **Design decisions**: D9 (per-tool invocation propagates the error).
   **Dependencies**: 4.2.
 
 ## Phase 5: Registry
@@ -249,14 +267,19 @@ are declared explicitly.
   document skipped with warning).
   **Dependencies**: 1.4, 6.2.
 
-- [ ] 6.4 Write integration tests for the HTTP client security posture
-  at `tests/http_tools/test_discovery.py::test_redirect_refused`,
+- [ ] 6.4 Write integration tests for the discovery-side HTTP client
+  security posture at
+  `tests/http_tools/test_discovery.py::test_redirect_refused`,
   `::test_oversized_response_skipped`, and
-  `::test_timeout_skipped`: configure pytest-httpserver to return
-  302 / 11MB body / 15s delay respectively and assert the source is
-  skipped with a `caplog` WARNING. The WARNING record's message
-  MUST NOT contain the auth-header value.
-  **Spec scenarios**: http-tools — HTTP Client Security Posture (all).
+  `::test_timeout_skipped`: configure pytest-httpserver to return a
+  302 / an 11 MiB body (11 × 1024 × 1024 bytes) / a 15-second delay
+  respectively and assert the source is skipped with a `caplog`
+  WARNING. The WARNING record's message MUST NOT contain the
+  auth-header value.
+  **Spec scenarios**: http-tools — HTTP Client Security Posture
+  (Discovery redirect refused, Oversized discovery response skipped,
+  Discovery timeout skipped with warning, Auth header value absent
+  from logs).
   **Design decisions**: D9.
   **Dependencies**: 6.2.
 
@@ -347,10 +370,12 @@ are declared explicitly.
   unexpected transitive, audit here.
   **Dependencies**: 0.1.
 
-- [ ] 9.2 Add `openapi-spec-validator>=0.7` to
-  `[project.optional-dependencies.dev]` if tasks 1.5 use it (they do —
-  for fixture drift protection).
-  **Dependencies**: 1.5.
+- [ ] 9.2 Confirm `openapi-spec-validator` (installed in 0.1) is
+  referenced only by `tests/http_tools/test_openapi.py` and is NOT
+  imported from any runtime module. If any runtime drift has crept
+  in, move it to the `deps/` section as a runtime requirement —
+  otherwise leave in dev-only deps.
+  **Dependencies**: 0.1.
 
 ## Phase 10: Docs
 
