@@ -11,7 +11,7 @@ The system SHALL define an `ObservabilityProvider` Protocol at `src/assistant/te
 - `trace_llm_call(*, model, persona, role, messages, input_tokens, output_tokens, duration_ms, metadata=None)` recording a harness invocation as an LLM call.
 - `trace_delegation(*, parent_role, sub_role, task, persona, duration_ms, outcome, metadata=None)` recording a delegation hop.
 - `trace_tool_call(*, tool_name, tool_kind, persona, role, duration_ms, error=None, metadata=None)` recording any LangChain StructuredTool or HTTP-discovered tool invocation. The `tool_kind` parameter MUST be one of `"extension"` or `"http"`.
-- `trace_memory_op(*, op, target, persona, duration_ms, metadata=None)` recording any memory or Graphiti knowledge-layer operation. The `op` parameter MUST be one of `"read"`, `"write"`, `"recall"`, `"episode_add"`, or `"graph_query"`.
+- `trace_memory_op(*, op, target, persona, duration_ms, metadata=None)` recording any `MemoryManager` method call. The `op` parameter MUST be one of `"context"`, `"fact_write"`, `"interaction_write"`, `"episode_write"`, `"search"`, or `"export"` — each corresponding to a `MemoryManager` method on `src/assistant/core/memory.py`.
 - `start_span(name, attributes=None)` returning a context manager for arbitrary named spans that do not fit any first-class method.
 - `flush()` triggering an immediate send of buffered events.
 - `shutdown()` called during process exit to drain buffers and release resources.
@@ -38,7 +38,7 @@ The Protocol SHALL be decorated with `@runtime_checkable` so `isinstance(obj, Ob
 
 #### Scenario: Rejects mis-typed op value
 
-- **WHEN** `trace_memory_op(op="READ", ...)` is invoked on any provider (any value outside the fixed set `{"read", "write", "recall", "episode_add", "graph_query"}`, including the wrong-case `"READ"`)
+- **WHEN** `trace_memory_op(op="CONTEXT", ...)` is invoked on any provider (any value outside the fixed set `{"context", "fact_write", "interaction_write", "episode_write", "search", "export"}`, including wrong-case variants)
 - **THEN** a `ValueError` MUST be raised identifying the invalid `op`
 - **AND** no span SHALL be emitted
 
@@ -50,7 +50,7 @@ The telemetry factory `get_observability_provider()` at `src/assistant/telemetry
 2. **Import failure** — `langfuse` package is not installed (`ImportError` on import).
 3. **Runtime failure** — provider initialization raises any exception.
 
-Under every degradation level the factory MUST return a `NoopProvider` and log a single warning identifying the degradation cause. The application SHALL NOT crash due to observability unavailability under any circumstance.
+Under every degradation level the factory MUST return a `NoopProvider` and emit a single `logger.warning(...)` record on the logger named `assistant.telemetry` identifying the degradation cause (stdlib logging, not the `warnings` module — matching the rest of the codebase). The same warning MUST NOT repeat on subsequent `get_observability_provider()` calls within the same process. The application SHALL NOT crash due to observability unavailability under any circumstance.
 
 #### Scenario: Returns noop when LANGFUSE_ENABLED is false
 
@@ -127,19 +127,36 @@ Every LangChain `StructuredTool` returned by an `Extension.as_langchain_tools()`
 - **THEN** `provider.trace_tool_call` MUST be called with `error="HTTPStatusError"`
 - **AND** the exception MUST propagate to the caller
 
-### Requirement: Memory and Graphiti Operation Tracing
+### Requirement: MemoryManager Operation Tracing
 
-Operations on `src/assistant/core/memory.py` (read, write, recall) and `src/assistant/core/graphiti.py` (episode add, graph query) SHALL invoke `provider.trace_memory_op(...)`. The `op` argument MUST use one of `"read"`, `"write"`, `"recall"`, `"episode_add"`, `"graph_query"`. The `target` argument MUST be the operation's key, namespace, or query identifier (hashed if it exceeds 256 characters).
+Every public method on `MemoryManager` at `src/assistant/core/memory.py` SHALL invoke `provider.trace_memory_op(...)` on each call. The method-to-op mapping is:
 
-#### Scenario: Memory read emits trace_memory_op
+| MemoryManager method | op value |
+|---|---|
+| `get_context(persona, ...)` | `"context"` |
+| `store_fact(persona, key, value)` | `"fact_write"` |
+| `store_interaction(...)` | `"interaction_write"` |
+| `store_episode(...)` | `"episode_write"` |
+| `search(persona, query, ...)` | `"search"` |
+| `export_memory(persona)` | `"export"` |
 
-- **WHEN** `MemoryStore.recall(key="last_summary")` is invoked
-- **THEN** `provider.trace_memory_op` MUST be called once with `op="recall"` and `target="last_summary"`
+The `target` argument MUST be the operation's key, query string, or persona identifier (hashed to `"sha256:<16-char hex>"` if it exceeds 256 characters). Graphiti client calls (`create_graphiti_client(persona)` and its inner `add_episode` / query methods at `src/assistant/core/graphiti.py`) are NOT separately instrumented at the telemetry layer — they are observed only through the `MemoryManager` method that invoked them. This avoids double-counting and keeps spans at a meaningful user-facing granularity. Instrumenting graphiti-internal calls MAY be revisited in a future change if operator feedback indicates the lower-level detail is needed.
 
-#### Scenario: Graphiti episode add emits trace_memory_op
+#### Scenario: store_fact emits trace_memory_op with fact_write
 
-- **WHEN** `GraphitiClient.add_episode(...)` is awaited
-- **THEN** `provider.trace_memory_op` MUST be called with `op="episode_add"`
+- **WHEN** `MemoryManager.store_fact("personal", "last_summary", "...")` is awaited
+- **THEN** `provider.trace_memory_op` MUST be called once with `op="fact_write"`, `target="last_summary"`, `persona="personal"`, and a non-negative `duration_ms`
+
+#### Scenario: search emits trace_memory_op with search
+
+- **WHEN** `MemoryManager.search("personal", query="recent decisions")` is awaited
+- **THEN** `provider.trace_memory_op` MUST be called once with `op="search"` and `target="recent decisions"`
+
+#### Scenario: store_episode emits trace_memory_op covering the graphiti call
+
+- **WHEN** `MemoryManager.store_episode(...)` is awaited and internally invokes the graphiti client
+- **THEN** exactly one `provider.trace_memory_op` call MUST be emitted with `op="episode_write"`
+- **AND** no second call SHALL be emitted from inside the graphiti client
 
 ### Requirement: Secret Sanitization
 
@@ -261,6 +278,13 @@ Because `contextvars.ContextVar` is task-local per PEP 567, the context MUST sur
 - **WHEN** the current context is `("personal", "assistant")` and `DelegationSpawner.delegate("researcher", "find X")` is awaited
 - **THEN** any span emitted by the sub-agent during the delegation's lifetime MUST report `role="researcher"`
 - **AND** after the delegation returns, `get_assistant_ctx()` MUST return `("personal", "assistant")` again (scope popped)
+
+#### Scenario: Concurrent delegations each see their own sub-role
+
+- **WHEN** the current context is `("personal", "assistant")` and two delegations are spawned via `asyncio.gather(delegate("researcher", t1), delegate("writer", t2))`
+- **THEN** each sub-agent MUST observe its own `sub_role` via `get_assistant_ctx()` (`"researcher"` for the first, `"writer"` for the second) without interference from the other
+- **AND** after both complete, `get_assistant_ctx()` in the parent task MUST return `("personal", "assistant")` unchanged
+- **AND** the implementation MUST spawn each sub-agent in a distinct `asyncio.Task` so `contextvars.ContextVar` task-local semantics apply per PEP 567
 
 ### Requirement: No Inbound Interfaces
 

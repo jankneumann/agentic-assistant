@@ -1,0 +1,98 @@
+{
+  "review_type": "plan",
+  "target": "observability",
+  "reviewer_vendor": "codex",
+  "findings": [
+    {
+      "id": 1,
+      "type": "correctness",
+      "criticality": "high",
+      "description": "The memory/Graphiti tracing requirements and tasks name APIs that do not exist in the current repo: `MemoryStore.recall(...)` and `GraphitiClient.add_episode(...)`. The current code exposes `MemoryManager` methods in `src/assistant/core/memory.py` and `create_graphiti_client(...)` in `src/assistant/core/graphiti.py`, so implementation against the written plan would target the wrong surface.",
+      "resolution": "Rewrite the memory/Graphiti requirement and tasks around the actual `MemoryManager` methods and clarify whether Graphiti spans are emitted in `MemoryManager` around the external client calls or by wrapping the returned Graphiti client.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/observability/specs/observability/spec.md",
+      "line_range": {
+        "start": 130,
+        "end": 142
+      }
+    },
+    {
+      "id": 2,
+      "type": "resilience",
+      "criticality": "high",
+      "description": "The work-package scopes still overlap on `src/assistant/telemetry/decorators.py` and `src/assistant/telemetry/tool_wrap.py`: `wp-contracts` allows `src/assistant/telemetry/**`, while `wp-hooks` explicitly owns those two files. The nearby comment says `wp-contracts` denies those files, but the deny list does not include them, so package ownership is not actually enforced.",
+      "resolution": "Replace the broad `src/assistant/telemetry/**` allow entry with explicit telemetry foundation files, or add explicit denies for `src/assistant/telemetry/decorators.py` and `src/assistant/telemetry/tool_wrap.py` in `wp-contracts`.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/observability/work-packages.yaml",
+      "line_range": {
+        "start": 48,
+        "end": 56
+      }
+    },
+    {
+      "id": 3,
+      "type": "correctness",
+      "criticality": "medium",
+      "description": "The harness-adapter delta points to `HarnessAdapter.invoke` and `src/assistant/harnesses/deep_agents.py`, but the current repo has the abstract `invoke` on `SdkHarnessAdapter` and the Deep Agents implementation at `src/assistant/harnesses/sdk/deep_agents.py`. This will send implementers and tests to the wrong class/path.",
+      "resolution": "Update the spec and tasks to reference `SdkHarnessAdapter.invoke` and `src/assistant/harnesses/sdk/deep_agents.py`; keep `MSAgentFrameworkHarness` under `src/assistant/harnesses/sdk/ms_agent_fw.py`.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/observability/specs/harness-adapter/spec.md",
+      "line_range": {
+        "start": 7,
+        "end": 11
+      }
+    },
+    {
+      "id": 4,
+      "type": "contract_mismatch",
+      "criticality": "medium",
+      "description": "The harness-adapter requirement says `trace_llm_call` is called \"immediately before and after\" the awaited harness call, while the scenarios require exactly one call. A single `trace_llm_call` also cannot know `duration_ms` and output tokens before the awaited operation completes.",
+      "resolution": "Change the requirement to say the decorator measures around the awaited call and emits exactly one trace after success or after catching an exception before re-raising.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/observability/specs/harness-adapter/spec.md",
+      "line_range": {
+        "start": 7,
+        "end": 17
+      }
+    },
+    {
+      "id": 5,
+      "type": "security",
+      "criticality": "medium",
+      "description": "Design Decision 5 still lists the old 8-pattern sanitizer chain and omits the expanded AWS, GitHub PAT, Slack, Google OAuth, database URL, Authorization Basic/Digest, Cookie, and `api_key` catch-all patterns required by the spec. Implementers following the design instead of the spec would ship incomplete redaction.",
+      "resolution": "Update `design.md` D5 to match the authoritative 15-pattern ordered list and known-safe field list in the observability spec.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/observability/design.md",
+      "line_range": {
+        "start": 127,
+        "end": 143
+      }
+    },
+    {
+      "id": 6,
+      "type": "contract_mismatch",
+      "criticality": "medium",
+      "description": "The degradation design mandates `warnings.warn` and explicitly says not `logger.warning`, but the observability spec requires warning log records for degradation causes. This creates incompatible test expectations (`recwarn` vs `caplog`) and unclear runtime behavior.",
+      "resolution": "Pick one contract. If logs are required, change D2 to use `logger.warning` once per process; if Python warnings are intended, update the spec scenarios to assert warnings instead of log records.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/observability/design.md",
+      "line_range": {
+        "start": 56,
+        "end": 90
+      }
+    },
+    {
+      "id": 7,
+      "type": "spec_gap",
+      "criticality": "medium",
+      "description": "Several implementation tasks do not map to any requirement or scenario despite the review criterion that every task map to a Requirement. Examples include the optional dependency task, Docker Compose creation/validation, README update, fixture-sentinel test, quality-gate task, and optional Langfuse smoke workflow.",
+      "resolution": "Add explicit requirement/scenario coverage for dev infrastructure, dependency packaging, README linkage, privacy sentinel behavior, and optional CI smoke behavior, or mark these as non-spec administrative tasks outside the requirement-mapping rule.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/observability/tasks.md",
+      "line_range": {
+        "start": 53,
+        "end": 179
+      }
+    }
+  ]
+}

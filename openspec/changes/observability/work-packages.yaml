@@ -77,6 +77,8 @@ packages:
         - "src/assistant/core/capabilities/**"
         - "src/assistant/extensions/**"
         - "src/assistant/http_tools/**"
+        - "src/assistant/telemetry/decorators.py"
+        - "src/assistant/telemetry/tool_wrap.py"
         - "tests/telemetry/test_decorators.py"
         - "tests/telemetry/test_tool_wrap.py"
         - "tests/telemetry/test_memory_hooks.py"
