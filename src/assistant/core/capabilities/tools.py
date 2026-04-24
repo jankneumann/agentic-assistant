@@ -1,8 +1,17 @@
-"""ToolPolicy protocol and DefaultToolPolicy implementation — Task 1.10."""
+"""ToolPolicy protocol and DefaultToolPolicy implementation — Task 1.10.
+
+Extended in Task 7.2 to consume an optional :class:`HttpToolRegistry`
+supplied by the ``http-tools-layer`` phase: ``authorized_tools``
+merges extension tools with HTTP-tool registry contents and applies
+the ``role.preferred_tools`` filter uniformly by tool name
+(``"{source}:{op_id}"`` for HTTP tools).
+"""
 
 from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
+
+from assistant.http_tools import HttpToolRegistry
 
 
 @runtime_checkable
@@ -17,12 +26,22 @@ class ToolPolicy(Protocol):
 
 
 class DefaultToolPolicy:
+    def __init__(
+        self,
+        *,
+        http_tool_registry: HttpToolRegistry | None = None,
+    ) -> None:
+        self._http_tool_registry = http_tool_registry
+
     def authorized_tools(
         self, persona: Any, role: Any, *, loaded_extensions: list[Any]
     ) -> list[Any]:
         all_tools: list[Any] = []
         for ext in loaded_extensions:
             all_tools.extend(ext.as_langchain_tools())
+
+        if self._http_tool_registry is not None:
+            all_tools.extend(self._http_tool_registry.list_all())
 
         preferred = role.preferred_tools or []
         if not preferred:
@@ -46,5 +65,11 @@ class DefaultToolPolicy:
 
         if persona.tool_sources:
             manifest["tool_sources"] = dict(persona.tool_sources)
+
+        if self._http_tool_registry is not None:
+            manifest["http_tools"] = [
+                {"name": t.name, "description": t.description}
+                for t in self._http_tool_registry.list_all()
+            ]
 
         return manifest
