@@ -1,0 +1,55 @@
+{
+  "review_type": "plan",
+  "target": "observability",
+  "reviewer_vendor": "gemini",
+  "findings": [
+    {
+      "id": 1,
+      "type": "correctness",
+      "criticality": "low",
+      "description": "The sanitization regex snippet in design.md Decision 5 is incomplete compared to the 15 patterns defined in observability/spec.md (e.g., AWS, GitHub, Slack, and Google patterns are missing from the design doc snippet).",
+      "resolution": "Update the _PATTERNS snippet in design.md to align with the authoritative list in the specification.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/observability/design.md",
+      "line_range": {
+        "start": 111,
+        "end": 125
+      }
+    },
+    {
+      "id": 2,
+      "type": "correctness",
+      "criticality": "low",
+      "description": "Regex pattern 15 in the specification includes 'api[_-]?key' in the catch-all, but the corresponding pattern in the design document snippet is missing this variant.",
+      "resolution": "Synchronize the catch-all regex pattern between the specification and design documents.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/observability/design.md",
+      "line_range": {
+        "start": 125,
+        "end": 125
+      }
+    },
+    {
+      "id": 3,
+      "type": "architecture",
+      "criticality": "medium",
+      "description": "There is a potential conflict between the 'zero-allocation/no-op' requirement for NoopProvider and the specification requirement that it MUST raise ValueError for invalid tool_kind or op values.",
+      "resolution": "Clarify in Decision 7 of the design document that NoopProvider still performs enum validation on input parameters to ensure contract compliance, even while maintaining a zero-allocation posture for valid calls.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/observability/design.md",
+      "line_range": {
+        "start": 151,
+        "end": 164
+      }
+    },
+    {
+      "id": 4,
+      "type": "spec_gap",
+      "criticality": "low",
+      "description": "While LANGFUSE_SAMPLE_RATE is included in the TelemetryConfig and mentioned in the configuration requirement, its implementation behavior (e.g., whether sampling happens at the factory or within the provider) is not specified.",
+      "resolution": "Add a note to the LangfuseProvider implementation details in design.md clarifying that sampling is handled internally by the provider during span creation.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/observability/design.md"
+    }
+  ]
+}

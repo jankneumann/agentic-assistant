@@ -1,0 +1,271 @@
+{
+  "schema_version": 1,
+  "review_type": "plan",
+  "target": "observability",
+  "reviewers": [
+    {
+      "vendor": "claude_code",
+      "agent_id": "claude_code",
+      "success": true,
+      "findings_count": 8,
+      "elapsed_seconds": 0.0,
+      "error": null
+    },
+    {
+      "vendor": "codex",
+      "agent_id": "codex",
+      "success": true,
+      "findings_count": 7,
+      "elapsed_seconds": 0.0,
+      "error": null
+    },
+    {
+      "vendor": "gemini",
+      "agent_id": "gemini",
+      "success": true,
+      "findings_count": 4,
+      "elapsed_seconds": 0.0,
+      "error": null
+    }
+  ],
+  "quorum_met": true,
+  "quorum_requested": 3,
+  "quorum_received": 3,
+  "consensus_findings": [
+    {
+      "id": 1,
+      "status": "unconfirmed",
+      "primary_vendor": "claude_code",
+      "primary_finding_id": 1,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "performance",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "The Secret Sanitization Requirement applies 15 ordered regex patterns to every string value in every span attribute on every trace_* call. On a typical REPL turn with ~3 harness calls + ~2 delegations + ~5 tool calls, that is ~30 attribute passes per turn through 15 regexes each, i.e. ~450 regex invocations. The plan has no performance Requirement for sanitization \u2014 only for the noop provider's zero-allocation posture."
+    },
+    {
+      "id": 2,
+      "status": "unconfirmed",
+      "primary_vendor": "claude_code",
+      "primary_finding_id": 2,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "architecture",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "The design's contextvars ContextVar approach is correct for single-delegate calls, but the plan does not specify behavior when multiple concurrent sub-agents are spawned from the same parent task (e.g., asyncio.gather of two delegate calls). Each delegation's assistant_ctx push is task-local per PEP 567 IF asyncio.gather forks each coroutine into its own Task, which it does. But if a caller writes 'async with assistant_ctx(...):' around two concurrent sub-agent calls without gather, both would race on the same ContextVar scope."
+    },
+    {
+      "id": 3,
+      "status": "unconfirmed",
+      "primary_vendor": "claude_code",
+      "primary_finding_id": 3,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "spec_gap",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "The No Inbound Interfaces Requirement enforces absence of inbound frameworks via 'no fastapi, flask, aiohttp.web, grpc.aio.server in sys.modules'. This list is static and will not catch future frameworks (e.g., starlette, quart, tornado.web, sanic, falcon, bottle, cherrypy). A drifting codebase could introduce one of these without the test noticing."
+    },
+    {
+      "id": 4,
+      "status": "unconfirmed",
+      "primary_vendor": "claude_code",
+      "primary_finding_id": 4,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "security",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "Design D9 commits Langfuse INIT dev values with DUMMY- prefix plus a .gitleaksignore entry. The prefix neutralizes most scanners, but commits under that compose file still contain the string 'sk-lf-' and 'pk-lf-' as substrings \u2014 an aggressive scanner configured with Langfuse-specific rules would still flag. Additionally, the startup-check sidecar idea is documented but not captured as a task."
+    },
+    {
+      "id": 5,
+      "status": "unconfirmed",
+      "primary_vendor": "claude_code",
+      "primary_finding_id": 5,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "spec_gap",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "The http-tools spec delta cross-references 'observability capability, Requirement Secret Sanitization' for sanitization of HTTP errors. But the cross-reference is prose only \u2014 an openspec validator does not enforce that the referenced Requirement exists. If the Secret Sanitization Requirement is later renamed or split, the cross-ref silently breaks."
+    },
+    {
+      "id": 6,
+      "status": "unconfirmed",
+      "primary_vendor": "claude_code",
+      "primary_finding_id": 6,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "spec_gap",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "Persona name validation was deferred from iteration 1 (medium finding, persona names could in principle carry semi-sensitive info). The current plan treats 'persona' as always-safe pass-through in the sanitizer's known-safe-fields list. Deferral is reasonable but the plan does not state the assumption prominently \u2014 a future persona generator that produces names from user input could introduce a silent leak."
+    },
+    {
+      "id": 7,
+      "status": "unconfirmed",
+      "primary_vendor": "claude_code",
+      "primary_finding_id": 7,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "correctness",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "Task 2.3 applies @traced_harness to HarnessAdapter.invoke abstract base AND to DeepAgentsHarness.invoke. But applying a decorator at the abstract base does not automatically decorate concrete subclasses unless they call super().invoke(). Most harness adapters override invoke entirely rather than calling super, so the abstract-base decoration is dead code."
+    },
+    {
+      "id": 8,
+      "status": "unconfirmed",
+      "primary_vendor": "claude_code",
+      "primary_finding_id": 8,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "observability",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "The plan traces outbound operations (harness calls, delegations, tool calls, memory ops) but does not trace the telemetry module's own error paths. If the Langfuse provider's runtime path degrades silently on a backend outage (level-3 degradation), the operator has no visibility because the failure is logged at warn level once per process. A second independent Langfuse outage during the same process lifetime is silent."
+    },
+    {
+      "id": 9,
+      "status": "unconfirmed",
+      "primary_vendor": "codex",
+      "primary_finding_id": 1,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "correctness",
+      "agreed_criticality": "high",
+      "recommended_disposition": "accept",
+      "description": "The memory/Graphiti tracing requirements and tasks name APIs that do not exist in the current repo: `MemoryStore.recall(...)` and `GraphitiClient.add_episode(...)`. The current code exposes `MemoryManager` methods in `src/assistant/core/memory.py` and `create_graphiti_client(...)` in `src/assistant/core/graphiti.py`, so implementation against the written plan would target the wrong surface."
+    },
+    {
+      "id": 10,
+      "status": "unconfirmed",
+      "primary_vendor": "codex",
+      "primary_finding_id": 2,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "resilience",
+      "agreed_criticality": "high",
+      "recommended_disposition": "accept",
+      "description": "The work-package scopes still overlap on `src/assistant/telemetry/decorators.py` and `src/assistant/telemetry/tool_wrap.py`: `wp-contracts` allows `src/assistant/telemetry/**`, while `wp-hooks` explicitly owns those two files. The nearby comment says `wp-contracts` denies those files, but the deny list does not include them, so package ownership is not actually enforced."
+    },
+    {
+      "id": 11,
+      "status": "unconfirmed",
+      "primary_vendor": "codex",
+      "primary_finding_id": 3,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "correctness",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "The harness-adapter delta points to `HarnessAdapter.invoke` and `src/assistant/harnesses/deep_agents.py`, but the current repo has the abstract `invoke` on `SdkHarnessAdapter` and the Deep Agents implementation at `src/assistant/harnesses/sdk/deep_agents.py`. This will send implementers and tests to the wrong class/path."
+    },
+    {
+      "id": 12,
+      "status": "unconfirmed",
+      "primary_vendor": "codex",
+      "primary_finding_id": 4,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "contract_mismatch",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "The harness-adapter requirement says `trace_llm_call` is called \"immediately before and after\" the awaited harness call, while the scenarios require exactly one call. A single `trace_llm_call` also cannot know `duration_ms` and output tokens before the awaited operation completes."
+    },
+    {
+      "id": 13,
+      "status": "unconfirmed",
+      "primary_vendor": "codex",
+      "primary_finding_id": 5,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "security",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "Design Decision 5 still lists the old 8-pattern sanitizer chain and omits the expanded AWS, GitHub PAT, Slack, Google OAuth, database URL, Authorization Basic/Digest, Cookie, and `api_key` catch-all patterns required by the spec. Implementers following the design instead of the spec would ship incomplete redaction."
+    },
+    {
+      "id": 14,
+      "status": "unconfirmed",
+      "primary_vendor": "codex",
+      "primary_finding_id": 6,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "contract_mismatch",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "The degradation design mandates `warnings.warn` and explicitly says not `logger.warning`, but the observability spec requires warning log records for degradation causes. This creates incompatible test expectations (`recwarn` vs `caplog`) and unclear runtime behavior."
+    },
+    {
+      "id": 15,
+      "status": "unconfirmed",
+      "primary_vendor": "codex",
+      "primary_finding_id": 7,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "spec_gap",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "Several implementation tasks do not map to any requirement or scenario despite the review criterion that every task map to a Requirement. Examples include the optional dependency task, Docker Compose creation/validation, README update, fixture-sentinel test, quality-gate task, and optional Langfuse smoke workflow."
+    },
+    {
+      "id": 16,
+      "status": "unconfirmed",
+      "primary_vendor": "gemini",
+      "primary_finding_id": 1,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "correctness",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "The sanitization regex snippet in design.md Decision 5 is incomplete compared to the 15 patterns defined in observability/spec.md (e.g., AWS, GitHub, Slack, and Google patterns are missing from the design doc snippet)."
+    },
+    {
+      "id": 17,
+      "status": "unconfirmed",
+      "primary_vendor": "gemini",
+      "primary_finding_id": 2,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "correctness",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "Regex pattern 15 in the specification includes 'api[_-]?key' in the catch-all, but the corresponding pattern in the design document snippet is missing this variant."
+    },
+    {
+      "id": 18,
+      "status": "unconfirmed",
+      "primary_vendor": "gemini",
+      "primary_finding_id": 3,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "architecture",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "There is a potential conflict between the 'zero-allocation/no-op' requirement for NoopProvider and the specification requirement that it MUST raise ValueError for invalid tool_kind or op values."
+    },
+    {
+      "id": 19,
+      "status": "unconfirmed",
+      "primary_vendor": "gemini",
+      "primary_finding_id": 4,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "spec_gap",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "While LANGFUSE_SAMPLE_RATE is included in the TelemetryConfig and mentioned in the configuration requirement, its implementation behavior (e.g., whether sampling happens at the factory or within the provider) is not specified."
+    }
+  ],
+  "summary": {
+    "total_unique_findings": 19,
+    "confirmed_count": 0,
+    "unconfirmed_count": 19,
+    "disagreement_count": 0,
+    "blocking_count": 0
+  }
+}

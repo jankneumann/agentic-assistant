@@ -84,7 +84,10 @@ Task IDs map to work-packages. Packages and their scopes are defined in `work-pa
 - [ ] **2.2** Implement `@traced_harness` in `src/assistant/telemetry/decorators.py`.
   **Dependencies**: 2.1
 
-- [ ] **2.3** Apply `@traced_harness` to `HarnessAdapter.invoke` abstract base in `src/assistant/harnesses/base.py` and to `DeepAgentsHarness.invoke` in `src/assistant/harnesses/deep_agents.py` AND to the `MSAgentFrameworkHarness.invoke` stub (which raises `NotImplementedError`). Verify via test that the stub's trace emits with `metadata={"error": "NotImplementedError"}` before the exception propagates.
+- [ ] **2.3** Apply `@traced_harness` to each **concrete** `SdkHarnessAdapter` subclass (decorator-at-base is dead code because subclasses override `invoke` entirely without `super()`). Apply to:
+  - `DeepAgentsHarness.invoke` at `src/assistant/harnesses/sdk/deep_agents.py`
+  - `MSAgentFrameworkHarness.invoke` stub at `src/assistant/harnesses/sdk/ms_agent_fw.py` (which raises `NotImplementedError` until the `ms-graph-extension` phase lands)
+  Verify via test that the stub's trace emits exactly once with `metadata={"error": "NotImplementedError"}` before the exception propagates. The abstract base at `src/assistant/harnesses/base.py` (class `SdkHarnessAdapter`) does NOT need direct decoration.
   **Spec scenarios**: harness-adapter — "Deep Agents harness invocation is traced", "Harness exception still emits trace before propagating", "MSAgentFrameworkHarness stub is traced with the raised-exception path"
   **Dependencies**: 2.2
 
@@ -106,18 +109,18 @@ Task IDs map to work-packages. Packages and their scopes are defined in `work-pa
 
 ## Phase 3 — Knowledge + Tool Hooks (wp-hooks)
 
-- [ ] **3.1** Write tests for memory-op tracing — `MemoryStore` read/write/recall each emits `trace_memory_op` with `op` drawn from exactly `{"read", "write", "recall"}` and the correct `target` (key, namespace, or query identifier). Assert that calling `trace_memory_op(op="READ")` (uppercase) or any value outside the fixed set raises `ValueError` (enum validation).
-  **Spec scenarios**: observability — "Memory read emits trace_memory_op", "Rejects mis-typed op value"
+- [ ] **3.1** Write tests for `MemoryManager` tracing — each public method (`get_context`, `store_fact`, `store_interaction`, `store_episode`, `search`, `export_memory`) emits `trace_memory_op` exactly once with the correct `op` value from the set `{"context", "fact_write", "interaction_write", "episode_write", "search", "export"}`. Assert that calling `trace_memory_op(op="CONTEXT")` (wrong case) or any value outside the set raises `ValueError`. Use the `SpyProvider` fixture to capture calls.
+  **Spec scenarios**: observability — "store_fact emits trace_memory_op with fact_write", "search emits trace_memory_op with search", "store_episode emits trace_memory_op covering the graphiti call", "Rejects mis-typed op value"
   **Dependencies**: 1.15
 
-- [ ] **3.2** Instrument `src/assistant/core/memory.py` — apply per-method `trace_memory_op` calls for read/write/recall.
+- [ ] **3.2** Instrument `src/assistant/core/memory.py` `MemoryManager` class by applying a `@traced_memory_op("<op>")` decorator to each of its 6 public methods (`get_context` → "context", `store_fact` → "fact_write", `store_interaction` → "interaction_write", `store_episode` → "episode_write", `search` → "search", `export_memory` → "export"). The `target` argument passed to `trace_memory_op` SHALL be the method's persona/key/query argument (hashed if over 256 chars per the shared convention).
   **Dependencies**: 3.1
 
-- [ ] **3.3** Write tests for graphiti-op tracing — `GraphitiClient.add_episode` emits `trace_memory_op` with `op="episode_add"` and `GraphitiClient` query methods emit with `op="graph_query"`. The `op` set for Graphiti is exactly `{"episode_add", "graph_query"}`; together with task 3.1's set the full enum is `{"read", "write", "recall", "episode_add", "graph_query"}`.
-  **Spec scenarios**: observability — "Graphiti episode add emits trace_memory_op"
-  **Dependencies**: 1.15
+- [ ] **3.3** Verify via integration test that `MemoryManager.store_episode()` (which internally invokes the graphiti client returned by `create_graphiti_client(persona)`) emits exactly ONE `trace_memory_op` with `op="episode_write"` at the MemoryManager boundary and NO second span from inside the graphiti client. This asserts the "no double-counting" design decision. Use the `SpyProvider` fixture; no changes to `src/assistant/core/graphiti.py` are required.
+  **Spec scenarios**: observability — "store_episode emits trace_memory_op covering the graphiti call"
+  **Dependencies**: 3.2
 
-- [ ] **3.4** Instrument `src/assistant/core/graphiti.py` — `trace_memory_op` for episode_add and graph_query.
+- [ ] **3.4** (No-op placeholder — reserved) Graphiti-layer tracing was intentionally omitted in favor of the `MemoryManager`-boundary-only approach (see design "Privacy Boundary Compliance" and the `MemoryManager Operation Tracing` Requirement). This task number is kept to avoid renumbering downstream references but has no implementation work. Close as "wontfix: superseded by tasks 3.1-3.3".
   **Dependencies**: 3.3
 
 - [ ] **3.5** Write tests for `wrap_structured_tool()` — metadata passthrough, success path emits trace_tool_call, exception path emits trace before propagating.

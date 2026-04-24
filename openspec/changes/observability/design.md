@@ -55,7 +55,7 @@ def get_observability_provider() -> ObservabilityProvider:
 
 ## Decision 2 — Three-Level Degradation State Machine
 
-**Decision**: Each degradation check is a guard clause in `_init_provider()`, and a `NoopProvider` is returned at the first failure. A single warning per-process is emitted via `warnings.warn` (not `logger.warning`) so it's visible even when logging isn't configured.
+**Decision**: Each degradation check is a guard clause in `_init_provider()`, and a `NoopProvider` is returned at the first failure. A single warning per-process is emitted via `logger.warning(...)` using `logging.getLogger("assistant.telemetry")` — this matches the spec's "warning log record" wording and uses the same mechanism as the rest of the codebase (which is stdlib logging, not `warnings`). Tests assert the warning via `caplog`, not `recwarn`.
 
 **Alternatives considered**:
 - Raise on failure, require callers to wrap in try/except — rejected. Every call site would need the same boilerplate; easy to forget → crash.
@@ -124,17 +124,24 @@ For tools, `wrap_structured_tool(tool, tool_kind, persona_getter, role_getter)` 
 
 **Decision**: `sanitize(value: str) -> str` is a pure function taking a string and returning the sanitized version. Every `trace_*` method on `LangfuseProvider` (and, defensively, on `NoopProvider` too) calls `_sanitize_mapping(metadata)` before emission.
 
-**Regex ordering**:
+**Regex ordering** — MUST match the authoritative 15-pattern list in the Secret Sanitization Requirement of `observability/spec.md`. This snippet is illustrative; the spec is the source of truth.
 ```python
 _PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(pk|sk)-lf-[A-Za-z0-9]+"), "LF-KEY-REDACTED"),
+    (re.compile(r"(AKIA|ASIA)[0-9A-Z]{16}"), "AWS-KEY-REDACTED"),
+    (re.compile(r"(ghp_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9_]{36,255}"), "GH-TOKEN-REDACTED"),
+    (re.compile(r"xox[abprs]-[0-9]+-[0-9]+-[A-Za-z0-9_-]{24,}"), "SLACK-TOKEN-REDACTED"),
+    (re.compile(r"ya29\.[A-Za-z0-9_-]+"), "GOOGLE-OAUTH-REDACTED"),
+    (re.compile(r"(postgres|postgresql|mysql|mongodb|redis)://[^\s:]+:[^\s@]+@[^\s]+"), "DB-URL-REDACTED"),
     (re.compile(r"sk-[A-Za-z0-9]+"), "SK-REDACTED"),
     (re.compile(r"sbp_[A-Za-z0-9]+"), "SBP-REDACTED"),
     (re.compile(r"eyJ[A-Za-z0-9_\-\.]+"), "JWT-REDACTED"),
+    (re.compile(r"Authorization:\s*Basic\s+[A-Za-z0-9+/=]+"), "Authorization: Basic REDACTED"),
+    (re.compile(r"Authorization:\s*Digest\s+[^\r\n]+"), "Authorization: Digest REDACTED"),
+    (re.compile(r"Cookie:\s*[^\r\n]+"), "Cookie: REDACTED"),
     (re.compile(r"Bearer +[A-Za-z0-9_\-\.=]+"), "Bearer REDACTED"),
-    (re.compile(r"git@[^\s:]+:[^\s]+\.git"), "SUBMODULE-URL-REDACTED"),
-    (re.compile(r"https://[^\s@]+@[^\s]+\.git"), "SUBMODULE-URL-REDACTED"),
-    (re.compile(r"(?i)(password|token|secret|key)=[^\s&]+"), r"\1=REDACTED"),
+    (re.compile(r"(git@[^\s:]+:[^\s]+\.git|https://[^\s@]+@[^\s]+\.git)"), "SUBMODULE-URL-REDACTED"),
+    (re.compile(r"(?i)(password|token|secret|key|api[_-]?key)=[^\s&]+"), r"\1=REDACTED"),
 ]
 ```
 
@@ -165,7 +172,9 @@ No `pass` body. No intermediate dict construction. No super() calls. Methods acc
 
 **Why this matters**: The noop path is on the hot loop for every harness/tool/memory op. If the noop provider allocates a span dict, a metadata dict, or a logger message on every call, observability adds real latency even when disabled.
 
-**Verification**: `tests/telemetry/test_noop_perf.py` uses `tracemalloc` to assert 10k noop calls don't grow the heap beyond the size of kwarg dicts passed in by the caller. This is a sanity check, not a strict microbenchmark — CI runners are noisy.
+**Enum validation ordering**: The spec's Protocol Contract Requirement mandates that `ValueError` is raised on invalid `tool_kind` or `op` values. This validation MUST happen **before** the zero-allocation early return. `NoopProvider.trace_tool_call` and `trace_memory_op` SHALL check `tool_kind in _VALID_TOOL_KINDS` and `op in _VALID_OPS` against module-level frozensets, raise `ValueError` on mismatch, and otherwise return. Frozenset lookup is O(1) and allocation-free; the cost is one attribute read + one `in` check per valid call. This preserves the zero-allocation posture for the happy path while still enforcing the Protocol contract.
+
+**Verification**: `tests/telemetry/test_noop_perf.py` uses `tracemalloc` to assert 10k noop calls don't grow the heap beyond the size of kwarg dicts passed in by the caller. The perf test is categorized as advisory — a 3-run median with 4 KB tolerance — so CI runner noise does not cause spurious failures. A separate `tests/telemetry/test_protocol.py` case asserts the `ValueError` paths.
 
 ## Decision 8 — Test Strategy for 3-Level Degradation
 
@@ -272,6 +281,10 @@ Documented in `docs/observability.md` as dev-only — never use these for a prod
 The two-layer privacy guard (`tests/conftest.py` + `tests/_privacy_guard_plugin.py`, G6 gotcha) patches filesystem I/O. Telemetry MUST NOT write spans to any filesystem path — only to external backends via HTTP. `NoopProvider` does literally nothing; `LangfuseProvider` uses the Langfuse HTTP SDK. No JSONL fallback, no local `/tmp/spans.log`, no filesystem side-effects from telemetry.
 
 Test assertion: a dedicated test in `tests/telemetry/test_privacy_compliance.py` exercises the telemetry module under the privacy guard fixtures and asserts no blocked filesystem operations are attempted.
+
+**Persona name passthrough assumption**: the sanitizer's "known-safe fields" list includes `persona` — the persona name is passed through to span attributes without redaction. This is a deliberate choice because persona names in this codebase are short operator-chosen identifiers (`personal`, `work`) that are expected to be safe. A future code path that generates persona names from untrusted input (e.g., user-supplied display names resolved into persona IDs) MUST add a separate validation step at persona-registry load time — not at sanitization time — to keep the sanitizer cheap and predictable. This assumption is tracked as an open question in `session-log.md` and should be revisited if persona naming ever becomes user-driven.
+
+**Sampling rate behavior**: `LANGFUSE_SAMPLE_RATE` (default 1.0) controls how many spans reach the Langfuse backend. Sampling decisions SHALL happen inside `LangfuseProvider` during span emission, not in the factory or in the decorators — the decorators always invoke `trace_*`, the provider decides whether to forward to the backend SDK. A sample rate of 0.5 means every `trace_llm_call` is still invoked (for internal accounting), but only half reach Langfuse. Tests for non-1.0 sampling use the `SpyProvider` to verify the decorator-invocation contract separately from the backend-forwarding contract.
 
 ## Backward Compatibility
 

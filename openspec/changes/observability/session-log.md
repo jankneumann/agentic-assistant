@@ -232,3 +232,137 @@ dimensions. After dedup by root cause, roughly 25 unique issues. Breakdown:
 - Work packages DAG unchanged. Scope overlap eliminated. Max parallel
   width calculation stands: wp-contracts serial, wp-hooks plus wp-devops
   concurrent after contracts, wp-integration after both.
+
+---
+
+## Phase: Plan Review Round 1 (2026-04-24)
+
+Agent: claude_code Opus 4.7 with 1M context acting as orchestrator.
+Session: autopilot PLAN_REVIEW phase. Three reviewers: claude_code as
+primary, plus codex (gpt-5.5, 203 seconds) and gemini (auto model, 83
+seconds) dispatched in parallel via review dispatcher.
+
+### Findings counts
+
+- codex: 7 findings (2 high, 4 medium, 1 spec gap medium)
+- gemini: 4 findings (1 medium architecture, 3 low)
+- claude primary: 8 findings (3 medium, 4 accept, 1 low)
+- Total: 19 unique
+- Consensus synthesizer: 0 findings confirmed across vendors by exact
+  match heuristic, 0 consensus-blocking. Quorum met at 3 of 3.
+- However manual review identified 3 semantically equivalent findings
+  across vendors that the synthesizer did not cross match: codex 5 and
+  gemini 1 and gemini 2 all describe the same design D5 regex drift.
+
+### What Round 1 addressed (real bugs verified against code)
+
+- codex 1 HIGH correctness: Memory and Graphiti spec referenced
+  APIs that do not exist. Real classes are MemoryManager at
+  src/assistant/core/memory.py with methods get_context, store_fact,
+  store_interaction, store_episode, search, export_memory. Graphiti is
+  a factory create_graphiti_client per persona, invoked internally by
+  MemoryManager.store_episode. Rewrote the MemoryManager Operation
+  Tracing Requirement with method to op mapping table and updated the
+  enum from five values to six: context, fact_write, interaction_write,
+  episode_write, search, export. Decided that graphiti layer gets no
+  separate spans to avoid double counting. Tasks 3.1 through 3.4
+  rewritten accordingly. Task 3.4 becomes a placeholder (was for
+  graphiti instrumentation which is now out of scope).
+- codex 2 HIGH resilience: wp-contracts still globs
+  src/assistant/telemetry/** in write_allow while wp-hooks claims
+  decorators.py and tool_wrap.py explicitly. Added deny entries for
+  those two files in wp-contracts so ownership is enforced by scope
+  rather than only by comment.
+- codex 3 MEDIUM correctness: harness-adapter spec referenced
+  HarnessAdapter class and src/assistant/harnesses/deep_agents.py path.
+  Real class is SdkHarnessAdapter at src/assistant/harnesses/base.py
+  line 24 and Deep Agents concrete lives at
+  src/assistant/harnesses/sdk/deep_agents.py with a /sdk/ segment.
+  MSAgent stub is at src/assistant/harnesses/sdk/ms_agent_fw.py.
+  Fixed spec paths and task 2.3 file references.
+- codex 4 MEDIUM contract mismatch: spec said the decorator calls
+  trace_llm_call immediately before and after the awaited call, but
+  scenarios require exactly one call. Fixed by rewriting the
+  Requirement to say the decorator emits exactly once after the
+  awaited call completes or after catching an exception. Duration
+  cannot be known before the call, so before-and-after was wrong.
+- codex 5 MEDIUM security: design D5 regex snippet showed the old
+  8 pattern list, not the expanded 15 pattern list in the spec.
+  Implementers following design would ship incomplete redaction.
+  Updated D5 snippet to match the 15 pattern spec list. (Same root
+  cause as gemini 1 and gemini 2 which flagged missing AWS and GitHub
+  patterns and missing api underscore key variant.)
+- codex 6 MEDIUM contract mismatch: D2 said warnings.warn not
+  logger.warning, but spec said "warning log record". Incompatible
+  test expectations (recwarn vs caplog). Unified on logger.warning
+  on the logger named assistant.telemetry. Updated both D2 and the
+  Graceful Degradation Requirement body.
+- gemini 3 MEDIUM architecture: NoopProvider zero allocation
+  contract appears to conflict with the enum validation contract
+  (ValueError on invalid tool_kind or op). Resolved by specifying
+  in D7 that enum validation uses module level frozenset checks
+  which are O(1) and allocation free. Validation precedes early
+  return. Happy path stays zero allocation.
+- claude primary 2 MEDIUM architecture: concurrent delegations via
+  asyncio.gather. Added scenario to the Persona and Role Context
+  Propagation Requirement stating each sub-agent sees its own
+  sub_role with parent context unchanged after both complete, and
+  that the implementation must spawn each sub-agent in a distinct
+  asyncio Task.
+- claude primary 6 MEDIUM spec gap: persona name passthrough
+  assumption was only in design. Added a prominent paragraph in
+  design Privacy Boundary Compliance stating the assumption and
+  noting that future user driven persona naming must add a separate
+  validation step. Converts assumption into explicit constraint.
+- gemini 4 LOW spec gap: LANGFUSE_SAMPLE_RATE behavior not
+  specified. Added a design paragraph stating sampling happens inside
+  LangfuseProvider during emission, not in the factory or decorators.
+  Decorator always invokes trace_* for internal accounting. SpyProvider
+  tests verify the decorator invocation contract separately from
+  backend forwarding.
+
+### Accepted without change
+
+- codex 7 MEDIUM spec gap: some tasks (optional dep, docker-compose,
+  README, fixture-sentinel, smoke test) do not map to Requirements.
+  Accepted with rationale: these are administrative infrastructure
+  tasks and do not require spec scenario mapping. Not every task
+  needs to derive from a spec clause.
+- claude primary 1 MEDIUM performance: no sanitization performance
+  budget. Accepted. If the implementation phase finds the 15 regex
+  chain adds measurable latency, a performance Requirement can be
+  added then. Current regex chain is compiled once at module import
+  so per call cost is typically sub microsecond.
+- claude primary 3 LOW spec gap: inbound framework deny list is
+  static. Accepted. Framework list can be extended later; current
+  set covers the dominant options.
+- claude primary 4 MEDIUM security: DUMMY prefix still leaves
+  sk-lf- and pk-lf- substrings. Accepted. The .gitleaksignore entry
+  plus the startup check sidecar in D9 provide defense in depth.
+  Aggressive Langfuse-specific scanners can add custom ignore rules.
+- claude primary 5 LOW spec gap: http-tools cross-reference to
+  observability sanitization is prose only. Accepted. OpenSpec
+  does not currently support cross reference syntax; future change
+  can add it.
+- claude primary 7 LOW correctness: abstract base @traced_harness
+  decoration is dead code. Addressed by codex 3 fix which already
+  moves the decoration to concrete subclasses only.
+- claude primary 8 LOW observability: provider runtime error path
+  re-emission. Accepted. Can be added as a follow up if operators
+  report silent degradation during extended runs.
+
+### Convergence
+
+One round of multi vendor review. Nine real bugs fixed, seven findings
+accepted with rationale. No blocking findings remain from the synthesized
+consensus. Zero re-dispatch rounds needed. Total PLAN_REVIEW cost: three
+parallel vendor CLI invocations, about 3 minutes wall time.
+
+### Validation
+
+- openspec validate observability strict passes after all fixes.
+- Spec counts grew modestly: the Memory Requirement kept its name but
+  rewrote scenarios. One new scenario added (Concurrent delegations).
+  Overall Requirement count in the observability capability spec is
+  unchanged at 13.
+- Task counts unchanged at 43; task 3.4 is now a closed placeholder.

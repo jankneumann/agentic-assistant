@@ -1,0 +1,80 @@
+{
+  "review_type": "plan",
+  "target": "observability",
+  "reviewer_vendor": "claude_code",
+  "findings": [
+    {
+      "id": 1,
+      "type": "performance",
+      "criticality": "medium",
+      "description": "The Secret Sanitization Requirement applies 15 ordered regex patterns to every string value in every span attribute on every trace_* call. On a typical REPL turn with ~3 harness calls + ~2 delegations + ~5 tool calls, that is ~30 attribute passes per turn through 15 regexes each, i.e. ~450 regex invocations. The plan has no performance Requirement for sanitization — only for the noop provider's zero-allocation posture.",
+      "resolution": "Add a Requirement 'Sanitization Performance Budget' specifying a P95 budget per sanitize(value) call (e.g., under 50 microseconds on a 200-character string on a baseline CI runner), and a microbenchmark test that enforces it. Alternative: compile the regex list once at module import and cache the chain; document in design.md.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/observability/specs/observability/spec.md"
+    },
+    {
+      "id": 2,
+      "type": "architecture",
+      "criticality": "medium",
+      "description": "The design's contextvars ContextVar approach is correct for single-delegate calls, but the plan does not specify behavior when multiple concurrent sub-agents are spawned from the same parent task (e.g., asyncio.gather of two delegate calls). Each delegation's assistant_ctx push is task-local per PEP 567 IF asyncio.gather forks each coroutine into its own Task, which it does. But if a caller writes 'async with assistant_ctx(...):' around two concurrent sub-agent calls without gather, both would race on the same ContextVar scope.",
+      "resolution": "Add a scenario to the Persona and Role Context Propagation Requirement that names the concurrent-delegation case: 'WHEN two delegations are spawned via asyncio.gather, each sub-agent MUST see its own sub-role, and the parent context MUST be unchanged after both complete.' Add an explicit sentence in design.md D4 noting that the decorator MUST spawn each sub-agent in a distinct asyncio.Task to get task-local context semantics.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/observability/design.md"
+    },
+    {
+      "id": 3,
+      "type": "spec_gap",
+      "criticality": "low",
+      "description": "The No Inbound Interfaces Requirement enforces absence of inbound frameworks via 'no fastapi, flask, aiohttp.web, grpc.aio.server in sys.modules'. This list is static and will not catch future frameworks (e.g., starlette, quart, tornado.web, sanic, falcon, bottle, cherrypy). A drifting codebase could introduce one of these without the test noticing.",
+      "resolution": "Either (a) expand the deny list with additional common server frameworks, or (b) replace the positive-deny list with a negative assertion: 'no module name ending in .web, .server, or .wsgi inside src.assistant.telemetry imports'. Option (b) is more robust.",
+      "disposition": "accept",
+      "file_path": "openspec/changes/observability/specs/observability/spec.md"
+    },
+    {
+      "id": 4,
+      "type": "security",
+      "criticality": "medium",
+      "description": "Design D9 commits Langfuse INIT dev values with DUMMY- prefix plus a .gitleaksignore entry. The prefix neutralizes most scanners, but commits under that compose file still contain the string 'sk-lf-' and 'pk-lf-' as substrings — an aggressive scanner configured with Langfuse-specific rules would still flag. Additionally, the startup-check sidecar idea is documented but not captured as a task.",
+      "resolution": "Add an explicit task under Phase 4 to (a) author the startup-check sidecar script referenced in design.md D9, (b) exercise it in test 4.1 (docker-compose validity). Alternatively, if the sidecar is considered optional hardening, demote its claim from D9 and move to an open question.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/observability/tasks.md"
+    },
+    {
+      "id": 5,
+      "type": "spec_gap",
+      "criticality": "low",
+      "description": "The http-tools spec delta cross-references 'observability capability, Requirement Secret Sanitization' for sanitization of HTTP errors. But the cross-reference is prose only — an openspec validator does not enforce that the referenced Requirement exists. If the Secret Sanitization Requirement is later renamed or split, the cross-ref silently breaks.",
+      "resolution": "Lower priority. If openspec gains a cross-reference syntax, adopt it. Until then, keep a note in session-log.md reminding future authors to update cross-refs if renaming the sanitization Requirement.",
+      "disposition": "accept",
+      "file_path": "openspec/changes/observability/specs/http-tools/spec.md"
+    },
+    {
+      "id": 6,
+      "type": "spec_gap",
+      "criticality": "medium",
+      "description": "Persona name validation was deferred from iteration 1 (medium finding, persona names could in principle carry semi-sensitive info). The current plan treats 'persona' as always-safe pass-through in the sanitizer's known-safe-fields list. Deferral is reasonable but the plan does not state the assumption prominently — a future persona generator that produces names from user input could introduce a silent leak.",
+      "resolution": "Add a bullet to the design's Privacy Boundary Compliance section stating 'Persona names are assumed to be short, operator-chosen identifiers (e.g., work, personal) and are exposed in spans without sanitization. Any future code path that generates persona names from user input MUST add a separate validation step before registration.' This converts the assumption into an explicit, documented constraint.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/observability/design.md"
+    },
+    {
+      "id": 7,
+      "type": "correctness",
+      "criticality": "low",
+      "description": "Task 2.3 applies @traced_harness to HarnessAdapter.invoke abstract base AND to DeepAgentsHarness.invoke. But applying a decorator at the abstract base does not automatically decorate concrete subclasses unless they call super().invoke(). Most harness adapters override invoke entirely rather than calling super, so the abstract-base decoration is dead code.",
+      "resolution": "Either (a) remove the abstract-base decoration from task 2.3 and rely on applying @traced_harness to each concrete subclass, OR (b) use a metaclass or __init_subclass__ hook that decorates subclass.invoke at class creation time. Option (a) is simpler. Clarify the task wording.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/observability/tasks.md",
+      "line_range": {"start": 70, "end": 76}
+    },
+    {
+      "id": 8,
+      "type": "observability",
+      "criticality": "low",
+      "description": "The plan traces outbound operations (harness calls, delegations, tool calls, memory ops) but does not trace the telemetry module's own error paths. If the Langfuse provider's runtime path degrades silently on a backend outage (level-3 degradation), the operator has no visibility because the failure is logged at warn level once per process. A second independent Langfuse outage during the same process lifetime is silent.",
+      "resolution": "Add a scenario to the Graceful Degradation Requirement: 'WHEN provider.trace_llm_call raises during a batched flush after initial success THEN the provider MUST re-emit a warning log identifying the transient failure, up to once per 60 seconds, to prevent log flooding while preserving operator awareness.'",
+      "disposition": "accept",
+      "file_path": "openspec/changes/observability/specs/observability/spec.md"
+    }
+  ]
+}

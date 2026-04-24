@@ -4,18 +4,18 @@
 
 ### Requirement: Harness Invocation Emits Observability Span
 
-The system SHALL emit an observability `trace_llm_call` for every invocation of any `HarnessAdapter.invoke(...)` implementation by calling `get_observability_provider().trace_llm_call(...)` immediately before and after the awaited harness call. The emitted call MUST include the persona name, role name, model identifier drawn from the harness configuration, input/output token counts when reported by the harness, and the measured `duration_ms`.
+The system SHALL emit exactly one `trace_llm_call` observability span per invocation of any `SdkHarnessAdapter.invoke(...)` implementation. A `@traced_harness` decorator SHALL record the start time, await the underlying call, and then invoke `get_observability_provider().trace_llm_call(...)` after either success or caught exception — never before, because `duration_ms` and output token counts are not known until the awaited call completes.
 
-When the harness call raises an exception, the span MUST still be emitted (with `metadata={"error": type(exc).__name__}`) before the exception is re-raised to the caller.
+The emitted call MUST include the persona name, role name, model identifier drawn from the harness configuration, input/output token counts when reported by the harness, and the measured `duration_ms`. When the awaited harness call raises an exception, the decorator MUST catch, emit the span with `metadata={"error": type(exc).__name__}` and `duration_ms` equal to the elapsed time until the exception, then re-raise the original exception unchanged.
 
-The integration SHALL be implemented via a `@traced_harness` decorator applied to `invoke` in both `src/assistant/harnesses/base.py` (for the abstract base) and `src/assistant/harnesses/deep_agents.py` (for the Deep Agents concrete implementation), so that future harness implementations inherit the behavior automatically.
+The integration SHALL be implemented via a `@traced_harness` decorator applied to each concrete subclass of `SdkHarnessAdapter`. Applying the decorator to the abstract base at `src/assistant/harnesses/base.py` does NOT propagate to subclasses that override `invoke` entirely; therefore the decorator MUST be applied to concrete implementations directly — `DeepAgentsHarness.invoke` at `src/assistant/harnesses/sdk/deep_agents.py` and the `MSAgentFrameworkHarness.invoke` stub at `src/assistant/harnesses/sdk/ms_agent_fw.py`. Future harness implementations SHALL apply the same decorator at the point of concrete subclass definition.
 
 #### Scenario: Deep Agents harness invocation is traced
 
-- **WHEN** `DeepAgentsHarness(config).invoke(agent, "hello")` is awaited with persona `personal` and role `assistant`
-- **THEN** `get_observability_provider().trace_llm_call` MUST be called exactly once
-- **AND** the emitted call's kwargs MUST include `persona="personal"`, `role="assistant"`, `model=config.model`
-- **AND** the emitted `duration_ms` MUST be a non-negative float
+- **WHEN** `DeepAgentsHarness(persona, role).invoke(agent, "hello")` at `src/assistant/harnesses/sdk/deep_agents.py` is awaited with persona `personal` and role `assistant`
+- **THEN** `get_observability_provider().trace_llm_call` MUST be called exactly once after the awaited underlying call completes
+- **AND** the emitted call's kwargs MUST include `persona="personal"`, `role="assistant"`, and a `model` value drawn from the harness configuration
+- **AND** the emitted `duration_ms` MUST be a non-negative float measuring the elapsed time across the awaited call
 
 #### Scenario: Harness exception still emits trace before propagating
 
