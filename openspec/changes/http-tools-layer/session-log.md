@@ -161,3 +161,72 @@ Iteration 2 addressed the Round 1 multi-vendor plan review. Three vendors dispat
 ### Context
 
 Iteration 3 addressed the Round 2 multi-vendor plan review. Three vendors dispatched in parallel (claude, codex gpt-5.5, gemini) produced 19 raw findings — a 41% reduction from round 1. Ten substantive issues addressed, three accepted with documented rationale. The most consequential fix was R2-C5 (streaming enforcement of the 10 MiB cap), which would have been a real security regression had it shipped. Multi-vendor review caught three iteration-2-introduced regressions (R2-C1, R2-C2, R2-C4) that a single-vendor pass would have missed. `openspec validate --strict` green. Transitioning PLAN_REVIEW → IMPLEMENT per the autopilot state machine.
+
+---
+
+## Phase: Implementation + Review (2026-04-24) — Round 1
+
+**Agent**: claude-code (Opus 4.7, 1M context) + subagent composite + background policy agent | **Session**: autopilot-run-1
+
+### Decisions
+
+1. **Local-parallel tier chosen over coordinated**. Despite coordinator being available, the single-conversation orchestration model worked better with a `local-parallel` tier: dispatch sub-agents within the shared feature worktree rather than spawning coordinated per-package worktrees. Kept the complexity tractable without giving up DAG parallelism where `write_allow` scopes didn't overlap.
+2. **wp-http-tools-leaves recovery after stream timeout**. The dispatched subagent hit API-level stream-idle timeout after 17 tool uses; it had written 2 fixtures + 3 test files + conftest but not the source modules. Recovered by reading the test contracts, then implementing the 4 source modules inline (auth, openapi, registry, __init__) and the missing test_openapi.py. 25 tests green first-time after recovery.
+3. **wp-http-tools-composite parallel with wp-policy**. Dispatched wp-policy (small, well-scoped, ~140 LOC) to a background subagent while implementing wp-http-tools-composite (builder + discovery + ~11 new scenario tests) in the foreground. Both merged cleanly with zero file-scope collision, demonstrating the DAG's `write_allow` partitioning worked as designed.
+4. **IMPL_ITERATE pre-review catch**. Self-reviewing the `--list-tools` implementation before dispatching vendor review caught a latent bug: exit code keyed off any WARNING being emitted, which misclassified a `/openapi.json 500 → /help 200` fallback as a failure. Fixed before vendor review so they didn't have to flag it.
+5. **Multi-vendor IMPL_REVIEW surfaced 4 HIGH findings** that unit tests didn't catch, most critically C1: the REPL bypassed `DefaultToolPolicy` entirely. Unit tests for the policy layer passed (registered tools merged correctly) and unit tests for the CLI passed (discover_tools called with registry), but neither exercised the wiring between them — `role.preferred_tools` filtering was silently inactive. Fix routed tools through `CapabilityResolver.resolve().tools.authorized_tools()`.
+6. **Manifest shape fix confirmed prior deviation**. wp-policy subagent noted at implementation time that task briefing said "list of dicts" but spec said "list of strings". Chose dicts and flagged as a judgment call. Codex's IMPL_REVIEW C4 re-confirmed the spec; changed to strings and updated the test.
+7. **Accepted 4 non-blocking items from IMPL_REVIEW** (C8 additionalProperties, G2 description propagation, G3 export-command discovery, G4 param/body name collision) because they're either edge cases unlikely to hit current personas (C8, G4), nice-to-have UX improvements (G2), or features of a phase that hasn't arrived yet (G3 — Claude Code harness is still a stub).
+8. **CI mypy scope mismatch caught at cleanup time**. Local ran `mypy src/assistant/` but CI runs `mypy src tests` (strict). CI flagged 15 errors in test_builder.py around `coroutine | None` narrowing. Added `_call(tool, **kwargs)` and `_instantiate_args(tool)` helpers to narrow types without scattering `type: ignore` comments through test bodies.
+
+### Alternatives Considered
+
+- **Dispatch wp-http-tools-composite as a subagent** (like wp-policy): rejected after the wp-leaves timeout. The composite package is ~430 LOC with ~11 new scenario tests across builder + discovery; risk of another stream-idle timeout was too high. Foreground implementation gave tighter feedback loops.
+- **Skip IMPL_REVIEW because PLAN_REVIEW caught everything**: rejected, and IMPL_REVIEW validated the decision — it caught C1 (REPL bypass) and C2 (client lifecycle) that plan review couldn't have surfaced (they're wiring issues, not design issues).
+- **Run a second IMPL_REVIEW round on the fixes**: considered, skipped. The 7 fixes applied were surgical (change X to Y, add missing line Z) with no new architectural surface, so the regression risk from running another review was lower than the cost of the round itself.
+
+### Trade-offs
+
+- Accepted one CI red-run (mypy scope mismatch) and the ~3-minute fix cycle because catching it pre-PR would have required running `mypy src tests` locally, which isn't in our muscle memory. Updated the "Landing the Plane" Quality Gates bullet to run the broader mypy scope.
+- Accepted bulk-ticking 48 `- [ ]` boxes in tasks.md during cleanup rather than ticking per-task during implementation. The tests passing are authoritative proof of done-ness; the checkbox state is a retroactive annotation.
+
+### Open Questions
+
+- [ ] Should `tasks.md` checkboxes be auto-ticked by work-package completion hooks in a future autopilot? Would remove the bulk-flip step at cleanup.
+- [ ] Is the `_async_wrapper` identity function in `builder.py` actually needed? Codex flagged it as likely dead code in review; I accepted as-is for this PR but it's a candidate for removal in a later refactor pass.
+
+### Context
+
+Implementation landed 5 work packages + 1 IMPL_ITERATE self-review fix + 1 IMPL_REVIEW fix commit + 1 CI-mypy fix commit across 10 commits. 297 tests passing locally and on CI. 4 HIGH + 3 MEDIUM implementation findings fixed; 4 LOW/edge-case findings accepted and documented in tasks.md Migration Notes. PR #15 created with full evidence trail.
+
+---
+
+## Phase: Cleanup (2026-04-24)
+
+**Agent**: claude-code (Opus 4.7, 1M context) | **Session**: autopilot-run-1
+
+### Decisions
+
+1. **Rebase-merge strategy** (per `merge-pull-requests` skill default for OpenSpec PRs). The 10 commits follow conventional format and encode design intent (plan iterations → wp-prep → wp-leaves → wp-composite+policy → wp-cli → wp-integration → impl-iterate fix → impl-review fix → CI fix). Preserving this as individual commits on main improves future `git blame` / `git bisect`.
+2. **Skipped Docker-dependent validation phases** (deploy / smoke / security / e2e). No local Docker environment configured for this machine; the skill treats Docker deploy as a soft gate. Environment-safe gates (pytest, ruff, mypy on src+tests, openspec validate --strict) all green locally and on CI.
+3. **Re-ran CI after fixing mypy scope mismatch**. Initial CI failed on 15 mypy errors surfaced only when running `mypy src tests` (stricter scope than my local `mypy src/`). Fixed with type-narrowing helpers, re-pushed (commit d810301), CI green.
+4. **Bulk-ticked all 48 task boxes at cleanup time** rather than per-task during implementation. The 297-test green gate is authoritative proof of completion; retroactive annotation.
+5. **Accepted IMPL_REVIEW deferred items as follow-ups** (C8, G2, G3, G4) via documentation in tasks.md Migration Notes rather than creating a followup-proposal change-id. Each is independent and likely to fold naturally into a future phase (G3 → Claude Code harness maturation; C8 → real-world OpenAPI service with additionalProperties; G2/G4 → incremental polish).
+
+### Alternatives Considered
+
+- **Create a followup-http-tools-layer proposal for the 4 deferred items**: rejected — they're too small and too independent to warrant a bundled proposal. Filing as issues (or absorbing into later phases) is lower-ceremony.
+- **Squash-merge the PR instead of rebase**: rejected — see decision #1 above. Commit granularity is intentional.
+- **Run Docker deploy/smoke phases anyway via spinup script**: rejected — no docker-compose.yaml for the assistant stack yet; deploy validation is properly deferred to when the service layer actually exists.
+
+### Trade-offs
+
+- Accepted skipping deploy/smoke/security gates for this phase because the feature is library code (no runtime service to deploy) and its surface is HTTP outbound only. When we later ship an `a2a-server` or similar public-facing service, those gates become load-bearing.
+
+### Open Questions
+
+- [ ] Should we file the 4 deferred IMPL_REVIEW items as coordinator issues now, or defer until a consumer hits them? Leaning defer — they're low-value to track as isolated tickets vs. addressed in context.
+
+### Context
+
+Cleanup merged PR #15 via rebase, archived the OpenSpec change (`openspec archive http-tools-layer`), removed the feature worktree, and pushed the updated main. Remote branch deleted by `gh pr merge --delete-branch`. Specs under `openspec/specs/http-tools/`, `openspec/specs/tool-policy/`, and `openspec/specs/cli-interface/` updated via the archive step. Roadmap flipped `http-tools-layer` from `in-progress` → `archived`.
