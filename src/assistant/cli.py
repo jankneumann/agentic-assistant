@@ -12,12 +12,15 @@ import logging
 import sys
 
 import click
+import httpx
 
 from assistant.core.persona import PersonaRegistry
 from assistant.core.role import RoleConfig, RoleRegistry
 from assistant.delegation.spawner import DelegationSpawner
 from assistant.harnesses.base import HostHarnessAdapter, SdkHarnessAdapter
 from assistant.harnesses.factory import create_harness as _default_create_harness
+from assistant.http_tools import HttpToolRegistry
+from assistant.http_tools.discovery import discover_tools
 
 logger = logging.getLogger(__name__)
 
@@ -60,12 +63,18 @@ def main() -> None:
     is_flag=True,
     help="List roles available for the selected persona and exit.",
 )
+@click.option(
+    "--list-tools",
+    is_flag=True,
+    help="List HTTP tools discovered from the persona's tool_sources and exit.",
+)
 def run(
     persona: str | None,
     role: str | None,
     harness: str,
     list_personas: bool,
     list_roles: bool,
+    list_tools: bool,
 ) -> None:
     """Start the interactive REPL."""
     persona_reg = PersonaRegistry()
@@ -83,6 +92,13 @@ def run(
         for r in role_reg.available_for_persona(pc):
             click.echo(r)
         return
+
+    if list_tools:
+        if not persona:
+            raise click.UsageError("--list-tools requires -p/--persona.")
+        pc = _load_persona_or_fail(persona_reg, persona)
+        exit_code = asyncio.run(_print_tool_catalog(pc))
+        sys.exit(exit_code)
 
     if not persona:
         raise click.UsageError("-p/--persona is required.")
@@ -166,6 +182,85 @@ def _load_persona_or_fail(
         raise click.UsageError(str(e)) from e
 
 
+def _make_discovery_client() -> httpx.AsyncClient:
+    """Shared httpx.AsyncClient with the D9 security posture.
+
+    - 10s read / 5s connect timeouts
+    - ``follow_redirects=False`` (credentials must not leak to
+      attacker-controlled hosts)
+    - TLS verification on
+    - Small connection pool scoped to session lifetime
+    """
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(10.0, connect=5.0),
+        follow_redirects=False,
+        verify=True,
+        limits=httpx.Limits(max_connections=20, max_keepalive_connections=5),
+    )
+
+
+def _has_configured_tool_sources(pc) -> bool:
+    return any(src.get("base_url") for src in pc.tool_sources.values())
+
+
+async def _print_tool_catalog(pc) -> int:
+    """Implement ``assistant --list-tools`` short-circuit behavior.
+
+    Returns the exit code: 0 if all configured sources discovered
+    successfully (or there were none), 1 if any source failed.
+    """
+    if not pc.tool_sources:
+        click.echo("No tool_sources configured.")
+        return 0
+
+    # Capture WARNING records from discovery so failed sources can be
+    # reported without changing ``discover_tools`` return shape.
+    captured: list[logging.LogRecord] = []
+
+    class _Handler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            if record.levelno >= logging.WARNING:
+                captured.append(record)
+
+    handler = _Handler()
+    discovery_logger = logging.getLogger("assistant.http_tools.discovery")
+    discovery_logger.addHandler(handler)
+    try:
+        async with _make_discovery_client() as client:
+            registry = await discover_tools(pc.tool_sources, client=client)
+    finally:
+        discovery_logger.removeHandler(handler)
+
+    configured = sorted(
+        name for name, src in pc.tool_sources.items() if src.get("base_url")
+    )
+    if not configured:
+        click.echo("No tool_sources configured.")
+        return 0
+
+    for source_name in configured:
+        tools = registry.by_source(source_name)
+        click.echo(f"\n[{source_name}]")
+        if not tools:
+            click.echo("  (no tools — see warning logs)")
+            continue
+        for tool in tools:
+            desc = (tool.description or "").split("\n", 1)[0]
+            click.echo(f"  {tool.name}  — {desc}")
+            args_schema = tool.args_schema
+            if args_schema is not None and hasattr(args_schema, "model_fields"):
+                field_names = sorted(args_schema.model_fields.keys())
+                if field_names:
+                    click.echo(f"    args: {', '.join(field_names)}")
+
+    if captured:
+        click.echo("\nFailures:", err=True)
+        for record in captured:
+            click.echo(f"  {record.getMessage()}", err=True)
+        return 1
+    return 0
+
+
 async def _run_repl(
     persona_reg: PersonaRegistry,
     role_reg: RoleRegistry,
@@ -178,11 +273,30 @@ async def _run_repl(
     click.echo(f"Role:     {rc.display_name}")
     click.echo(f"Harness:  {harness_name}")
 
-    if any(src.get("base_url") for src in pc.tool_sources.values()):
-        click.echo(
-            "  Tools:  HTTP tool discovery is deferred to P2; "
-            "passing empty tool list."
+    if _has_configured_tool_sources(pc):
+        async with _make_discovery_client() as client:
+            registry = await discover_tools(pc.tool_sources, client=client)
+            await _run_repl_with_registry(
+                persona_reg, role_reg, pc, rc, harness_name, adapter, registry,
+            )
+    else:
+        await _run_repl_with_registry(
+            persona_reg, role_reg, pc, rc, harness_name, adapter,
+            HttpToolRegistry(),
         )
+
+
+async def _run_repl_with_registry(
+    persona_reg: PersonaRegistry,
+    role_reg: RoleRegistry,
+    pc,
+    rc: RoleConfig,
+    harness_name: str,
+    adapter: SdkHarnessAdapter,
+    registry: HttpToolRegistry,
+) -> None:
+    http_tools = registry.list_all()
+    click.echo(f"  HTTP tools: {len(http_tools)}")
 
     extensions = persona_reg.load_extensions(pc)
     ext_names = [getattr(e, "name", "?") for e in extensions]
@@ -192,7 +306,7 @@ async def _run_repl(
     )
 
     try:
-        agent = await adapter.create_agent(tools=[], extensions=extensions)
+        agent = await adapter.create_agent(tools=http_tools, extensions=extensions)
     except NotImplementedError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -224,7 +338,7 @@ async def _run_repl(
                     click.echo("Error: harness is not SDK-based\n")
                     continue
                 new_agent = await new_adapter_raw.create_agent(
-                    tools=[], extensions=extensions
+                    tools=http_tools, extensions=extensions,
                 )
             except (ValueError, NotImplementedError) as e:
                 click.echo(f"Error: {e}\n")
@@ -239,7 +353,7 @@ async def _run_repl(
                 click.echo("Usage: /delegate <role> <task>\n")
                 continue
             spawner = DelegationSpawner(
-                pc, rc, adapter, tools=[], extensions=extensions
+                pc, rc, adapter, tools=http_tools, extensions=extensions,
             )
             try:
                 result = await spawner.delegate(parts[1], parts[2])

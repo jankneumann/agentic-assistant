@@ -20,9 +20,11 @@ from typing import Any
 
 import pytest
 
-# Activate pytest-httpserver's plugin for this test package so tests
-# can request the ``httpserver`` fixture directly.
-pytest_plugins = ["pytest_httpserver"]
+# pytest-httpserver's plugin is auto-registered via setuptools entry
+# points when the package is installed (see wp-prep / pyproject.toml);
+# no explicit `pytest_plugins` declaration is needed, and declaring it
+# at subpackage level is rejected when pytest is invoked from the
+# top-level ``tests/`` directory.
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
