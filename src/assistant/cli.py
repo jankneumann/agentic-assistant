@@ -208,13 +208,26 @@ async def _print_tool_catalog(pc) -> int:
 
     Returns the exit code: 0 if all configured sources discovered
     successfully (or there were none), 1 if any source failed.
+
+    Success/failure is decided by the registry's contents: a source that
+    ended up with at least one tool is considered successful, even if
+    an intermediate warning was emitted (e.g. ``/openapi.json`` returned
+    500 and ``/help`` succeeded). Warnings are still surfaced to the
+    user as diagnostic context when at least one source failed.
     """
     if not pc.tool_sources:
         click.echo("No tool_sources configured.")
         return 0
 
+    configured = sorted(
+        name for name, src in pc.tool_sources.items() if src.get("base_url")
+    )
+    if not configured:
+        click.echo("No tool_sources configured.")
+        return 0
+
     # Capture WARNING records from discovery so failed sources can be
-    # reported without changing ``discover_tools`` return shape.
+    # diagnosed — but do NOT key the exit code off the warning count.
     captured: list[logging.LogRecord] = []
 
     class _Handler(logging.Handler):
@@ -231,18 +244,13 @@ async def _print_tool_catalog(pc) -> int:
     finally:
         discovery_logger.removeHandler(handler)
 
-    configured = sorted(
-        name for name, src in pc.tool_sources.items() if src.get("base_url")
-    )
-    if not configured:
-        click.echo("No tool_sources configured.")
-        return 0
-
+    failed_sources: list[str] = []
     for source_name in configured:
         tools = registry.by_source(source_name)
         click.echo(f"\n[{source_name}]")
         if not tools:
             click.echo("  (no tools — see warning logs)")
+            failed_sources.append(source_name)
             continue
         for tool in tools:
             desc = (tool.description or "").split("\n", 1)[0]
@@ -253,10 +261,15 @@ async def _print_tool_catalog(pc) -> int:
                 if field_names:
                     click.echo(f"    args: {', '.join(field_names)}")
 
-    if captured:
+    if failed_sources:
         click.echo("\nFailures:", err=True)
+        # Only surface warnings whose message names a failed source, so
+        # intermediate warnings for sources that ultimately succeeded
+        # don't pollute the Failures section.
         for record in captured:
-            click.echo(f"  {record.getMessage()}", err=True)
+            msg = record.getMessage()
+            if any(name in msg for name in failed_sources):
+                click.echo(f"  {msg}", err=True)
         return 1
     return 0
 
