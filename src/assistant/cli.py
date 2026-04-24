@@ -308,8 +308,9 @@ async def _run_repl_with_registry(
     adapter: SdkHarnessAdapter,
     registry: HttpToolRegistry,
 ) -> None:
-    http_tools = registry.list_all()
-    click.echo(f"  HTTP tools: {len(http_tools)}")
+    from assistant.core.capabilities.resolver import CapabilityResolver
+
+    click.echo(f"  HTTP tools: {len(registry)}")
 
     extensions = persona_reg.load_extensions(pc)
     ext_names = [getattr(e, "name", "?") for e in extensions]
@@ -318,8 +319,18 @@ async def _run_repl_with_registry(
         f"{' (' + ', '.join(ext_names) + ')' if ext_names else ''}"
     )
 
+    # Route tools through CapabilityResolver → DefaultToolPolicy so
+    # role.preferred_tools filtering applies uniformly to extension
+    # tools + HTTP tools (spec: tool-policy / DefaultToolPolicy
+    # Implementation).
+    resolver = CapabilityResolver(http_tool_registry=registry)
+    capabilities = resolver.resolve(pc, "sdk", rc)
+    authorized = capabilities.tools.authorized_tools(
+        pc, rc, loaded_extensions=extensions,
+    )
+
     try:
-        agent = await adapter.create_agent(tools=http_tools, extensions=extensions)
+        agent = await adapter.create_agent(tools=authorized, extensions=extensions)
     except NotImplementedError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -350,8 +361,13 @@ async def _run_repl_with_registry(
                 if not isinstance(new_adapter_raw, SdkHarnessAdapter):
                     click.echo("Error: harness is not SDK-based\n")
                     continue
+                new_resolver = CapabilityResolver(http_tool_registry=registry)
+                new_caps = new_resolver.resolve(pc, "sdk", new_rc)
+                new_authorized = new_caps.tools.authorized_tools(
+                    pc, new_rc, loaded_extensions=extensions,
+                )
                 new_agent = await new_adapter_raw.create_agent(
-                    tools=http_tools, extensions=extensions,
+                    tools=new_authorized, extensions=extensions,
                 )
             except (ValueError, NotImplementedError) as e:
                 click.echo(f"Error: {e}\n")
@@ -366,7 +382,7 @@ async def _run_repl_with_registry(
                 click.echo("Usage: /delegate <role> <task>\n")
                 continue
             spawner = DelegationSpawner(
-                pc, rc, adapter, tools=http_tools, extensions=extensions,
+                pc, rc, adapter, tools=authorized, extensions=extensions,
             )
             try:
                 result = await spawner.delegate(parts[1], parts[2])

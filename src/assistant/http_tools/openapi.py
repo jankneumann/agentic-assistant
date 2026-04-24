@@ -49,12 +49,21 @@ def parse_operations(spec: dict[str, Any]) -> Iterator[ParsedOperation]:
     for path, path_item in sorted(paths.items()):
         if not isinstance(path_item, dict):
             continue
+        # OpenAPI allows parameters declared at the path-item level to
+        # apply to every operation in that path. Merge them with each
+        # operation's own parameters (operation-level wins on name
+        # collision, per OpenAPI 3.x § 4.8.9.1).
+        path_params_raw = path_item.get("parameters") or []
+        path_params = [p for p in path_params_raw if isinstance(p, dict)]
         for method in _HTTP_METHODS:
             operation = path_item.get(method)
             if not isinstance(operation, dict):
                 continue
             try:
-                yield _parse_operation(spec, method, path, operation)
+                yield _parse_operation(
+                    spec, method, path, operation,
+                    path_item_parameters=path_params,
+                )
             except ValueError as exc:
                 logger.warning(
                     "skipping operation %s %s: %s", method.upper(), path, exc,
@@ -66,14 +75,24 @@ def _parse_operation(
     method: str,
     path: str,
     operation: dict[str, Any],
+    *,
+    path_item_parameters: list[dict[str, Any]] | None = None,
 ) -> ParsedOperation:
     op_id = operation.get("operationId") or _synth_operation_id(method, path)
 
-    parameters_raw = operation.get("parameters") or []
+    op_params_raw = operation.get("parameters") or []
+    op_params = [p for p in op_params_raw if isinstance(p, dict)]
+
+    # Merge: operation-level overrides path-item-level on (name, in).
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    for p in (path_item_parameters or []) + op_params:
+        name = p.get("name")
+        location = p.get("in")
+        if isinstance(name, str) and isinstance(location, str):
+            merged[(name, location)] = p
     parameters = [
         _resolve_ref_recursive(spec, p, visited=set())
-        for p in parameters_raw
-        if isinstance(p, dict)
+        for p in merged.values()
     ]
 
     request_body_schema: dict[str, Any] | None = None

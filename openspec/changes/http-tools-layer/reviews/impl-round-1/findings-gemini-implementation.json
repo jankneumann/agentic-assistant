@@ -1,0 +1,48 @@
+{
+  "findings": [
+    {
+      "id": 1,
+      "type": "correctness",
+      "criticality": "medium",
+      "description": "parse_operations ignores parameters defined at the Path Item level. OpenAPI spec allows parameters to be defined once for all operations in a path, which must be merged with operation-level parameters.",
+      "disposition": "fix",
+      "resolution": "Update parse_operations in src/assistant/http_tools/openapi.py to collect parameters from the path_item and pass them to _parse_operation for merging.",
+      "file_path": "src/assistant/http_tools/openapi.py",
+      "line_start": 44,
+      "line_end": 56
+    },
+    {
+      "id": 2,
+      "type": "api",
+      "criticality": "low",
+      "description": "_build_args_schema and _build_nested_model do not propagate the 'description' field from JSON Schema to Pydantic Fields for requestBody properties. This reduces the quality of tool documentation provided to the LLM.",
+      "disposition": "fix",
+      "resolution": "Pass prop_schema.get('description', '') to the Field constructor in _build_args_schema and _build_nested_model within src/assistant/http_tools/builder.py.",
+      "file_path": "src/assistant/http_tools/builder.py",
+      "line_start": 105,
+      "line_end": 125
+    },
+    {
+      "id": 3,
+      "type": "integration",
+      "criticality": "medium",
+      "description": "The CLI 'export' command does not perform HTTP tool discovery or include the tool manifest in its output. Host-harness integrations (like Claude Code) will lack descriptions of available HTTP tools.",
+      "disposition": "fix",
+      "resolution": "Update the export command in src/assistant/cli.py to perform discovery when tool_sources are present and include the tool manifest in the printed output.",
+      "file_path": "src/assistant/cli.py",
+      "line_start": 125,
+      "line_end": 150
+    },
+    {
+      "id": 4,
+      "type": "correctness",
+      "criticality": "low",
+      "description": "Parameter and body property name collisions in _build_args_schema result in the body property overwriting the parameter in the Pydantic model. Both will then share the same value during invocation.",
+      "disposition": "accept",
+      "resolution": "Document the limitation that flattened arg schemas assume unique parameter names across path/query/body segments for a given operation.",
+      "file_path": "src/assistant/http_tools/builder.py",
+      "line_start": 120,
+      "line_end": 125
+    }
+  ]
+}

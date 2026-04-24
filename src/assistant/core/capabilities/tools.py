@@ -67,9 +67,11 @@ class DefaultToolPolicy:
             manifest["tool_sources"] = dict(persona.tool_sources)
 
         if self._http_tool_registry is not None:
+            # Spec: list of registered HTTP tool keys "{source}:{op_id}"
+            # (not a list of dicts). See specs/tool-policy/spec.md
+            # "Tool Manifest Export" scenario.
             manifest["http_tools"] = [
-                {"name": t.name, "description": t.description}
-                for t in self._http_tool_registry.list_all()
+                t.name for t in self._http_tool_registry.list_all()
             ]
 
         return manifest

@@ -186,9 +186,11 @@ def test_export_tool_manifest_includes_http_tools() -> None:
     assert "http_tools" in manifest
     entries = manifest["http_tools"]
     assert isinstance(entries, list)
-    names = [e["name"] for e in entries]
-    assert "backend:list_items" in names
-    assert "backend:create_item" in names
+    # Per tool-policy spec: list of registered HTTP tool KEYS (strings),
+    # not a list of dicts.
+    assert all(isinstance(e, str) for e in entries)
+    assert "backend:list_items" in entries
+    assert "backend:create_item" in entries
     # Pre-existing keys are preserved.
     assert "extensions" in manifest
     assert "tool_sources" in manifest
