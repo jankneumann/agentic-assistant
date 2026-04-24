@@ -89,10 +89,11 @@ Cross-references:
 ### Affected specs
 - New spec: `observability` capability
 - Modified specs (hook integration clauses):
-  - `harness-adapter` — adds SHALL clause: emits `trace_llm_call` on `invoke()`
-  - `delegation-spawner` — adds SHALL clause: emits `trace_delegation` on `delegate()`
-  - `extension-registry` — adds SHALL clause: extension tool calls traced via `trace_tool_call`
-  - `http-tools` — adds SHALL clause: http-tool invocations traced via `trace_tool_call`
+  - `harness-adapter` — adds SHALL clause: emits `trace_llm_call` on `invoke()`; adds scenario covering the `MSAgentFrameworkHarness` stub's traced-on-raise behavior
+  - `delegation-spawner` — adds SHALL clause: emits `trace_delegation` on `delegate()` with 256-character hashing threshold named in the Requirement body
+  - `extension-registry` — adds SHALL clause: extension tool calls traced via `trace_tool_call`; authoritative aggregation-site list lives in the new `capability-resolver` delta
+  - `capability-resolver` — adds SHALL clause naming the two extension-tool aggregation sites (`core/capabilities/tools.py` and `harnesses/sdk/deep_agents.py`) and the shared `wrap_extension_tools` helper
+  - `http-tools` — adds SHALL clause: http-tool invocations traced via `trace_tool_call`, with sanitization cross-referenced to observability's Secret Sanitization Requirement
   - (Memory spec not yet populated pending `memory-architecture` phase; `trace_memory_op` lands as a scenario in the new `observability` spec and is cross-referenced when memory-architecture archives.)
 
 ### Affected code

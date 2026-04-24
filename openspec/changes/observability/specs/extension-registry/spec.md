@@ -4,7 +4,7 @@
 
 ### Requirement: Extension Tool Invocations Emit Observability Span
 
-The system SHALL wrap every LangChain `StructuredTool` returned by `Extension.as_langchain_tools()` such that each tool invocation emits a `trace_tool_call` observability span. The wrapping SHALL happen in `src/assistant/extensions/base.py` so every extension (current stubs and future real implementations) inherits the behavior without needing to add tracing code.
+The system SHALL ensure that every LangChain `StructuredTool` returned by any `Extension.as_langchain_tools()` emits a `trace_tool_call` observability span on each invocation. Because `Extension` is a `typing.Protocol` (not a base class that carries behavior for subclasses), the wrapping SHALL be performed at the aggregation sites that compose extension tool bundles — see the `capability-resolver` capability spec for the authoritative list of aggregation sites and the shared `wrap_extension_tools` helper. Individual extension implementations SHALL NOT add tracing code themselves.
 
 The emitted call MUST include `tool_name` (the StructuredTool's `name`), `tool_kind="extension"`, `persona`, `role`, and `duration_ms`. When the tool's `_run` or `_arun` raises, the span MUST be emitted with `error=<exception type name>` before the exception propagates.
 
