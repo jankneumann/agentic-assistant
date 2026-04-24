@@ -146,8 +146,6 @@ that waste the most time:
 
 See `openspec/roadmap.md` for the full sequence. Notable gaps:
 
-- **`http-tools-layer` phase — HTTP tools**: `cli.py` does not yet call
-  `discover_tools`; it passes an empty tool list and logs a warning.
 - **`memory-architecture` phase — memory layer**: no per-persona Postgres
   or Graphiti yet.
 - **`ms-graph-extension` / `google-extensions` phases**: all stubs return

@@ -148,7 +148,7 @@ items:
   - item_id: http-tools-layer
     change_id: http-tools-layer
     title: HTTP tools layer (discover + build Pydantic-model tools)
-    status: candidate
+    status: in-progress
     priority: 6
     effort: M
     depends_on: [capability-protocols]
