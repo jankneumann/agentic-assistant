@@ -21,6 +21,7 @@ from assistant.core.capabilities.types import (
     ExecutionContext,
     SandboxConfig,
 )
+from assistant.http_tools import HttpToolRegistry
 
 
 class _HostProvidedSandbox:
@@ -42,12 +43,14 @@ class CapabilityResolver:
         memory_factory: Callable[[], MemoryPolicy] | None = None,
         tool_factory: Callable[[], ToolPolicy] | None = None,
         context_factory: Callable[[], ContextProvider] | None = None,
+        http_tool_registry: HttpToolRegistry | None = None,
     ) -> None:
         self._guardrail_factory = guardrail_factory
         self._sandbox_factory = sandbox_factory
         self._memory_factory = memory_factory
         self._tool_factory = tool_factory
         self._context_factory = context_factory
+        self._http_tool_registry = http_tool_registry
 
     def resolve(
         self, persona: Any, harness_type: str, role: Any
@@ -78,7 +81,9 @@ class CapabilityResolver:
                 tools=(
                     self._tool_factory()
                     if self._tool_factory
-                    else DefaultToolPolicy()
+                    else DefaultToolPolicy(
+                        http_tool_registry=self._http_tool_registry,
+                    )
                 ),
                 context=context,
             )
