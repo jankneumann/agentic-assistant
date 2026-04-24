@@ -1,0 +1,28 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "External Ref Service",
+    "version": "0.0.1"
+  },
+  "paths": {
+    "/external": {
+      "post": {
+        "operationId": "external_op",
+        "summary": "Operation whose body schema uses an external $ref.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "https://example.com/foo.json" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    }
+  }
+}
