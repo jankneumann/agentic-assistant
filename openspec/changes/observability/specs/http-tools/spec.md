@@ -6,7 +6,7 @@
 
 The system SHALL wrap every HTTP tool constructed by `src/assistant/http_tools/builder.py` such that each invocation emits a `trace_tool_call` observability span with `tool_kind="http"`. The wrapping SHALL happen inside `_build_structured_tool` (or its successor in the builder) so the observability integration is transparent to `discover_tools` consumers.
 
-The emitted call MUST include `tool_name` (the builder-assigned tool name, typically `<source>.<operationId>`), `tool_kind="http"`, `persona`, `role`, and `duration_ms`. When the underlying HTTPX call raises, the span MUST be emitted with `error=<exception type name>` before the exception propagates. Sanitization MUST strip any `Authorization` or `Bearer` token values that may appear in error messages or metadata before emission.
+The emitted call MUST include `tool_name` (the builder-assigned tool name, typically `<source>.<operationId>`), `tool_kind="http"`, `persona`, `role`, and `duration_ms`. When the underlying HTTPX call raises, the span MUST be emitted with `error=<exception type name>` before the exception propagates. The sanitization requirement (see `observability` capability, Requirement "Secret Sanitization") SHALL apply to every error message and metadata field before the span is emitted. That Requirement already covers `Bearer`, `Authorization: Basic`, `Authorization: Digest`, and `Cookie` patterns; this Requirement reiterates the cross-reference so implementers wrapping HTTP tools do not miss it.
 
 #### Scenario: HTTP tool invocation emits trace_tool_call
 

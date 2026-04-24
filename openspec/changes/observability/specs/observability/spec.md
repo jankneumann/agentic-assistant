@@ -36,6 +36,12 @@ The Protocol SHALL be decorated with `@runtime_checkable` so `isinstance(obj, Ob
 - **THEN** a `ValueError` MUST be raised identifying the invalid `tool_kind`
 - **AND** no span SHALL be emitted
 
+#### Scenario: Rejects mis-typed op value
+
+- **WHEN** `trace_memory_op(op="READ", ...)` is invoked on any provider (any value outside the fixed set `{"read", "write", "recall", "episode_add", "graph_query"}`, including the wrong-case `"READ"`)
+- **THEN** a `ValueError` MUST be raised identifying the invalid `op`
+- **AND** no span SHALL be emitted
+
 ### Requirement: Graceful Degradation Across Three Levels
 
 The telemetry factory `get_observability_provider()` at `src/assistant/telemetry/factory.py` SHALL return a functional provider under every one of these failure conditions without raising:
@@ -140,20 +146,43 @@ Operations on `src/assistant/core/memory.py` (read, write, recall) and `src/assi
 The module `src/assistant/telemetry/sanitize.py` SHALL apply an ordered regex list to every string value in span attributes, metadata dicts, and error messages emitted to any provider. The regex list MUST be applied most-specific-first and MUST include at least these patterns in this order:
 
 1. `pk-lf-[A-Za-z0-9]+` and `sk-lf-[A-Za-z0-9]+` → `LF-KEY-REDACTED`
-2. `sk-[A-Za-z0-9]+` → `SK-REDACTED`
-3. `sbp_[A-Za-z0-9]+` → `SBP-REDACTED`
-4. `eyJ[A-Za-z0-9_\-\.]+` → `JWT-REDACTED`
-5. `Bearer +[A-Za-z0-9_\-\.=]+` → `Bearer REDACTED`
-6. Private submodule URL patterns matching `git@[^\s]+:[^\s]+\.git` and `https://[^\s]+@[^\s]+\.git` → `SUBMODULE-URL-REDACTED`
-7. Catch-all `(?i)(password|token|secret|key)=[^\s&]+` → `\1=REDACTED`
+2. `AKIA[0-9A-Z]{16}` and `ASIA[0-9A-Z]{16}` → `AWS-KEY-REDACTED`
+3. `(ghp_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9_]{36,255}` → `GH-TOKEN-REDACTED`
+4. `xox[abprs]-[0-9]+-[0-9]+-[A-Za-z0-9_-]{24,}` → `SLACK-TOKEN-REDACTED`
+5. `ya29\.[A-Za-z0-9_-]+` → `GOOGLE-OAUTH-REDACTED`
+6. `(postgres|postgresql|mysql|mongodb|redis)://[^\s:]+:[^\s@]+@[^\s]+` → `DB-URL-REDACTED`
+7. `sk-[A-Za-z0-9]+` → `SK-REDACTED`
+8. `sbp_[A-Za-z0-9]+` → `SBP-REDACTED`
+9. `eyJ[A-Za-z0-9_\-\.]+` → `JWT-REDACTED`
+10. `Authorization:\s*Basic\s+[A-Za-z0-9+/=]+` → `Authorization: Basic REDACTED`
+11. `Authorization:\s*Digest\s+[^\r\n]+` → `Authorization: Digest REDACTED`
+12. `Cookie:\s*[^\r\n]+` → `Cookie: REDACTED`
+13. `Bearer +[A-Za-z0-9_\-\.=]+` → `Bearer REDACTED`
+14. Private submodule URL patterns matching `git@[^\s:]+:[^\s]+\.git` and `https://[^\s@]+@[^\s]+\.git` → `SUBMODULE-URL-REDACTED`
+15. Catch-all `(?i)(password|token|secret|key|api[_-]?key)=[^\s&]+` → `\1=REDACTED`
 
-The sanitizer MUST NOT modify `persona` or `role` name fields (which may legitimately match generic patterns).
+The sanitizer MUST NOT modify fields with known-safe semantics: `persona`, `role`, `parent_role`, `sub_role`, `tool_name`, `model`, `name` (span name), `outcome`, `op`, `tool_kind`. Every other string passes through the redaction chain.
 
-#### Scenario: Langfuse secret key is redacted before Langfuse public key
+#### Scenario: Langfuse-specific key is redacted before the generic secret-key pattern
 
 - **WHEN** a span attribute value contains both `sk-lf-abc123` and `sk-generic456` as substrings
 - **THEN** the sanitized value MUST contain `LF-KEY-REDACTED` for the `sk-lf-` match
 - **AND** MUST contain `SK-REDACTED` for the generic `sk-` match
+- **AND** the same ordering rule MUST apply for `pk-lf-*` before any generic public-key-shaped pattern
+
+#### Scenario: Common vendor-token formats are redacted
+
+- **WHEN** a span attribute value contains any of: an AWS access key matching `AKIA` followed by 16 uppercase alphanumerics; a GitHub PAT matching `ghp_` (or `gho_` / `ghu_` / `ghs_` / `ghr_`) followed by 36 or more base62 characters; a Slack token matching `xoxb-` (or `xoxp-` / `xoxa-`) followed by the standard numeric-numeric-base62 triplet; a Google OAuth access token matching `ya29.` followed by base64url characters
+- **THEN** each value MUST be replaced by its dedicated redaction marker (`AWS-KEY-REDACTED`, `GH-TOKEN-REDACTED`, `SLACK-TOKEN-REDACTED`, `GOOGLE-OAUTH-REDACTED`)
+- **AND** no fragment of the original value MUST remain in the sanitized output
+
+*(Implementation note: the test suite for task 1.7 MUST construct fixture values matching these patterns inline from character classes to avoid committing realistic-looking strings into the repo, which would trip secret-scanning on push.)*
+
+#### Scenario: Database URL with embedded credentials is redacted
+
+- **WHEN** a span attribute value contains `postgres://user:password@db.example.com:5432/app` or `mysql://u:p@host/db`
+- **THEN** the sanitized value MUST contain `DB-URL-REDACTED` in place of the URL
+- **AND** the credentials portion (`user:password@`) MUST NOT remain visible even partially
 
 #### Scenario: Private submodule URL is redacted
 
@@ -191,10 +220,11 @@ The telemetry factory SHALL return a `NoopProvider` instance when no `LANGFUSE_E
 - **WHEN** `get_observability_provider()` is called with no env var set
 - **THEN** the returned instance's `name` MUST equal `"noop"`
 
-#### Scenario: Noop methods are zero-allocation
+#### Scenario: Noop methods have O(1) allocation behavior
 
-- **WHEN** `NoopProvider.trace_llm_call(...)` is called 10,000 times in a tight loop
-- **THEN** the measured heap allocation MUST NOT grow by more than the size of the passed keyword dict copies as observed via `tracemalloc`
+- **WHEN** `NoopProvider.trace_llm_call(...)` is called 10,000 times with a fixed-size kwargs dict
+- **THEN** the heap allocation measured via `tracemalloc` at the end MUST NOT scale with call count (linear growth is a regression; a constant per-call overhead from Python's own keyword-dict construction is acceptable)
+- **AND** this scenario is categorized as an **advisory** performance check: a 3-run median MUST stay within a 4 KB tolerance over the 10k iteration window on typical CI runners, but a single outlier run MUST NOT fail the CI job
 
 ### Requirement: Configuration Loading Through Persona Pattern
 
@@ -204,3 +234,51 @@ The telemetry configuration SHALL be resolved through the existing `_env()` help
 
 - **WHEN** `TelemetryConfig.from_env()` is called with no `LANGFUSE_*` env vars set
 - **THEN** the returned config's `enabled` field MUST equal `False`
+
+#### Scenario: Empty-string credentials are treated as missing
+
+- **WHEN** `TelemetryConfig.from_env()` is called with `LANGFUSE_ENABLED=true` but `LANGFUSE_PUBLIC_KEY=""` (empty string, whitespace, or unset) or `LANGFUSE_SECRET_KEY=""` (empty)
+- **THEN** the returned config's `enabled` field MUST equal `False`
+- **AND** a warning log record MUST be emitted identifying the empty-but-present credential as the reason for the disabled state (distinguishing this from a fully-unset case)
+
+### Requirement: Persona and Role Context Propagation
+
+The system SHALL expose `contextvars.ContextVar`-based functions for propagating the current persona and role identifiers to every `trace_*` call site without threading them through method signatures. The module `src/assistant/telemetry/context.py` SHALL provide:
+
+- `set_assistant_ctx(persona: str | None, role: str | None) -> None` — replaces the current context
+- `get_assistant_ctx() -> tuple[str | None, str | None]` — returns the current `(persona, role)` tuple
+- `assistant_ctx(persona: str | None, role: str | None) -> contextmanager` — a context manager that pushes a new scope and pops it on exit
+
+Because `contextvars.ContextVar` is task-local per PEP 567, the context MUST survive across `await` boundaries within the same asyncio task. When `DelegationSpawner.delegate()` spawns a sub-agent, the delegation decorator SHALL use the `assistant_ctx(...)` context manager to push the sub-role for the duration of the sub-agent's execution so that spans emitted by the sub-agent report the sub-role, not the parent role.
+
+#### Scenario: Context persists across await
+
+- **WHEN** `set_assistant_ctx("personal", "assistant")` is called and the running async function awaits a coroutine that calls `get_assistant_ctx()` before and after an `await asyncio.sleep(0)` boundary
+- **THEN** both calls MUST return `("personal", "assistant")`
+
+#### Scenario: Delegation updates context for the sub-agent's spans
+
+- **WHEN** the current context is `("personal", "assistant")` and `DelegationSpawner.delegate("researcher", "find X")` is awaited
+- **THEN** any span emitted by the sub-agent during the delegation's lifetime MUST report `role="researcher"`
+- **AND** after the delegation returns, `get_assistant_ctx()` MUST return `("personal", "assistant")` again (scope popped)
+
+### Requirement: No Inbound Interfaces
+
+The telemetry module SHALL NOT expose any HTTP endpoint, webhook, gRPC server, message-queue consumer, or other inbound network interface. All communication with external observability backends SHALL be outbound-only via the backend vendor's SDK (currently the Langfuse HTTP SDK). This constraint SHALL be enforced in code review and documented in `src/assistant/telemetry/__init__.py` as a module-level docstring comment.
+
+Rationale: inbound interfaces expand the attack surface of the agent process. Observability is a write-only consumer of internal state; introducing a reader (e.g., a webhook that external systems can POST to) would violate that invariant and has not been analyzed in any threat model for this change.
+
+#### Scenario: Module docstring declares outbound-only posture
+
+- **WHEN** `src/assistant/telemetry/__init__.py` is loaded
+- **THEN** its module docstring MUST contain the phrase "outbound-only"
+- **AND** no import inside `src/assistant/telemetry/` SHALL pull in `fastapi`, `flask`, `aiohttp.web`, `grpc.aio.server`, or any other inbound server framework
+
+### Requirement: Documented Crash-Time Delivery Semantics
+
+The telemetry module SHALL document, in both `src/assistant/telemetry/flush_hook.py` module docstring and `docs/observability.md`, that the default `shutdown` flush mode loses buffered events if the process is terminated by a signal that bypasses `atexit` (SIGKILL, uncatchable crash, OOM kill). Users requiring guaranteed delivery SHALL set `LANGFUSE_FLUSH_MODE=per_op` and accept the per-operation latency cost.
+
+#### Scenario: Shutdown-mode delivery loss is documented
+
+- **WHEN** `docs/observability.md` is read
+- **THEN** it MUST contain a section titled "Delivery guarantees" that describes the shutdown-mode tradeoff and the `LANGFUSE_FLUSH_MODE=per_op` opt-in

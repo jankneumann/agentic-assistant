@@ -28,3 +28,11 @@ The integration SHALL be implemented via a `@traced_harness` decorator applied t
 - **WHEN** the active provider is the default noop provider and `invoke` is awaited
 - **THEN** the `@traced_harness` decorator MUST still invoke `trace_llm_call`
 - **AND** the noop provider's method MUST return without performing any I/O or raising
+
+#### Scenario: MSAgentFrameworkHarness stub is traced with the raised-exception path
+
+- **WHEN** the registered `MSAgentFrameworkHarness` stub's `invoke()` is awaited (which SHALL raise `NotImplementedError` per the harness-adapter registration spec until its real implementation lands in the `ms-graph-extension` phase)
+- **THEN** `@traced_harness` MUST still be applied to that stub
+- **AND** `trace_llm_call` MUST be called exactly once before the `NotImplementedError` propagates
+- **AND** the emitted span's `metadata` MUST contain `{"error": "NotImplementedError"}`
+- **AND** the `NotImplementedError` MUST propagate to the caller unchanged

@@ -6,19 +6,26 @@ Companion to `proposal.md`. Covers the technical design decisions that the selec
 
 ```
 src/assistant/telemetry/
-├── __init__.py                  # re-exports: get_observability_provider, ObservabilityProvider
+├── __init__.py                  # re-exports + outbound-only posture docstring
 ├── providers/
 │   ├── __init__.py
 │   ├── base.py                  # ObservabilityProvider Protocol (runtime_checkable)
 │   ├── noop.py                  # NoopProvider — zero-allocation default
 │   └── langfuse.py              # LangfuseProvider — native SDK, lazy import
-├── factory.py                   # get_observability_provider() + 3-level degradation
+├── factory.py                   # get_observability_provider() + 3-level degradation + singleton
 ├── config.py                    # TelemetryConfig frozen dataclass + from_env()
-├── decorators.py                # @traced_harness, @traced_delegation decorators
-├── tool_wrap.py                 # wrap_structured_tool() for extensions + http_tools
-├── sanitize.py                  # ordered regex list + sanitize(value)
+├── context.py                   # ContextVar-backed set/get/assistant_ctx context mgr (D4)
+├── decorators.py                # @traced_harness, @traced_delegation — created by wp-hooks
+├── tool_wrap.py                 # wrap_structured_tool + wrap_extension_tools — created by wp-hooks
+├── sanitize.py                  # ordered regex list + sanitize(value) + _sanitize_mapping
 └── flush_hook.py                # atexit registration + LANGFUSE_FLUSH_MODE dispatch
 ```
+
+**Ownership note**: `src/assistant/telemetry/` as a directory is split across two work packages:
+- `wp-contracts` owns everything except `decorators.py` and `tool_wrap.py`
+- `wp-hooks` owns `decorators.py` and `tool_wrap.py` (they implement hook-integration logic that is logically part of the hook package, even though the files live under the telemetry module for import clarity)
+
+Scope boundaries are enforced via explicit `write_allow`/`deny` lists in `work-packages.yaml` — no glob overlap.
 
 ## Decision 1 — Singleton Provider Lifecycle
 
@@ -194,25 +201,71 @@ Same pattern applies for runtime-failure (patch `LangfuseProvider.setup` to rais
 
 This mirrors agentic-coding-tools (which does have these) and fixes the gap that memory explicitly flagged as a newsletter-aggregator follow-up. Local `docker-compose -f docker-compose.langfuse.yml up -d` gives a usable Langfuse instance with seeded keys — no UI signup step required.
 
-**Dev-default values** (committed):
+**Dev-default values** (committed, prefixed with `DUMMY-` so secret scanners like gitleaks and trufflehog skip them, and so a copy-paste to a production deployment is instantly visually wrong):
 ```yaml
-LANGFUSE_INIT_ORG_ID: dev-org
-LANGFUSE_INIT_ORG_NAME: "agentic-assistant dev"
-LANGFUSE_INIT_PROJECT_ID: dev-project
-LANGFUSE_INIT_PROJECT_NAME: "agentic-assistant"
-LANGFUSE_INIT_PROJECT_PUBLIC_KEY: pk-lf-dev-local
-LANGFUSE_INIT_PROJECT_SECRET_KEY: sk-lf-dev-local
+LANGFUSE_INIT_ORG_ID: DUMMY-dev-org
+LANGFUSE_INIT_ORG_NAME: "agentic-assistant dev (DUMMY)"
+LANGFUSE_INIT_PROJECT_ID: DUMMY-dev-project
+LANGFUSE_INIT_PROJECT_NAME: "agentic-assistant (DUMMY)"
+LANGFUSE_INIT_PROJECT_PUBLIC_KEY: DUMMY-pk-lf-dev-local
+LANGFUSE_INIT_PROJECT_SECRET_KEY: DUMMY-sk-lf-dev-local
 LANGFUSE_INIT_USER_EMAIL: dev@localhost
-LANGFUSE_INIT_USER_PASSWORD: dev-password-change-me
+LANGFUSE_INIT_USER_PASSWORD: DUMMY-change-me-before-prod
 ```
 
-Documented in `docs/observability.md` as dev-only — never use these for a production Langfuse instance.
+Additionally the compose file SHALL include a startup-check sidecar script that refuses to start the Langfuse container if any `LANGFUSE_INIT_*` value is `DUMMY-*` AND the `HOST` environment does not include `localhost` or `127.0.0.1` — preventing accidental launch with dev defaults outside a developer machine.
+
+Documented in `docs/observability.md` as dev-only — never use these for a production Langfuse instance. Also listed in a `.gitleaksignore` file at repo root so secret scanners do not false-positive on the committed placeholders.
 
 ## Decision 10 — Claude Code Stop Hook Wiring (Documentation Only)
 
 **Decision**: We do NOT re-implement the hook. `docs/observability.md` documents how to wire the existing repo-agnostic script at `~/Coding/agentic-coding-tools/agent-coordinator/scripts/langfuse_hook.py` into `~/.claude/settings.json` by setting `LANGFUSE_*` env vars and pointing the Stop hook config at the shared script.
 
 **Rationale**: The hook is genuinely repo-agnostic — it reads the Claude Code transcript, cursor-tracks lines consumed, and sanitizes before emitting. Re-implementing would duplicate code and drift. The memory file explicitly flagged this as a "don't re-implement" item.
+
+## Decision 11 — Test Fixtures: SpyProvider and Singleton Reset
+
+**Decision**: Two test fixtures published in `tests/telemetry/conftest.py`, both `autouse=True` for the `tests/telemetry/` subtree:
+
+1. **`reset_telemetry_singleton`**: sets `src.assistant.telemetry.factory._provider = None` before each test so the module-level cache from D1 does not leak between test cases. Without this fixture, a test that exercises the level-2 `ImportError` path would be invalidated by any prior test that successfully initialized a provider, because the singleton would remain cached. Applied automatically; no per-test opt-in needed.
+
+2. **`spy_provider`** (not autouse — opt-in): returns a `SpyProvider` subclass of `NoopProvider` that records every Protocol method call into an in-memory list. Tests that need to assert "this call site emitted a `trace_llm_call` with these kwargs" can use `spy_provider.calls["trace_llm_call"]` to inspect the ordered history. `SpyProvider` inherits `NoopProvider`'s zero-allocation posture for methods it does not record, so it can stand in for the default provider without changing production behavior.
+
+**Why both are fixtures, not ad-hoc patches**: applying them consistently prevents a common pytest pitfall where one test file installs monkeypatches that leak into a parallel test file's state. Fixtures are torn down deterministically by pytest's scope machinery.
+
+**Location**: `tests/telemetry/conftest.py` — a new file owned by wp-contracts per the work-packages scope.
+
+## Decision 12 — Optional Extra vs Dependency Group for Langfuse
+
+**Decision**: `langfuse>=3.0,<4.0` is declared under `[project.optional-dependencies].telemetry` in `pyproject.toml`. It is NOT part of the default dependency set, and NOT a dev-only dependency group.
+
+**Why optional extra**:
+- Default `uv sync` keeps the install lean for users who run with `LANGFUSE_ENABLED=false` (the vast majority at first, and effectively all of CI under the noop path).
+- `uv sync --extra telemetry` opts in for developers or environments that want to emit spans. Explicit, discoverable, documented.
+- Test machinery does not need `langfuse` installed — the level-2 degradation tests monkey-patch `builtins.__import__` to simulate its absence, which works whether the real package is installed or not. This means the test suite passes under both `uv sync` and `uv sync --extra telemetry`.
+
+**Why not a dependency group**:
+- Dependency groups (PEP 735) are scoped to workflows (dev, docs, etc.) rather than deployment profiles. Observability is a deployment toggle, not a workflow toggle.
+- Some `uv`/`pip` installers handle extras more uniformly than groups; extras have broader tooling compatibility today.
+
+**Why not a default dep**:
+- Adds Langfuse SDK + its transitive deps (httpx, pydantic, etc.) to every default install even when disabled. Transitively pulls ~5 MB of wheel data.
+
+**CI implication**: the default CI job runs without the extra; the optional `langfuse-smoke` job (task 5.5) runs `uv sync --extra telemetry` before exercising live Langfuse.
+
+## Decision 13 — Empty-String Credentials Are Disambiguated From Unset
+
+**Decision**: `TelemetryConfig.from_env()` treats an empty-string `LANGFUSE_PUBLIC_KEY` or `LANGFUSE_SECRET_KEY` as the SAME as unset for the purpose of enabling telemetry — both produce `enabled=False` — but the two cases are distinguished in the warning log emitted at factory init.
+
+**Why both disable**:
+- Submitting a span with an empty public/secret key to Langfuse returns an authentication error and wastes a network round-trip per operation.
+- An empty string is almost always a misconfiguration (env-var substitution that resolved to nothing, a `.env` entry missing a value), so treating it as "intentional disable" would be misleading.
+
+**Why distinguish in logs**:
+- If `LANGFUSE_ENABLED=true` is set but keys are empty, the user has signaled intent to enable but bungled the credentials. The warning should say "enabled=true but credentials are empty" so the user can debug.
+- If `LANGFUSE_ENABLED` is unset/false and keys are absent, there is no user intent to enable, and no warning is needed at info level.
+
+**Whitespace handling**: a credential that is all-whitespace (e.g., `LANGFUSE_PUBLIC_KEY="   "`) is normalized via `.strip()` and treated as empty.
 
 ## Privacy Boundary Compliance
 

@@ -4,7 +4,9 @@
 
 ### Requirement: Delegation Emits Observability Span
 
-The system SHALL emit a `trace_delegation` observability span for every call to `DelegationSpawner.delegate(...)` by invoking `get_observability_provider().trace_delegation(...)`. The emitted span MUST include `parent_role` (the calling role name), `sub_role` (the delegated role name), `task` (the task string, hashed to `"sha256:<16-char hex>"` when longer than 256 characters), `persona` (the active persona name), `duration_ms`, and `outcome` (`"success"` or `"error"`).
+The system SHALL emit a `trace_delegation` observability span for every call to `DelegationSpawner.delegate(...)` by invoking `get_observability_provider().trace_delegation(...)`. The emitted span MUST include `parent_role` (the calling role name), `sub_role` (the delegated role name), `task` (the task string), `persona` (the active persona name), `duration_ms`, and `outcome` (`"success"` or `"error"`).
+
+The hashing threshold for the `task` argument SHALL be exactly 256 characters: any `task` string whose length is greater than 256 MUST be replaced with the literal string `"sha256:" + hashlib.sha256(task.encode("utf-8")).hexdigest()[:16]` before the emitted span leaves the decorator. Tasks of 256 characters or fewer SHALL be passed through unchanged. Implementations MUST NOT choose a different threshold.
 
 The integration SHALL be implemented via a `@traced_delegation` decorator applied to `delegate` in `src/assistant/delegation/spawner.py`. When the sub-agent invocation raises, `outcome` MUST equal `"error"` and the span MUST be emitted before the exception propagates to the caller.
 

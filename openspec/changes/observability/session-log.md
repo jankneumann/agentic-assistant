@@ -124,3 +124,111 @@ is the only open change and is orthogonal. Clean merge runway to main.
 - Parallel zones validation skipped. The architecture analysis
   directory is not populated in this repo. The make architecture
   target does not exist. Non blocking for planning.
+
+---
+
+## Phase: Plan Iteration 1 (2026-04-24)
+
+Agent: claude_code Opus 4.7 with 1M context.
+Session: autopilot PLAN_ITERATE phase.
+
+### Findings summary
+
+Four parallel Explore audits returned 32 distinct findings across six quality
+dimensions. After dedup by root cause, roughly 25 unique issues. Breakdown:
+
+- Critical: 1 (secrets in docker compose could be mistaken for production keys)
+- High: 7 (contextvars assumption not in spec, wrong http tool function name,
+  extension wrapping site was a Protocol not a base class, tracemalloc
+  flakiness, missing secret regex patterns for AWS and GitHub and Slack and
+  Google and DB URLs, Authorization Basic and Cookie patterns missing from
+  sanitization, tests/telemetry directory scope overlap between two packages)
+- Medium: 12 (op enum enumeration in tasks, 256 character threshold only in
+  scenario not Requirement body, singleton cache cleanup needed a fixture,
+  SpyProvider pattern undocumented, CI smoke test resource cost, MS Agent
+  stub behavior undefined in spec, optional extra rationale missing, hooks
+  decorator bottleneck note, empty string credential disambiguation,
+  persona name validation, scope leak check, crash time delivery loss
+  missing from spec)
+- Low: ~5 (Python version note, Langfuse v3 confirmation, task dependency
+  over constraint, capability resolver spec delta was missing entirely,
+  no inbound interface constraint not stated)
+
+### What Round 1 addressed
+
+- Fixed the wrong function name in task 3 point 9: was _build_structured_tool,
+  changed to _build_tool at line 186 in the http_tools builder. Verified by
+  grep against the actual source.
+- Fixed the extension wrapping site: Extension in extensions/base.py is a
+  Protocol not a base class, so behavior cannot be inherited. Moved the
+  wrapping to the aggregation sites in core/capabilities/tools.py and
+  harnesses/sdk/deep_agents.py, with a shared helper wrap_extension_tools
+  in telemetry/tool_wrap.py. Added a new capability-resolver spec delta
+  covering this.
+- Fixed the tests/telemetry scope overlap in work-packages.yaml by listing
+  specific test files in wp-contracts and explicitly denying the hook test
+  files. Added the telemetry/decorators and telemetry/tool_wrap files to
+  wp-hooks write_allow with matching denies in wp-contracts.
+- Added a new Requirement "Persona and Role Context Propagation" to the
+  observability spec binding the contextvars choice with two scenarios for
+  cross await persistence and delegation sub role propagation.
+- Added a new Requirement "No Inbound Interfaces" with a scenario asserting
+  the module docstring declares outbound only.
+- Added a new Requirement "Documented Crash Time Delivery Semantics" with a
+  scenario checking that the docs name the shutdown mode tradeoff.
+- Added new scenarios under existing Requirements: rejects mis typed op
+  value; common vendor token formats redacted; database URL with embedded
+  credentials redacted; empty string credentials treated as missing;
+  MSAgentFrameworkHarness stub traced with raised exception path.
+- Expanded the sanitize regex list from 7 patterns to 15, adding AWS,
+  GitHub PAT, Slack, Google OAuth, DB URL, Authorization Basic and Digest,
+  and Cookie patterns. Updated the known safe fields list to include op
+  and tool_kind (which are enums, not free text).
+- Softened the zero allocation scenario from strict tracemalloc assertion
+  to a 3 run median with 4 KB tolerance, marked as advisory.
+- Renamed the sanitizer ordering scenario to correctly describe what it
+  tests (Langfuse specific before generic secret key, not public key).
+- Moved the 256 character hashing threshold into the delegation Requirement
+  body with explicit hashlib sha256 formula.
+
+### What Round 2 addressed
+
+- Expanded task 1 point 7 to enumerate all regex patterns it covers.
+- Expanded task 1 point 9 to explicitly include cross await propagation
+  and delegation scope tests.
+- Expanded task 2 point 3 to include MS Agent stub decorator application.
+- Expanded task 4 point 3 to enumerate the required sections in
+  docs/observability.md.
+- Expanded task 5 point 2 to include the outbound only docstring check
+  and the absence of inbound framework imports.
+- Marked task 5 point 5 (live Langfuse smoke test) as optional with a
+  repository variable guard.
+
+### Design decisions added
+
+- D11: Test fixtures for singleton reset (autouse) and SpyProvider (opt in).
+- D12: pyproject optional extra rationale over dependency group.
+- D13: Empty string credentials treated as missing, with warning log
+  distinguishing from fully unset case.
+- Updated D9 to require DUMMY dash prefix on all committed Langfuse init
+  dev values plus a startup check script preventing accidental prod launch.
+
+### Not addressed (deferred to PLAN_REVIEW or later)
+
+- Persona name regex validation at config time. Flagged in audit as
+  medium. Deferred because persona names are currently short and known
+  safe, and adding validation could break existing fixture personas.
+  Tracked in open questions.
+- Phase 4 infrastructure scope confirmation. Docker compose, docs, and
+  README updates are mixed in with the capability itself. User should
+  confirm at Gate 2 whether this composition is desired.
+
+### Validation
+
+- openspec validate observability strict passes after both rounds.
+- Total spec growth: 10 Requirements to 13, 18 scenarios to 31 in the
+  main observability spec. One new spec delta added: capability-resolver.
+- Total task growth: about 40 tasks to 43 tasks.
+- Work packages DAG unchanged. Scope overlap eliminated. Max parallel
+  width calculation stands: wp-contracts serial, wp-hooks plus wp-devops
+  concurrent after contracts, wp-integration after both.

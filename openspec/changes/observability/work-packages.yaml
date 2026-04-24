@@ -45,10 +45,26 @@ packages:
     priority: 1
     dependencies: []
     scope:
+      # write_allow lists EXPLICIT test files that belong to the telemetry
+      # module's own unit tests (Phase 1). Test files for hook integrations
+      # (decorators, tool_wrap, memory_hooks, graphiti_hooks, extension_hooks,
+      # http_tool_hooks) are owned by wp-hooks; the docker-compose test is
+      # owned by wp-devops; the cross-package integration tests are owned by
+      # wp-integration. This prevents scope overlap on tests/telemetry/.
       write_allow:
         - "src/assistant/telemetry/**"
-        - "tests/telemetry/**"
         - "pyproject.toml"
+        - "tests/telemetry/__init__.py"
+        - "tests/telemetry/conftest.py"
+        - "tests/telemetry/test_config.py"
+        - "tests/telemetry/test_protocol.py"
+        - "tests/telemetry/test_noop.py"
+        - "tests/telemetry/test_noop_perf.py"
+        - "tests/telemetry/test_sanitize.py"
+        - "tests/telemetry/test_context.py"
+        - "tests/telemetry/test_langfuse.py"
+        - "tests/telemetry/test_factory.py"
+        - "tests/telemetry/test_flush_hook.py"
       read_allow:
         - "src/**"
         - "tests/**"
@@ -58,8 +74,19 @@ packages:
         - "src/assistant/delegation/**"
         - "src/assistant/core/memory.py"
         - "src/assistant/core/graphiti.py"
+        - "src/assistant/core/capabilities/**"
         - "src/assistant/extensions/**"
         - "src/assistant/http_tools/**"
+        - "tests/telemetry/test_decorators.py"
+        - "tests/telemetry/test_tool_wrap.py"
+        - "tests/telemetry/test_memory_hooks.py"
+        - "tests/telemetry/test_graphiti_hooks.py"
+        - "tests/telemetry/test_extension_hooks.py"
+        - "tests/telemetry/test_http_tool_hooks.py"
+        - "tests/telemetry/test_docker_compose.py"
+        - "tests/telemetry/test_cli_span_emission.py"
+        - "tests/telemetry/test_privacy_compliance.py"
+        - "tests/telemetry/test_fixture_sentinel.py"
         - "personas/**"
     locks:
       files:
@@ -102,11 +129,20 @@ packages:
     dependencies:
       - wp-contracts
     scope:
+      # NOTE: src/assistant/telemetry/decorators.py and tool_wrap.py are
+      # CREATED here by wp-hooks (they live in the telemetry module but
+      # exist specifically for hook integration; see session-log decision
+      # on hooks-package cohesion). wp-contracts owns the rest of
+      # src/assistant/telemetry/ and explicitly denies these two files so
+      # there is no write overlap. Tasks 2.2, 2.5, and 3.6 all write
+      # decorators.py/tool_wrap.py — they must be sequenced within the
+      # package (they share files).
       write_allow:
         - "src/assistant/harnesses/**"
         - "src/assistant/delegation/**"
         - "src/assistant/core/memory.py"
         - "src/assistant/core/graphiti.py"
+        - "src/assistant/core/capabilities/tools.py"
         - "src/assistant/extensions/**"
         - "src/assistant/http_tools/**"
         - "src/assistant/cli.py"
@@ -125,23 +161,36 @@ packages:
       deny:
         - "personas/**"
         - "docker-compose.langfuse.yml"
+        - "src/assistant/telemetry/providers/**"
+        - "src/assistant/telemetry/factory.py"
+        - "src/assistant/telemetry/config.py"
+        - "src/assistant/telemetry/sanitize.py"
+        - "src/assistant/telemetry/context.py"
+        - "src/assistant/telemetry/flush_hook.py"
+        - "src/assistant/telemetry/__init__.py"
     locks:
       files:
         - "src/assistant/harnesses/base.py"
         - "src/assistant/harnesses/deep_agents.py"
+        - "src/assistant/harnesses/sdk/deep_agents.py"
         - "src/assistant/delegation/spawner.py"
         - "src/assistant/core/memory.py"
         - "src/assistant/core/graphiti.py"
+        - "src/assistant/core/capabilities/tools.py"
         - "src/assistant/extensions/base.py"
         - "src/assistant/http_tools/builder.py"
         - "src/assistant/cli.py"
+        - "src/assistant/telemetry/decorators.py"
+        - "src/assistant/telemetry/tool_wrap.py"
       keys:
         - "span:harness-invoke"
         - "span:delegation-delegate"
         - "span:memory-op"
         - "span:tool-call"
+        - "file:telemetry-decorators"
+        - "file:telemetry-tool-wrap"
       ttl_minutes: 240
-      reason: "Cross-boundary hook integration touching 7 files; must be atomic to avoid partial coverage"
+      reason: "Cross-boundary hook integration touching 9+ files; must be atomic to avoid partial coverage. Tasks 2.2/2.5/3.6 serialize within the package on decorators.py + tool_wrap.py."
     verification: tier_b
 
   - id: wp-devops
