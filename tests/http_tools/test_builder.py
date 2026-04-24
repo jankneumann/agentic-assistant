@@ -13,6 +13,7 @@ from typing import Any
 
 import httpx
 import pytest
+from pydantic import BaseModel
 from pytest_httpserver import HTTPServer
 
 from assistant.http_tools.builder import (
@@ -20,6 +21,28 @@ from assistant.http_tools.builder import (
     _json_schema_to_python_type,
 )
 from assistant.http_tools.openapi import ParsedOperation
+
+
+def _call(tool: Any, **kwargs: Any) -> Any:
+    """Type-narrowed invocation of a StructuredTool's coroutine.
+
+    LangChain types ``StructuredTool.coroutine`` as ``Coroutine | None``;
+    our tools always set it. This helper asserts non-None for mypy.
+    """
+    assert tool.coroutine is not None
+    return tool.coroutine(**kwargs)
+
+
+def _instantiate_args(tool: Any, **kwargs: Any) -> BaseModel:
+    """Type-narrowed instantiation of a StructuredTool's args_schema.
+
+    LangChain types ``args_schema`` as ``type[BaseModel] | dict | None``;
+    our builder always produces a Pydantic model. Assert and return a
+    concrete BaseModel instance so mypy drops the union.
+    """
+    schema_cls = tool.args_schema
+    assert isinstance(schema_cls, type) and issubclass(schema_cls, BaseModel)
+    return schema_cls(**kwargs)
 
 
 def _op(**kwargs: Any) -> ParsedOperation:
@@ -72,7 +95,7 @@ async def test_post_with_json_body(
         source_name="backend", base_url=httpserver.url_for(""),
         operation=op, client=client, auth_headers={},
     )
-    result = await tool.coroutine(name="widget", quantity=3)
+    result = await _call(tool, name="widget", quantity=3)
     assert result == {"ok": True}
 
 
@@ -98,7 +121,7 @@ async def test_get_with_path_and_query(
         source_name="backend", base_url=httpserver.url_for(""),
         operation=op, client=client, auth_headers={},
     )
-    result = await tool.coroutine(id="42", verbose=True)
+    result = await _call(tool, id="42", verbose=True)
     assert result == {"id": "42"}
 
 
@@ -117,7 +140,7 @@ async def test_5xx_raises_http_status_error(
         operation=op, client=client, auth_headers={},
     )
     with pytest.raises(httpx.HTTPStatusError):
-        await tool.coroutine()
+        await _call(tool)
 
 
 # ── Non-JSON content-type raises ValueError ──────────────────────────
@@ -135,7 +158,7 @@ async def test_non_json_content_type_raises(
         operation=op, client=client, auth_headers={},
     )
     with pytest.raises(ValueError, match="non-JSON"):
-        await tool.coroutine()
+        await _call(tool)
 
 
 # ── 204 empty body returns None ──────────────────────────────────────
@@ -152,7 +175,7 @@ async def test_204_returns_none(
         source_name="backend", base_url=httpserver.url_for(""),
         operation=op, client=client, auth_headers={},
     )
-    assert await tool.coroutine() is None
+    assert await _call(tool) is None
 
 
 # ── Tool name = {source}:{op_id} ─────────────────────────────────────
@@ -197,7 +220,7 @@ async def test_path_param_url_encoded() -> None:
             source_name="backend", base_url="http://example.com",
             operation=op, client=mock_client, auth_headers={},
         )
-        await tool.coroutine(id="foo/bar")
+        await _call(tool, id="foo/bar")
 
     assert captured["url"] == "http://example.com/items/foo%2Fbar"
 
@@ -221,7 +244,7 @@ def test_required_field_is_required(client: httpx.AsyncClient) -> None:
         operation=op, client=client, auth_headers={},
     )
     with pytest.raises(ValidationError):
-        tool.args_schema(**{})  # type: ignore[misc]
+        _instantiate_args(tool)
 
 
 def test_optional_field_uses_declared_default(client: httpx.AsyncClient) -> None:
@@ -236,14 +259,15 @@ def test_optional_field_uses_declared_default(client: httpx.AsyncClient) -> None
         source_name="s", base_url="http://e",
         operation=op, client=client, auth_headers={},
     )
-    model = tool.args_schema()  # type: ignore[misc,call-arg]
-    assert model.n == 7  # type: ignore[attr-defined]
+    model = _instantiate_args(tool)
+    # Dynamically generated model — mypy can't see the ``n`` attribute.
+    assert getattr(model, "n") == 7  # noqa: B009
 
 
 def test_typeless_field_is_any(client: httpx.AsyncClient) -> None:
     """Schema with neither ``type`` nor ``$ref`` → ``Any``-typed field."""
     py_type = _json_schema_to_python_type({})
-    assert py_type is Any  # type: ignore[comparison-overlap]
+    assert py_type is Any
 
 
 # ── Invocation-side security propagation ─────────────────────────────
@@ -264,7 +288,7 @@ async def test_oversized_response_raises(
         operation=op, client=client, auth_headers={},
     )
     with pytest.raises(ValueError, match="10MiB"):
-        await tool.coroutine()
+        await _call(tool)
 
 
 async def test_redirect_response_raises(
@@ -280,4 +304,4 @@ async def test_redirect_response_raises(
         operation=op, client=client, auth_headers={},
     )
     with pytest.raises(httpx.HTTPStatusError):
-        await tool.coroutine()
+        await _call(tool)
