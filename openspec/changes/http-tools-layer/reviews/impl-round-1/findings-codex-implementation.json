@@ -1,0 +1,92 @@
+{
+  "findings": [
+    {
+      "id": 1,
+      "type": "integration",
+      "criticality": "high",
+      "description": "`assistant run` bypasses `DefaultToolPolicy` entirely: `_run_repl_with_registry` passes `registry.list_all()` directly to `adapter.create_agent`, so `role.preferred_tools` is not applied to HTTP tools and every discovered operation is exposed to every role. The same unfiltered `http_tools` list is reused after `/role` switches and delegation. See src/assistant/cli.py:311-322 and src/assistant/cli.py:353-369.",
+      "disposition": "fix",
+      "resolution": "Route SDK startup through `CapabilityResolver(http_tool_registry=registry)` and `capabilities.tools.authorized_tools(...)`, or otherwise filter HTTP tools with the same exact-name semantics before creating each agent. Recompute the authorized tool list on role switch and delegation.",
+      "file_path": "src/assistant/cli.py",
+      "line_start": 311,
+      "line_end": 322
+    },
+    {
+      "id": 2,
+      "type": "integration",
+      "criticality": "high",
+      "description": "Calling public `discover_tools(tool_sources)` without an injected client returns tools that close over a client that has already been closed in the `finally` block. Discovery succeeds, but any later invocation of a returned tool will fail because `_build_tool` captured the closed `httpx.AsyncClient`. See src/assistant/http_tools/discovery.py:120-135 and src/assistant/http_tools/builder.py:191-232.",
+      "disposition": "fix",
+      "resolution": "Do not close an owned client before returned tools can be invoked. Either require caller-managed client lifecycle, make `HttpToolRegistry` own an async closeable client, or return tools that create/use a live client at invocation time with explicit lifecycle semantics.",
+      "file_path": "src/assistant/http_tools/discovery.py",
+      "line_start": 120,
+      "line_end": 135
+    },
+    {
+      "id": 3,
+      "type": "openspec_compliance",
+      "criticality": "high",
+      "description": "`parse_operations` catches all `_parse_operation` `ValueError`s and logs from `openapi.py`, so `discover_tools` never sees external or cyclic `$ref` failures. This violates the external-ref scenario requiring a warning naming the source plus method/path, and the cyclic-ref scenario requiring a source-level skip surfaced through discovery. See src/assistant/http_tools/openapi.py:56-60 and src/assistant/http_tools/discovery.py:189-193.",
+      "disposition": "fix",
+      "resolution": "Distinguish operation-skippable external refs from source-fatal cyclic refs, and emit discovery warnings with source context. At minimum, propagate enough error metadata from the parser so discovery can log `source + method/path`; cyclic refs should raise out to `_discover_one` and omit the source.",
+      "file_path": "src/assistant/http_tools/openapi.py",
+      "line_start": 56,
+      "line_end": 60
+    },
+    {
+      "id": 4,
+      "type": "api",
+      "criticality": "high",
+      "description": "`export_tool_manifest` emits `http_tools` as a list of objects like `{\"name\": ..., \"description\": ...}`, but the tool-policy spec requires a list of registered HTTP tool keys as strings. The test codifies the wrong shape by extracting `e[\"name\"]` instead of asserting the list equals the keys. See src/assistant/core/capabilities/tools.py:69-72 and tests/core/capabilities/test_tool_policy_http.py:184-190.",
+      "disposition": "fix",
+      "resolution": "Return `\"http_tools\": [t.name, ...]` in registry order, or update the spec if the richer object shape is intentional. Align the test to assert the exact contract shape.",
+      "file_path": "src/assistant/core/capabilities/tools.py",
+      "line_start": 69,
+      "line_end": 72
+    },
+    {
+      "id": 5,
+      "type": "integration",
+      "criticality": "medium",
+      "description": "`CapabilityResolver` accepts `http_tool_registry`, but only passes it into `DefaultToolPolicy` for `harness_type == \"host\"`; the SDK/default path constructs `DefaultToolPolicy()` without the registry. Any SDK consumer using the resolver gets no HTTP tools from policy resolution. See src/assistant/core/capabilities/resolver.py:110-114.",
+      "disposition": "fix",
+      "resolution": "Pass `http_tool_registry=self._http_tool_registry` to `DefaultToolPolicy` in the non-host path as well, unless a custom `tool_factory` is provided.",
+      "file_path": "src/assistant/core/capabilities/resolver.py",
+      "line_start": 110,
+      "line_end": 114
+    },
+    {
+      "id": 6,
+      "type": "correctness",
+      "criticality": "medium",
+      "description": "The per-tool content-type gate allows a non-empty 2xx body with no `Content-Type` header to be parsed as JSON, even though the spec says non-JSON 2xx content types must raise. It also rejects common JSON-compatible media types such as `application/vnd.api+json`, despite the spec allowing JSON-compatible variants. See src/assistant/http_tools/builder.py:246-254.",
+      "disposition": "fix",
+      "resolution": "Require a JSON content type for non-empty bodies, and accept `application/json`, `application/problem+json`, and media types ending in `+json`. Keep the existing 204 and `Content-Length: 0` empty-body bypass before the gate.",
+      "file_path": "src/assistant/http_tools/builder.py",
+      "line_start": 246,
+      "line_end": 254
+    },
+    {
+      "id": 7,
+      "type": "correctness",
+      "criticality": "medium",
+      "description": "The OpenAPI walker ignores path-item-level `parameters` and only reads `operation.get(\"parameters\")`. Valid OpenAPI documents commonly declare path parameters at the path-item level, which means `_build_tool` will not mark them as path params and `{id}` placeholders will not be substituted. See src/assistant/http_tools/openapi.py:49-57 and src/assistant/http_tools/openapi.py:72-77.",
+      "disposition": "fix",
+      "resolution": "Merge `path_item.get(\"parameters\", [])` with operation-level parameters before resolution, with operation-level entries overriding duplicates by `(in, name)`. Add a test where `/items/{id}` declares `id` on the path item.",
+      "file_path": "src/assistant/http_tools/openapi.py",
+      "line_start": 72,
+      "line_end": 77
+    },
+    {
+      "id": 8,
+      "type": "correctness",
+      "criticality": "medium",
+      "description": "Object request bodies using `additionalProperties` are silently unusable. `_build_args_schema` only exposes named `properties`, so a schema like `{type: object, additionalProperties: {type: string}}` produces an empty args model; supplied dynamic keys are ignored and no JSON body is sent. See src/assistant/http_tools/builder.py:119-130 and src/assistant/http_tools/builder.py:160-164.",
+      "disposition": "fix",
+      "resolution": "For object schemas without named properties but with `additionalProperties`, expose a body field typed as `dict[str, value_type]` or configure a generated model that preserves extra keys and sends them as the JSON body.",
+      "file_path": "src/assistant/http_tools/builder.py",
+      "line_start": 119,
+      "line_end": 130
+    }
+  ]
+}

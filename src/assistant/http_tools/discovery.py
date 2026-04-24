@@ -102,49 +102,32 @@ def _is_openapi_3x(spec: dict[str, Any]) -> bool:
 async def discover_tools(
     tool_sources: dict[str, dict[str, Any]],
     *,
-    client: httpx.AsyncClient | None = None,
+    client: httpx.AsyncClient,
 ) -> HttpToolRegistry:
     """Discover tools from every configured source into a single registry.
 
     Per D4, any per-source failure is logged as a WARNING and the source
     is omitted — but the function never raises.
 
-    If ``client`` is ``None``, a default client is created for the scope
-    of this call. In production, the CLI constructs one shared client
-    (D2) and passes it explicitly so per-tool invocations reuse it.
+    The caller MUST own the ``httpx.AsyncClient`` lifecycle. The
+    returned tools close over ``client`` and will fail with
+    ``RuntimeError`` if invoked after the client is closed, so the
+    client must live at least as long as the registry is in use.
+    Design decision D2.
     """
     registry = HttpToolRegistry()
     if not tool_sources:
         return registry
 
-    owned_client = False
-    if client is None:
-        client = _default_client()
-        owned_client = True
-
-    try:
-        for source_name, source_cfg in tool_sources.items():
-            await _discover_one(
-                registry=registry,
-                source_name=source_name,
-                source_cfg=source_cfg,
-                client=client,
-            )
-    finally:
-        if owned_client:
-            await client.aclose()
+    for source_name, source_cfg in tool_sources.items():
+        await _discover_one(
+            registry=registry,
+            source_name=source_name,
+            source_cfg=source_cfg,
+            client=client,
+        )
 
     return registry
-
-
-def _default_client() -> httpx.AsyncClient:
-    """Client with the D9 security posture."""
-    return httpx.AsyncClient(
-        timeout=httpx.Timeout(10.0, connect=5.0),
-        follow_redirects=False,
-        verify=True,
-        limits=httpx.Limits(max_connections=20, max_keepalive_connections=5),
-    )
 
 
 async def _discover_one(
@@ -190,6 +173,19 @@ async def _discover_one(
         operations = list(parse_operations(spec))
     except ValueError as exc:
         logger.warning("skipping source %r: OpenAPI parse error: %s", source_name, exc)
+        return
+
+    # Per-operation $ref/parse failures are logged by openapi.py at the
+    # operation level. If every operation was skipped (paths were
+    # declared but parse_operations yielded nothing), surface a
+    # source-level WARNING so the spec's "failure references the source"
+    # contract holds end-to-end.
+    if not operations and spec.get("paths"):
+        logger.warning(
+            "skipping source %r: no operations yielded from %d path(s); "
+            "see per-operation warnings above",
+            source_name, len(spec.get("paths") or {}),
+        )
         return
 
     for op in operations:

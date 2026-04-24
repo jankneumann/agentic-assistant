@@ -110,7 +110,9 @@ class CapabilityResolver:
             tools=(
                 self._tool_factory()
                 if self._tool_factory
-                else DefaultToolPolicy()
+                else DefaultToolPolicy(
+                    http_tool_registry=self._http_tool_registry,
+                )
             ),
             context=context,
         )

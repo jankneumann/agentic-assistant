@@ -242,16 +242,20 @@ def _build_tool(
             if content_length == "0":
                 return None
 
-            # Content-Type gate: only JSON variants accepted.
+            # Content-Type gate: only JSON variants accepted. A missing
+            # Content-Type on a non-empty 2xx is treated as "non-JSON"
+            # — silently assuming JSON would let services return HTML
+            # error pages that look successful at the HTTP layer.
             content_type = (
                 response.headers.get("Content-Type", "")
                 .split(";")[0]
                 .strip()
                 .lower()
             )
-            if content_type and content_type not in _JSON_CONTENT_TYPES:
+            if not content_type or content_type not in _JSON_CONTENT_TYPES:
                 raise ValueError(
-                    f"non-JSON content-type from {name}: {content_type}",
+                    f"non-JSON content-type from {name}: "
+                    f"{content_type or '<missing>'}",
                 )
 
             raw = await _read_body_with_size_cap(response, name)
