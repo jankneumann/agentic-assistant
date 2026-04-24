@@ -141,6 +141,7 @@ that waste the most time:
 | G5 | OpenSpec `--strict` wants SHALL/MUST in opening clause of Requirement body | Lead with `The system SHALL …`, move "when" qualifiers after |
 | G6 | Private-persona content leaking into public tests | Use `FIXTURE_PERSONA_SENTINEL_v1` assertions; never hard-code `personas/personal/` strings; trust the two-layer guard |
 | G7 | Submodule standalone tests silent-skip when parent `roles/` is absent | Default is strict fail; opt in with `ALLOW_STANDALONE_SUBMODULE_SKIP=1` when running the submodule in isolation |
+| G8 | Local `mypy src/` passes but CI `mypy src tests` fails on test-side narrowing errors | Always run the full CI scope locally (`uv run mypy src tests`) before pushing — see Landing the Plane quality gates |
 
 ## What's Not Yet Wired
 
@@ -153,13 +154,28 @@ See `openspec/roadmap.md` for the full sequence. Notable gaps:
 - **`work-persona-config` phase**: submodule + role overrides come
   when the work machine is available.
 
+### Known follow-ups from archived changes
+
+Filed as GitHub issues labeled `followup` + `openspec:<change-id>`;
+browse with `gh issue list --label followup`:
+
+- **http-tools-layer** (P3, archived 2026-04-24):
+  - #16 — support OpenAPI requestBody with `additionalProperties`
+  - #17 — propagate JSON Schema `description` to Pydantic `Field.description`
+  - #18 — `assistant export` should run `discover_tools` for host-harness manifests
+  - #19 — detect parameter/body name collisions in `_build_args_schema`
+
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, complete ALL steps below. Work is NOT
 complete until `git push` succeeds.
 
 1. **File issues for remaining work** — anything follow-up worthy
-2. **Run quality gates** (if code changed) — `uv run pytest tests/`, Ruff
+2. **Run quality gates** (if code changed) — match CI scope:
+   - `uv run pytest tests/`
+   - `uv run ruff check src tests`
+   - `uv run mypy src tests`  (CI runs the broader scope; `mypy src/` alone misses test-side errors)
+   - `openspec validate --strict` if OpenSpec artifacts changed
 3. **Update issue / OpenSpec status** — close finished, annotate in-progress
 4. **PUSH TO REMOTE** — mandatory:
    ```bash

@@ -288,3 +288,55 @@ in the submodule's own README, and in the failure message itself so
 maintainers always know the exact incantation to bypass. The parent-repo
 run never sets this env var, so the cross-repo invariant is exercised
 every time the full suite runs from a parent checkout.
+
+
+## G8. Local `mypy src/` passes while CI `mypy src tests` fails
+
+**Symptom**: Pre-push gates green on your machine. CI red on the mypy
+step, with errors only in test files like `"None" not callable` on
+`StructuredTool.coroutine(...)` or `"dict[str, Any]" not callable` on
+`args_schema(**kwargs)`.
+
+**Root cause**: The repo's CI workflow runs:
+```yaml
+- name: Mypy
+  run: uv run mypy src tests
+```
+…checking both source and test trees. A local convenience invocation of
+`uv run mypy src/assistant/` (or just `mypy src/`) only checks the
+source tree, so test-side type errors stay hidden until CI runs.
+
+Common culprits in tests:
+- LangChain types `StructuredTool.coroutine` as `Coroutine | None` and
+  `args_schema` as `type[BaseModel] | dict | None`. Direct
+  `tool.coroutine(...)` or `tool.args_schema(**kwargs)` call sites
+  fail mypy narrowing.
+- `type: ignore[code]` comments that were valid at write-time become
+  `unused-ignore` errors after a library update changes stub precision.
+
+**Solution**: Always run the full CI scope locally before pushing:
+
+```bash
+uv run mypy src tests   # matches CI
+uv run ruff check src tests
+uv run pytest tests/
+```
+
+For LangChain `StructuredTool` handling in tests, use typed helpers
+that assert-then-narrow:
+
+```python
+def _call(tool: Any, **kwargs: Any) -> Any:
+    assert tool.coroutine is not None
+    return tool.coroutine(**kwargs)
+
+def _instantiate_args(tool: Any, **kwargs: Any) -> BaseModel:
+    schema_cls = tool.args_schema
+    assert isinstance(schema_cls, type) and issubclass(schema_cls, BaseModel)
+    return schema_cls(**kwargs)
+```
+
+Caught during `/cleanup-feature http-tools-layer` when 15 test-side
+mypy errors landed only on CI — cost one CI cycle. The Landing the
+Plane checklist in `CLAUDE.md` now enumerates the full CI scope so
+local gates match remote.
