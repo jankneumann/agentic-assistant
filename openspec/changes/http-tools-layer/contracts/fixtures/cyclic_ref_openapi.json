@@ -1,0 +1,49 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Cyclic Ref Service",
+    "version": "0.0.1"
+  },
+  "paths": {
+    "/a": {
+      "post": {
+        "operationId": "create_a",
+        "summary": "Create an A (triggers cyclic ref resolution).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/A" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/A" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "A": {
+        "type": "object",
+        "properties": {
+          "next": { "$ref": "#/components/schemas/B" }
+        }
+      },
+      "B": {
+        "type": "object",
+        "properties": {
+          "back": { "$ref": "#/components/schemas/A" }
+        }
+      }
+    }
+  }
+}
