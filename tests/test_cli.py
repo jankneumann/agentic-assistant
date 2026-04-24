@@ -268,7 +268,7 @@ def test_export_rejects_sdk_harness(stub_factory) -> None:
 # ── HTTP Tool Discovery Wiring (P3) ──────────────────────────────────
 
 
-def _canned_registry() -> "object":
+def _canned_registry() -> object:
     """Build a small ``HttpToolRegistry`` for list-tools / startup tests."""
     from langchain_core.tools import StructuredTool
     from pydantic import BaseModel
@@ -311,7 +311,7 @@ def test_list_tools_with_no_sources_prints_message(
 
     from assistant.http_tools import HttpToolRegistry
 
-    async def _spy(tool_sources, *, client=None):  # noqa: ANN001
+    async def _spy(tool_sources, *, client=None):
         return HttpToolRegistry()
 
     monkeypatch.setattr(cli_mod, "discover_tools", _spy)
@@ -334,7 +334,7 @@ def test_list_tools_with_successful_sources(
 
     registry = _canned_registry()
 
-    async def _fake_discover(tool_sources, *, client=None):  # noqa: ANN001
+    async def _fake_discover(tool_sources, *, client=None):
         return registry
 
     monkeypatch.setattr(cli_mod, "discover_tools", _fake_discover)
@@ -360,7 +360,7 @@ def test_list_tools_with_failing_source_exits_nonzero(
     monkeypatch.setenv("CONTENT_ANALYZER_URL", "http://127.0.0.1:1/ignored")
     from assistant.http_tools import HttpToolRegistry
 
-    async def _fake_discover(tool_sources, *, client=None):  # noqa: ANN001
+    async def _fake_discover(tool_sources, *, client=None):
         logging.getLogger("assistant.http_tools.discovery").warning(
             "skipping source %r: simulated failure", "content_analyzer",
         )
@@ -387,7 +387,7 @@ def test_startup_calls_discover_tools_when_base_url_set(
     called = {"count": 0}
     registry = _canned_registry()
 
-    async def _spy(tool_sources, *, client=None):  # noqa: ANN001
+    async def _spy(tool_sources, *, client=None):
         called["count"] += 1
         return registry
 
@@ -410,7 +410,7 @@ def test_startup_skips_discovery_when_no_sources(
 
     called = {"count": 0}
 
-    async def _spy(tool_sources, *, client=None):  # noqa: ANN001
+    async def _spy(tool_sources, *, client=None):
         called["count"] += 1
         from assistant.http_tools import HttpToolRegistry
         return HttpToolRegistry()
