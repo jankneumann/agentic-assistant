@@ -332,7 +332,27 @@ def test_list_tools_with_successful_sources(
     """Per spec: per-source sections with tool names + exit 0 on success."""
     monkeypatch.setenv("CONTENT_ANALYZER_URL", "http://127.0.0.1:1/ignored")
 
-    registry = _canned_registry()
+    from langchain_core.tools import StructuredTool
+    from pydantic import BaseModel
+
+    from assistant.http_tools import HttpToolRegistry
+
+    class _Args(BaseModel):
+        q: str
+
+    async def _noop(q: str) -> None:
+        return None
+
+    # The persona's configured source is `content_analyzer` — build the
+    # registry with that source name so by_source() matches.
+    registry = HttpToolRegistry()
+    registry.register(
+        "content_analyzer", "search",
+        StructuredTool.from_function(
+            coroutine=_noop, name="content_analyzer:search",
+            description="Search content", args_schema=_Args,
+        ),
+    )
 
     async def _fake_discover(tool_sources, *, client=None):
         return registry
@@ -341,14 +361,60 @@ def test_list_tools_with_successful_sources(
 
     runner = CliRunner()
     result = runner.invoke(cli_mod.main, ["-p", "personal", "--list-tools"])
-    assert result.exit_code == 0
-    # No per-source sections for a registered source means we at least see
-    # the content_analyzer section with "(no tools — see warning logs)"
-    # for sources whose canned registry has none; the "backend" registry
-    # items won't appear because "backend" isn't in the persona config.
-    # What we can reliably assert is a per-source header for the configured
-    # source and a non-empty stdout.
+    assert result.exit_code == 0, result.output
     assert "[content_analyzer]" in result.output
+    assert "content_analyzer:search" in result.output
+
+
+def test_list_tools_exits_zero_when_warning_but_tools_registered(
+    stub_factory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exit 0 when a source emits a WARNING but still registers tools.
+
+    Real case: ``/openapi.json`` returns 500 → fallback to ``/help``
+    succeeds. A WARNING is emitted for the 500 but the registry ends up
+    with tools for the source. Exit code MUST be 0.
+    """
+    import logging
+
+    monkeypatch.setenv("CONTENT_ANALYZER_URL", "http://127.0.0.1:1/ignored")
+
+    # Canned registry has `backend:*` tools, not `content_analyzer:*`,
+    # so we need a registry keyed by the actually-configured source name.
+    from langchain_core.tools import StructuredTool
+    from pydantic import BaseModel
+
+    from assistant.http_tools import HttpToolRegistry
+
+    class _Args(BaseModel):
+        pass
+
+    async def _noop() -> None:
+        return None
+
+    registry = HttpToolRegistry()
+    registry.register(
+        "content_analyzer", "search",
+        StructuredTool.from_function(
+            coroutine=_noop, name="content_analyzer:search",
+            description="Search content", args_schema=_Args,
+        ),
+    )
+
+    async def _fake_discover(tool_sources, *, client=None):
+        # Emit a warning like discovery would when /openapi.json 500s —
+        # but still succeed via the fallback.
+        logging.getLogger("assistant.http_tools.discovery").warning(
+            "discovery failed for source %r: HTTP %d", "content_analyzer", 500,
+        )
+        return registry
+
+    monkeypatch.setattr(cli_mod, "discover_tools", _fake_discover)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_mod.main, ["-p", "personal", "--list-tools"])
+    assert result.exit_code == 0, result.output
+    assert "content_analyzer:search" in result.output
 
 
 def test_list_tools_with_failing_source_exits_nonzero(
