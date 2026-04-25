@@ -163,19 +163,19 @@ Task IDs map to work-packages. Packages and their scopes are defined in `work-pa
 
 ## Phase 5 — Integration & Validation (wp-integration)
 
-- [ ] **5.1** Write integration test `tests/telemetry/test_cli_span_emission.py` — run `assistant -p <fixture-persona>` REPL startup, assert that harness/delegation/memory calls during a scripted interaction emit the expected spans through a noop-provider spy.
+- [x] **5.1** Write integration test `tests/telemetry/test_cli_span_emission.py` — run `assistant -p <fixture-persona>` REPL startup, assert that harness/delegation/memory calls during a scripted interaction emit the expected spans through a noop-provider spy.
   **Spec scenarios**: observability — spans emit on each hook, with correct persona/role attribution
   **Dependencies**: 2.3, 2.6, 3.2, 3.4, 3.7, 3.9
 
-- [ ] **5.2** Write integration test `tests/telemetry/test_privacy_compliance.py` — exercise the telemetry module under the privacy-guard plugin fixtures; assert no filesystem I/O is attempted by any provider path; additionally assert the `No Inbound Interfaces` constraint by importing the entire `src.assistant.telemetry` package tree and verifying that `fastapi`, `flask`, `aiohttp.web`, and `grpc.aio.server` do NOT appear in `sys.modules` after the import; finally assert that `src/assistant/telemetry/__init__.py`'s module docstring contains the phrase `outbound-only`.
+- [x] **5.2** Write integration test `tests/telemetry/test_privacy_compliance.py` — exercise the telemetry module under the privacy-guard plugin fixtures; assert no filesystem I/O is attempted by any provider path; additionally assert the `No Inbound Interfaces` constraint by importing the entire `src.assistant.telemetry` package tree and verifying that `fastapi`, `flask`, `aiohttp.web`, and `grpc.aio.server` do NOT appear in `sys.modules` after the import; finally assert that `src/assistant/telemetry/__init__.py`'s module docstring contains the phrase `outbound-only`.
   **Spec scenarios**: observability — "Module docstring declares outbound-only posture"
   **Design decisions**: Privacy Boundary Compliance, D1 (singleton)
   **Dependencies**: 1.15, 1.18
 
-- [ ] **5.3** Write tests asserting the `FIXTURE_PERSONA_SENTINEL_v1` sentinel is NOT present in any emitted span attribute when the fixture persona is active.
+- [x] **5.3** Write tests asserting the `FIXTURE_PERSONA_SENTINEL_v1` sentinel is NOT present in any emitted span attribute when the fixture persona is active.
   **Dependencies**: 2.3, 5.1
 
-- [ ] **5.4** Run full quality gates: `uv run pytest tests/`, `uv run ruff check src tests`, `uv run mypy src tests`, `openspec validate observability --strict`.
+- [x] **5.4** Run full quality gates: `uv run pytest tests/`, `uv run ruff check src tests`, `uv run mypy src tests`, `openspec validate observability --strict`.
   **Dependencies**: all prior tasks
 
 - [ ] **5.5** **[OPTIONAL — advisory, not blocking merge]** Add a CI smoke test that spins up Langfuse via `docker-compose.langfuse.yml`, runs a scripted assistant interaction with `LANGFUSE_ENABLED=true`, and asserts spans land in Langfuse via the admin API. Because the Langfuse stack (Postgres + ClickHouse + Redis + MinIO + web + worker) exceeds typical GH Actions runner capacity (~4GB RAM, often OOMs on ClickHouse), this task is **optional**: if included, it MUST run only under a `langfuse-smoke` job guarded by a repository variable `RUN_LANGFUSE_SMOKE=true`, or be attached to a self-hosted runner tagged `large`. The default CI path uses the noop provider spy (task 5.1) and does NOT require live Langfuse.
