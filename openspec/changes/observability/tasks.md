@@ -6,72 +6,72 @@ Task IDs map to work-packages. Packages and their scopes are defined in `work-pa
 
 ## Phase 1 — Telemetry Module Foundation (wp-contracts)
 
-- [ ] **1.1** Write tests for `TelemetryConfig.from_env()` and default values.
+- [x] **1.1** Write tests for `TelemetryConfig.from_env()` and default values.
   **Spec scenarios**: observability — "Missing credentials default to disabled"
   **Design decisions**: D5 (config via `_env()` helper pattern)
   **Dependencies**: None
 
-- [ ] **1.2** Implement `src/assistant/telemetry/config.py` — frozen `TelemetryConfig` dataclass, `from_env()` classmethod using `_env()` helper.
+- [x] **1.2** Implement `src/assistant/telemetry/config.py` — frozen `TelemetryConfig` dataclass, `from_env()` classmethod using `_env()` helper.
   **Dependencies**: 1.1
 
-- [ ] **1.3** Write tests for the `ObservabilityProvider` Protocol: `isinstance` checks against noop and (stub) langfuse, tool_kind validation, required method presence.
+- [x] **1.3** Write tests for the `ObservabilityProvider` Protocol: `isinstance` checks against noop and (stub) langfuse, tool_kind validation, required method presence.
   **Spec scenarios**: observability — "Noop implements the full Protocol surface", "Rejects mis-typed tool_kind"
   **Dependencies**: None
 
-- [ ] **1.4** Implement `src/assistant/telemetry/providers/base.py` — `ObservabilityProvider` Protocol decorated with `@runtime_checkable`, including all 9 methods per spec.
+- [x] **1.4** Implement `src/assistant/telemetry/providers/base.py` — `ObservabilityProvider` Protocol decorated with `@runtime_checkable`, including all 9 methods per spec.
   **Dependencies**: 1.3
 
-- [ ] **1.5** Write tests for `NoopProvider` — protocol compliance, zero-allocation assertion via `tracemalloc`, protocol-level behavior under every first-class method.
+- [x] **1.5** Write tests for `NoopProvider` — protocol compliance, zero-allocation assertion via `tracemalloc`, protocol-level behavior under every first-class method.
   **Spec scenarios**: observability — "Noop implements the full Protocol surface", "Noop methods are zero-allocation", "Default configuration yields noop"
   **Design decisions**: D7 (zero-allocation noop)
   **Dependencies**: 1.4
 
-- [ ] **1.6** Implement `src/assistant/telemetry/providers/noop.py` — `NoopProvider` with zero-allocation method bodies.
+- [x] **1.6** Implement `src/assistant/telemetry/providers/noop.py` — `NoopProvider` with zero-allocation method bodies.
   **Dependencies**: 1.5
 
-- [ ] **1.7** Write tests for `sanitize(value)` covering every pattern in the ordered regex list: the Langfuse-specific-before-generic-sk ordering invariant; persona-name and other known-safe-field passthrough; private submodule URL redaction; AWS access keys (`AKIA*`/`ASIA*`); GitHub PATs (`ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`); Slack tokens (`xoxb-`/`xoxp-`/`xoxa-`); Google OAuth access tokens (`ya29.*`); database URLs with embedded credentials (postgres/mysql/mongodb/redis); `Authorization: Basic`, `Authorization: Digest`, and `Cookie:` header formats; `Bearer *` tokens; generic `key=value` catch-all.
+- [x] **1.7** Write tests for `sanitize(value)` covering every pattern in the ordered regex list: the Langfuse-specific-before-generic-sk ordering invariant; persona-name and other known-safe-field passthrough; private submodule URL redaction; AWS access keys (`AKIA*`/`ASIA*`); GitHub PATs (`ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`); Slack tokens (`xoxb-`/`xoxp-`/`xoxa-`); Google OAuth access tokens (`ya29.*`); database URLs with embedded credentials (postgres/mysql/mongodb/redis); `Authorization: Basic`, `Authorization: Digest`, and `Cookie:` header formats; `Bearer *` tokens; generic `key=value` catch-all.
   **Spec scenarios**: observability — "Langfuse-specific key is redacted before the generic secret-key pattern", "Common vendor-token formats are redacted", "Database URL with embedded credentials is redacted", "Private submodule URL is redacted", "Persona name is preserved"
   **Design decisions**: D5 (sanitization ordering)
   **Dependencies**: None
 
-- [ ] **1.8** Implement `src/assistant/telemetry/sanitize.py` — ordered regex list, `sanitize(str) -> str`, `_sanitize_mapping(dict) -> dict`.
+- [x] **1.8** Implement `src/assistant/telemetry/sanitize.py` — ordered regex list, `sanitize(str) -> str`, `_sanitize_mapping(dict) -> dict`.
   **Dependencies**: 1.7
 
-- [ ] **1.9** Write tests for the assistant context `ContextVar`: `set_assistant_ctx`/`get_assistant_ctx` round-trip; `assistant_ctx` context manager pushes on enter and pops on exit; **cross-await propagation** — a coroutine that awaits `asyncio.sleep(0)` sees the same context before and after the await; **delegation scope** — pushing a sub-role via `assistant_ctx(...)` during a simulated `delegate` call makes `get_assistant_ctx()` return the sub-role for spans emitted inside, then restores the parent context after exit.
+- [x] **1.9** Write tests for the assistant context `ContextVar`: `set_assistant_ctx`/`get_assistant_ctx` round-trip; `assistant_ctx` context manager pushes on enter and pops on exit; **cross-await propagation** — a coroutine that awaits `asyncio.sleep(0)` sees the same context before and after the await; **delegation scope** — pushing a sub-role via `assistant_ctx(...)` during a simulated `delegate` call makes `get_assistant_ctx()` return the sub-role for spans emitted inside, then restores the parent context after exit.
   **Spec scenarios**: observability — "Context persists across await", "Delegation updates context for the sub-agent's spans"
   **Design decisions**: D4 (contextvars for persona/role propagation)
   **Dependencies**: None
 
-- [ ] **1.10** Implement `src/assistant/telemetry/context.py` — `set_assistant_ctx`, `get_assistant_ctx`, `assistant_ctx` context manager.
+- [x] **1.10** Implement `src/assistant/telemetry/context.py` — `set_assistant_ctx`, `get_assistant_ctx`, `assistant_ctx` context manager.
   **Dependencies**: 1.9
 
-- [ ] **1.11** Write tests for `LangfuseProvider` — lazy import behavior, 3-level graceful degradation (disabled, ImportError, runtime error), sanitization integration, flush mode switch.
+- [x] **1.11** Write tests for `LangfuseProvider` — lazy import behavior, 3-level graceful degradation (disabled, ImportError, runtime error), sanitization integration, flush mode switch.
   **Spec scenarios**: observability — "Langfuse implements the full Protocol surface", "Returns noop when langfuse package is missing", "Returns noop when provider init raises", "Shutdown mode batches events", "Per-op mode flushes each call"
   **Design decisions**: D2 (3-level state machine), D5 (sanitization at emission), D6 (flush via atexit)
   **Dependencies**: 1.4, 1.8
 
-- [ ] **1.12** Add optional `telemetry` extra in `pyproject.toml` with `langfuse>=3.0,<4.0`.
+- [x] **1.12** Add optional `telemetry` extra in `pyproject.toml` with `langfuse>=3.0,<4.0`.
   **Dependencies**: None
 
-- [ ] **1.13** Implement `src/assistant/telemetry/providers/langfuse.py` — `LangfuseProvider` with lazy import (line ~107 pattern from newsletter), 3-level degradation handling, sanitization, per-op vs shutdown flush modes.
+- [x] **1.13** Implement `src/assistant/telemetry/providers/langfuse.py` — `LangfuseProvider` with lazy import (line ~107 pattern from newsletter), 3-level degradation handling, sanitization, per-op vs shutdown flush modes.
   **Dependencies**: 1.11, 1.12
 
-- [ ] **1.14** Write tests for `factory.get_observability_provider()` — singleton caching across calls, atexit registration, 3-level degradation, one-warning-per-process behavior. Tests MUST include a pytest `autouse=True` fixture in `tests/telemetry/conftest.py` that resets the module-level `factory._provider = None` before each test, because the singleton otherwise leaks between test cases and breaks level-2 ImportError testing. Document the reset fixture as part of the test contract so downstream test files inherit it.
+- [x] **1.14** Write tests for `factory.get_observability_provider()` — singleton caching across calls, atexit registration, 3-level degradation, one-warning-per-process behavior. Tests MUST include a pytest `autouse=True` fixture in `tests/telemetry/conftest.py` that resets the module-level `factory._provider = None` before each test, because the singleton otherwise leaks between test cases and breaks level-2 ImportError testing. Document the reset fixture as part of the test contract so downstream test files inherit it.
   **Spec scenarios**: observability — all three Graceful Degradation scenarios, "Default configuration yields noop"
   **Design decisions**: D1 (singleton lifecycle), D2 (3-level state machine), D6 (atexit registration), D11 (test fixture for singleton reset)
   **Dependencies**: 1.6, 1.13
 
-- [ ] **1.15** Implement `src/assistant/telemetry/factory.py` — `get_observability_provider()` module-level singleton, `_init_provider()` state machine, atexit registration, one-shot warnings.
+- [x] **1.15** Implement `src/assistant/telemetry/factory.py` — `get_observability_provider()` module-level singleton, `_init_provider()` state machine, atexit registration, one-shot warnings.
   **Dependencies**: 1.14
 
-- [ ] **1.16** Write tests for `flush_hook` — atexit-path flush, `LANGFUSE_FLUSH_MODE=per_op` env switch, noop provider interaction.
+- [x] **1.16** Write tests for `flush_hook` — atexit-path flush, `LANGFUSE_FLUSH_MODE=per_op` env switch, noop provider interaction.
   **Spec scenarios**: observability — "Shutdown mode batches events", "Per-op mode flushes each call"
   **Dependencies**: 1.15
 
-- [ ] **1.17** Implement `src/assistant/telemetry/flush_hook.py` — atexit-registered shutdown, per-op opt-in wrapping.
+- [x] **1.17** Implement `src/assistant/telemetry/flush_hook.py` — atexit-registered shutdown, per-op opt-in wrapping.
   **Dependencies**: 1.16
 
-- [ ] **1.18** Add module exports in `src/assistant/telemetry/__init__.py` — public re-exports: `get_observability_provider`, `ObservabilityProvider`, `set_assistant_ctx`, `get_assistant_ctx`.
+- [x] **1.18** Add module exports in `src/assistant/telemetry/__init__.py` — public re-exports: `get_observability_provider`, `ObservabilityProvider`, `set_assistant_ctx`, `get_assistant_ctx`.
   **Dependencies**: 1.15
 
 ## Phase 2 — Core Hooks: Harness + Delegation (wp-hooks)
