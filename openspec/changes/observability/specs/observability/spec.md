@@ -213,6 +213,15 @@ The sanitizer MUST NOT modify fields with known-safe semantics: `persona`, `role
 - **THEN** the emitted `persona` attribute MUST equal `"personal"`
 - **AND** MUST NOT be redacted
 
+#### Scenario: List elements under safe keys are still sanitized
+
+- **WHEN** a span attribute under a known-safe field name (e.g. `persona`, `role`, `tool_name`) is a list rather than a scalar string, and one or more list elements contain a secret-format substring
+- **THEN** each string element MUST be run through the 15-pattern redaction chain
+- **AND** the safe-field exemption MUST NOT propagate from the parent key to list elements
+- **AND** innocuous string elements in the same list MUST pass through unchanged
+
+**Rationale**: the safe-field policy describes operator-chosen scalar identifiers (short, known shape). A list under a safe-field key may carry data influenced by other call paths, so defense-in-depth requires per-element scrubbing regardless of the parent key.
+
 ### Requirement: Flush Lifecycle
 
 The telemetry module SHALL register `atexit.register(provider.shutdown)` exactly once during `get_observability_provider()` to ensure buffered events are drained when the process exits normally. When the env var `LANGFUSE_FLUSH_MODE=per_op` is set, every first-class `trace_*` method MUST additionally call `self.flush()` before returning. The default flush mode SHALL be `shutdown`.

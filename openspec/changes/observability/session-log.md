@@ -496,3 +496,112 @@ positives on contractions and quoted phrases per the auto memory
 reference session log sanitizer entry. This phase entry was written
 in plain prose without contractions or quoted code fragments to
 sidestep that bug rather than running the sanitizer post hoc.
+
+---
+
+## Phase Implementation Iteration 1 (2026-04-25)
+
+Agent claude orchestrator plus one general purpose Explore subagent.
+Session autopilot observability resume from IMPLEMENT phase
+checkpoint. Sanitizer not run on this entry per the auto memory note
+about sanitizer false positives on plain prose; entry written in
+plain prose without contractions or quoted code fragments to be safe
+even unsanitized.
+
+### Decisions
+
+One sanitization defect fixed in band. The list recursion in
+sanitize underscore value was inheriting parent key safety status
+from SAFE underscore FIELDS. A list under persona or role or any
+other safe field had every string element exempted from the redaction
+chain. The fix changes the per element call to force underscore
+sanitize true so list elements always run through the 15 pattern
+chain regardless of parent key. The dict recursion was already correct
+because sanitize underscore mapping re evaluates each child key
+independently. Locked the new behavior into the spec via a new
+scenario titled List elements under safe keys are still sanitized
+attached to the Secret Sanitization Requirement.
+
+Stale deviation note corrected. The IMPLEMENT phase loop state
+deviation entry seven claimed that trace underscore delegation task
+emits verbatim without sanitization for prompts under 256 chars.
+Reading langfuse provider line 155 shows the input dict passes
+sanitize task explicitly. Short tasks are scrubbed at emission. The
+deviation note in loop state json overstated the privacy risk. The
+residual concern is non secret format prose containing names or
+addresses which the regex chain does not catch by design. That is a
+spec level question about what counts as sensitive content and
+belongs in a separate proposal if treated as in scope.
+
+### Findings dismissed during triage
+
+The Explore subagent returned 8 findings. Three were dismissed
+because the agent misread the code. First the warned levels dedup
+contract is documented in factory module docstring lines 20 to 24,
+not undocumented as claimed. Second the atexit register call sits
+at line 129 inside the with provider lock block, not outside as
+claimed. Third the trace memory op decorator has explicit kwargs
+fallback at decorator lines 244 to 251, not positional only as
+claimed. Documenting these in impl findings markdown so the multi
+vendor IMPL REVIEW phase does not relitigate them.
+
+### Findings deferred to IMPL REVIEW
+
+Four below threshold findings live in impl findings markdown for
+multi vendor visibility. Empty credential warning emitted at config
+from env rather than via factory warn once dedup mechanism. Pointless
+module level dunder getattr at langfuse provider line 262. Validator
+asymmetry where noop trace tool call quietly returns on missing tool
+kind while langfuse raises. Stop hook section in observability docs
+markdown lacks a one or two sentence intro. None of these breach the
+medium threshold for in band fix during IMPL ITERATE.
+
+### Out of scope follow up
+
+Eleven pytest failures in tests http underscore tools predate this
+iteration. Verified via git stash plus checkout of a079754 reproducing
+the same FileNotFoundError pattern. Tests reference fixtures at
+openspec changes http tools layer contracts fixtures sample openapi
+v3 dot json which was archived to openspec changes archive 2026 04 24
+http tools layer contracts fixtures on commit ed6008c during the
+http tools layer archive event. The right fix is to relocate fixtures
+into a stable tests http tools fixtures path so test code never
+reaches into openspec changes. Quick fix would couple tests to an
+archive directory whose name embeds the archive date which is fragile.
+Filing a follow up issue post merge with label followup and openspec
+http tools layer.
+
+### Trade offs
+
+Accepted defense in depth over performance for the sanitize list
+fix. Lists under safe field keys now run through the 15 pattern
+chain unconditionally even though SAFE underscore FIELDS values are
+spec d as scalar identifiers. The performance cost is negligible
+because lists under safe keys are not expected in practice and the
+regex chain is fast on short identifier strings. Accepted explicit
+spec scenario over implicit behavior because the previous behavior
+was surprising and silently leaked secrets in the case where any
+future call site passed a list under one of those keys.
+
+### Open questions
+
+Should the empty credential warning move from config to factory.
+Multi vendor IMPL REVIEW will arbitrate. The spec language pins
+emission to from env which the current implementation respects but
+the warning architecture coherence argues for moving the dedup to
+factory warn once.
+
+Should the module level dunder getattr in langfuse provider be
+removed. The function raises AttributeError which is the default
+behavior anyway so the function adds no value. Cleanup candidate.
+
+### Context
+
+One commit lands iteration 1 with the sanitize list fix plus four
+new regression tests plus a new spec scenario plus impl findings
+markdown plus loop state deviation correction plus session log
+entry. Telemetry test count rose from 145 to 149 with all 149 tests
+passing. Mypy clean across 119 files plus ruff clean plus openspec
+strict valid. Pre existing 11 http tools failures confirmed
+unrelated and out of scope. Branch ready for autopilot IMPL REVIEW
+phase via codex plus gemini consensus.

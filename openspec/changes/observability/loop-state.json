@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "change_id": "observability",
-  "current_phase": "IMPLEMENT",
-  "previous_phase": "PLAN_REVIEW",
+  "current_phase": "IMPL_ITERATE",
+  "previous_phase": "IMPLEMENT",
   "resumed_at": "2026-04-25T00:00:00Z",
   "worktree_path": "/Users/jankneumann/Coding/agentic-assistant/.git-worktrees/observability",
   "feature_branch": "openspec/observability",
@@ -80,12 +80,19 @@
         "PEP 695 generic syntax (def traced_harness[R]) instead of TypeVar — Python 3.12 idiom, satisfies ruff UP047",
         "set_assistant_ctx invoked in BOTH `run` and `export` CLI commands so export path is also tagged",
         "Langfuse-worker compose service intentionally lacks LANGFUSE_INIT_* (only web service performs headless init in v3 self-hosting)",
-        "FINDING — trace_delegation's task field is spec'd to be emitted verbatim when ≤256 chars (req observability.4): short delegation prompts containing sensitive content would land in Langfuse without sanitization. Spec is internally consistent but reviewers should confirm intended privacy posture"
+        "CORRECTED 2026-04-25 (Iter 1) — trace_delegation.task IS sanitized at emission via langfuse.py:155 (`input={\"task\": sanitize(task)}`); the original deviation note overstated the privacy risk. Secret-format substrings ARE scrubbed even for ≤256-char tasks. Residual concern is non-secret-format PII (free-form prose containing names) which the regex chain does not catch — that is a spec-level question about what counts as 'sensitive content' and belongs in a separate proposal if treated as in-scope."
       ],
       "change_context_status": "all_phases_complete (RTM 18/18 with Files Changed populated; Coverage Summary at 18/18 traced)",
       "checkpoint_at": "2026-04-25T00:00:00Z (post-IMPLEMENT, awaiting direction for IMPL_ITERATE / IMPL_REVIEW)"
     },
-    "IMPL_ITERATE": {"status": "pending"},
+    "IMPL_ITERATE": {
+      "status": "in_progress",
+      "started_at": "2026-04-25T00:00:00Z",
+      "max_iterations": 5,
+      "threshold": "medium",
+      "deviations_seeded": 7,
+      "note": "Resumed via /autopilot observability after user-confirmed continuation; seeded with 7 deviations from IMPLEMENT phase"
+    },
     "IMPL_REVIEW": {"status": "pending"},
     "VALIDATE": {"status": "pending"},
     "SUBMIT_PR": {"status": "pending"}
