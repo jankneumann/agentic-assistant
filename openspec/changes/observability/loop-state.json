@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "change_id": "observability",
-  "current_phase": "IMPL_ITERATE",
-  "previous_phase": "IMPLEMENT",
+  "current_phase": "IMPL_REVIEW",
+  "previous_phase": "IMPL_ITERATE",
   "resumed_at": "2026-04-25T00:00:00Z",
   "worktree_path": "/Users/jankneumann/Coding/agentic-assistant/.git-worktrees/observability",
   "feature_branch": "openspec/observability",
@@ -86,12 +86,47 @@
       "checkpoint_at": "2026-04-25T00:00:00Z (post-IMPLEMENT, awaiting direction for IMPL_ITERATE / IMPL_REVIEW)"
     },
     "IMPL_ITERATE": {
-      "status": "in_progress",
+      "status": "completed",
       "started_at": "2026-04-25T00:00:00Z",
+      "completed_at": "2026-04-25T00:00:00Z",
       "max_iterations": 5,
       "threshold": "medium",
+      "iterations_run": 1,
+      "termination_reason": "convergence — all remaining findings below medium threshold after iter 1",
       "deviations_seeded": 7,
-      "note": "Resumed via /autopilot observability after user-confirmed continuation; seeded with 7 deviations from IMPLEMENT phase"
+      "commit": "55196af",
+      "findings_summary": {
+        "raised_by_explore_agent": 8,
+        "dismissed_as_misread": 3,
+        "fixed_in_iter_1": 1,
+        "below_threshold_deferred_to_impl_review": 4,
+        "out_of_scope_followup": 1
+      },
+      "fixed": [
+        {
+          "criticality": "medium",
+          "type": "security/edge-case",
+          "ref": "src/assistant/telemetry/sanitize.py:_sanitize_value list-recursion",
+          "summary": "List elements under SAFE_FIELDS keys bypassed the redaction chain because parent-key safety propagated to per-element calls. Fix: force_sanitize=True on list descent. Spec scenario added to Secret Sanitization Requirement. 4 regression tests added."
+        }
+      ],
+      "deferred_to_impl_review": [
+        "Empty-credential warning emitted at config.from_env rather than via factory._warn_once dedup mechanism (architectural coherence concern; spec-compliant as-is)",
+        "Module-level __getattr__ at langfuse.py:262 raises AttributeError which is the default behavior — pointless dead code, cleanup candidate",
+        "Validator asymmetry: noop.trace_tool_call quietly returns on missing tool_kind; langfuse.trace_tool_call raises (Protocol type hints make this near-impossible in practice)",
+        "docs/observability.md Stop-hook section lacks intro context"
+      ],
+      "out_of_scope_followup": [
+        "tests/http_tools/ — 11 pytest failures (FileNotFoundError) referencing the unarchived openspec/changes/http-tools-layer/contracts/fixtures/ path. Verified via baseline reproduction at a079754 to predate this iteration. Right fix is to relocate fixtures into tests/http_tools/fixtures/. File as gh issue with label followup + openspec:http-tools-layer post-merge."
+      ],
+      "deviation_7_corrected": "trace_delegation.task IS sanitized at emission via langfuse.py:155; original IMPLEMENT-phase deviation note overstated privacy risk and has been corrected in deviations_for_impl_review[6] above",
+      "quality_gates": {
+        "pytest_telemetry": "149 passed, 1 skipped (was 145 → 149 with 4 new regression tests)",
+        "pytest_full_suite": "435 passed, 1 skipped, 11 pre-existing http_tools failures (out of scope, predates iter 1)",
+        "mypy_src_tests": "no issues (119 source files)",
+        "ruff_src_tests": "all checks passed",
+        "openspec_validate_strict": "valid"
+      }
     },
     "IMPL_REVIEW": {"status": "pending"},
     "VALIDATE": {"status": "pending"},
@@ -102,6 +137,7 @@
   },
   "finding_trend": {
     "plan_iterate": [20, 0],
-    "plan_review": [9, 0]
+    "plan_review": [9, 0],
+    "impl_iterate": [1, 0]
   }
 }
