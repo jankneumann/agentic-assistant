@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "change_id": "observability",
+  "current_phase": "IMPLEMENT",
+  "previous_phase": "PLAN_REVIEW",
+  "resumed_at": "2026-04-25T00:00:00Z",
+  "worktree_path": "/Users/jankneumann/Coding/agentic-assistant/.git-worktrees/observability",
+  "feature_branch": "openspec/observability",
+  "cli_review_enabled": true,
+  "val_review_enabled": false,
+  "tier": "coordinated",
+  "phases": {
+    "PLAN": {
+      "status": "completed",
+      "commit": "3677f76",
+      "note": "proposal, design, 5 spec deltas, tasks, work-packages"
+    },
+    "PLAN_ITERATE": {
+      "status": "completed",
+      "commit": "6fe7ffa",
+      "findings_addressed": 20,
+      "note": "1 critical + 7 high + 12 medium findings from self-review"
+    },
+    "PLAN_REVIEW": {
+      "status": "completed",
+      "commit": "bfb7711",
+      "rounds": 1,
+      "vendors": ["codex", "gemini", "claude"],
+      "findings_fixed": 9,
+      "note": "3-vendor consensus; 9 bugs fixed"
+    },
+    "IMPLEMENT": {
+      "status": "in_progress",
+      "started_at": "2026-04-25T00:00:00Z",
+      "tier": "coordinated",
+      "work_packages": ["wp-contracts", "wp-hooks", "wp-devops", "wp-integration"],
+      "package_authors": {}
+    },
+    "IMPL_ITERATE": {"status": "pending"},
+    "IMPL_REVIEW": {"status": "pending"},
+    "VALIDATE": {"status": "pending"},
+    "SUBMIT_PR": {"status": "pending"}
+  },
+  "vendor_participation": {
+    "plan_review_round_1": {"codex": true, "gemini": true, "claude": true}
+  },
+  "finding_trend": {
+    "plan_iterate": [20, 0],
+    "plan_review": [9, 0]
+  }
+}
