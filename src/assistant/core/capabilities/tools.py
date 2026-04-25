@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any, Protocol, runtime_checkable
 
 from assistant.http_tools import HttpToolRegistry
+from assistant.telemetry.tool_wrap import wrap_extension_tools
 
 
 @runtime_checkable
@@ -38,7 +39,12 @@ class DefaultToolPolicy:
     ) -> list[Any]:
         all_tools: list[Any] = []
         for ext in loaded_extensions:
-            all_tools.extend(ext.as_langchain_tools())
+            # Spec capability-resolver "Aggregated Extension Tools Are
+            # Traced": each extension's tools are wrapped at the
+            # aggregation site so every invocation emits one
+            # ``trace_tool_call(tool_kind="extension", ...)``. The
+            # shared helper keeps wrapping policy in one place.
+            all_tools.extend(wrap_extension_tools(ext))
 
         if self._http_tool_registry is not None:
             all_tools.extend(self._http_tool_registry.list_all())

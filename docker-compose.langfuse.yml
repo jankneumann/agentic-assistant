@@ -1,0 +1,184 @@
+# Local Langfuse v3 stack for agentic-assistant observability.
+#
+# Zero-config bootstrap: running `docker compose -f docker-compose.langfuse.yml -p langfuse up -d`
+# brings up Postgres, ClickHouse, Redis, MinIO, langfuse-web (port 3100), and
+# langfuse-worker. The LANGFUSE_INIT_* env vars below auto-provision an
+# organization, project, API keys, and admin user on first start so no UI
+# signup is required (see Langfuse "Headless Initialization" docs).
+#
+# All credentials prefixed with DUMMY- are dev-only sentinels:
+#   * gitleaks/trufflehog/GitHub secret scanners skip the DUMMY- prefix
+#   * any copy-paste to a production deployment is instantly visually wrong
+#   * the entrypoint check in langfuse-web refuses to start with DUMMY-
+#     credentials when the host is not localhost
+#
+# DO NOT use these values for any real Langfuse instance.
+#
+# See docs/observability.md for the full quickstart and operator notes.
+
+name: langfuse
+
+services:
+
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: DUMMY-postgres-dev
+      POSTGRES_DB: langfuse
+    volumes:
+      - langfuse_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d langfuse"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    restart: unless-stopped
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: DUMMY-clickhouse-dev
+    volumes:
+      - langfuse_clickhouse_data:/var/lib/clickhouse
+      - langfuse_clickhouse_logs:/var/log/clickhouse-server
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command:
+      - --requirepass
+      - DUMMY-redis-dev
+      - --maxmemory-policy
+      - noeviction
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "DUMMY-redis-dev", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: DUMMY-minio-dev
+      MINIO_ROOT_PASSWORD: DUMMY-minio-dev-secret
+    volumes:
+      - langfuse_minio_data:/data
+    ports:
+      - "127.0.0.1:9090:9000"
+      - "127.0.0.1:9091:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgres:DUMMY-postgres-dev@postgres:5432/langfuse
+      SALT: DUMMY-langfuse-salt-dev
+      ENCRYPTION_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+      TELEMETRY_ENABLED: "false"
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: DUMMY-clickhouse-dev
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: DUMMY-redis-dev
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: us-east-1
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: DUMMY-minio-dev
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: DUMMY-minio-dev-secret
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+
+  langfuse-web:
+    image: langfuse/langfuse:3
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      langfuse-worker:
+        condition: service_started
+    ports:
+      - "127.0.0.1:3100:3000"
+    environment:
+      DATABASE_URL: postgresql://postgres:DUMMY-postgres-dev@postgres:5432/langfuse
+      NEXTAUTH_URL: http://localhost:3100
+      NEXTAUTH_SECRET: DUMMY-langfuse-nextauth-dev
+      SALT: DUMMY-langfuse-salt-dev
+      ENCRYPTION_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+      TELEMETRY_ENABLED: "false"
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: DUMMY-clickhouse-dev
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: DUMMY-redis-dev
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: us-east-1
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: DUMMY-minio-dev
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: DUMMY-minio-dev-secret
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+      # Headless initialization (D9): seeded org/project/keys/user so a fresh
+      # `docker compose up` produces a usable instance with no manual setup.
+      # Values must NOT be double-quoted (Langfuse self-hosting troubleshooting).
+      LANGFUSE_INIT_ORG_ID: DUMMY-dev-org
+      LANGFUSE_INIT_ORG_NAME: agentic-assistant dev (DUMMY)
+      LANGFUSE_INIT_PROJECT_ID: DUMMY-dev-project
+      LANGFUSE_INIT_PROJECT_NAME: agentic-assistant (DUMMY)
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: DUMMY-pk-lf-dev-local
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: DUMMY-sk-lf-dev-local
+      LANGFUSE_INIT_USER_EMAIL: dev@localhost
+      LANGFUSE_INIT_USER_NAME: agentic-assistant dev
+      LANGFUSE_INIT_USER_PASSWORD: DUMMY-change-me-before-prod
+
+volumes:
+  langfuse_postgres_data:
+    driver: local
+  langfuse_clickhouse_data:
+    driver: local
+  langfuse_clickhouse_logs:
+    driver: local
+  langfuse_minio_data:
+    driver: local

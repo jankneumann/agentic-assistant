@@ -12,6 +12,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.core.models import Interaction, MemoryEntry, Preference
+from assistant.telemetry.decorators import trace_memory_op
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ class MemoryManager:
         self._session_factory = session_factory
         self._graphiti = graphiti_client
 
+    @trace_memory_op("context")
     async def get_context(
         self, persona: str, role: str, limit: int = 50
     ) -> str:
@@ -59,6 +61,7 @@ class MemoryManager:
 
         return "\n\n".join(sections) + "\n"
 
+    @trace_memory_op("fact_write")
     async def store_fact(self, persona: str, key: str, value: Any) -> None:
         try:
             json.dumps(value)
@@ -76,6 +79,7 @@ class MemoryManager:
             await session.execute(stmt)
             await session.commit()
 
+    @trace_memory_op("interaction_write")
     async def store_interaction(
         self,
         persona: str,
@@ -93,6 +97,7 @@ class MemoryManager:
             session.add(interaction)
             await session.commit()
 
+    @trace_memory_op("episode_write")
     async def store_episode(
         self, persona: str, content: str, source: str
     ) -> None:
@@ -117,6 +122,7 @@ class MemoryManager:
                 persona, source,
             )
 
+    @trace_memory_op("search")
     async def search(
         self, persona: str, query: str, num_results: int = 5
     ) -> list[str]:
@@ -131,6 +137,7 @@ class MemoryManager:
             )
             return []
 
+    @trace_memory_op("export")
     async def export_memory(self, persona: str) -> str:
         sections: list[str] = []
 

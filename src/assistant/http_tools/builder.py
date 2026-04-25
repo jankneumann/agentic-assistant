@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, create_model
 
 from assistant.http_tools.openapi import ParsedOperation
 from assistant.http_tools.registry import tool_key
+from assistant.telemetry.tool_wrap import wrap_http_tool
 
 logger = logging.getLogger(__name__)
 
@@ -271,7 +272,11 @@ def _build_tool(
         description=description,
         args_schema=args_schema,
     )
-    return tool
+    # Spec http-tools "HTTP Tool Invocations Emit Observability Span":
+    # every constructed tool is wrapped here so each invocation emits
+    # one ``trace_tool_call(tool_kind="http", ...)`` and the wrapping
+    # is transparent to ``discover_tools`` consumers.
+    return wrap_http_tool(tool)
 
 
 def _async_wrapper(
