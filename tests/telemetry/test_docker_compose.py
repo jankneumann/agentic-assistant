@@ -35,6 +35,7 @@ EXPECTED_SERVICES = {
     "minio",
     "langfuse-web",
     "langfuse-worker",
+    "init-dummy-guard",
 }
 
 REQUIRED_INIT_ENV_VARS = {
@@ -198,3 +199,86 @@ def test_langfuse_containers_wait_for_data_plane(compose: dict[str, Any]) -> Non
                 f"{langfuse_service} must depend on {required!r}; "
                 f"depends_on names = {sorted(dep_names)}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Iter-2 Fix B (IMPL_REVIEW round 1, codex blocking) — localhost-DUMMY guard.
+# ---------------------------------------------------------------------------
+
+
+def test_init_dummy_guard_service_is_declared(compose: dict[str, Any]) -> None:
+    """Spec req observability.14 — the compose file MUST declare a
+    startup-check service named ``init-dummy-guard`` whose ``command``
+    inspects ``NEXTAUTH_URL`` and the ``LANGFUSE_INIT_*`` values for
+    DUMMY-prefix safety.
+    """
+    services = cast(dict[str, Any], compose["services"])
+    assert "init-dummy-guard" in services, (
+        "compose file must declare an init-dummy-guard service per "
+        "spec req observability.14 (escalated from design D9)"
+    )
+    svc = services["init-dummy-guard"]
+    cmd = svc.get("command")
+    assert cmd is not None, "init-dummy-guard must declare a command"
+    cmd_text = str(cmd)
+    assert "NEXTAUTH_URL" in cmd_text, (
+        "guard command must inspect NEXTAUTH_URL"
+    )
+    assert "DUMMY-" in cmd_text, (
+        "guard command must check for the DUMMY- prefix"
+    )
+    assert "localhost" in cmd_text or "127.0.0.1" in cmd_text, (
+        "guard command must accept localhost / 127.0.0.1 as the safe host"
+    )
+
+
+def test_langfuse_web_depends_on_init_dummy_guard(
+    compose: dict[str, Any],
+) -> None:
+    """``langfuse-web.depends_on`` MUST gate startup on the guard exit
+    via ``condition: service_completed_successfully`` so a non-zero
+    guard exit blocks the web service from launching.
+    """
+    services = cast(dict[str, Any], compose["services"])
+    web = services["langfuse-web"]
+    depends = web.get("depends_on")
+    assert isinstance(depends, dict), (
+        "langfuse-web.depends_on must use long-form (dict) so we can "
+        "assert the condition for init-dummy-guard"
+    )
+    assert "init-dummy-guard" in depends, (
+        "langfuse-web must depend on init-dummy-guard so the guard "
+        "exit gates startup (spec req observability.14)"
+    )
+    cond = depends["init-dummy-guard"]
+    assert isinstance(cond, dict)
+    assert cond.get("condition") == "service_completed_successfully", (
+        "init-dummy-guard dependency MUST use "
+        "condition: service_completed_successfully so a non-zero "
+        "guard exit blocks langfuse-web; got {cond!r}"
+    )
+
+
+def test_init_dummy_guard_environment_carries_canonical_dummy_values(
+    compose: dict[str, Any],
+) -> None:
+    """The guard service receives the same ``LANGFUSE_INIT_*`` env block
+    as ``langfuse-web`` so the same values that would seed the Langfuse
+    instance are the ones inspected. NEXTAUTH_URL is set to localhost
+    by default — the guard's exit-0 path under that local default is
+    asserted in the docker-compose spec scenario.
+    """
+    services = cast(dict[str, Any], compose["services"])
+    guard_env = _service_env(services["init-dummy-guard"])
+    for key in REQUIRED_INIT_ENV_VARS:
+        assert key in guard_env, (
+            f"init-dummy-guard must receive {key} so the guard can "
+            f"inspect the same value langfuse-web would seed"
+        )
+    assert "NEXTAUTH_URL" in guard_env, (
+        "init-dummy-guard must receive NEXTAUTH_URL so the host check "
+        "can run"
+    )
+    # The default committed values are ALL DUMMY-prefixed for safety,
+    # but NEXTAUTH_URL is localhost so the guard returns 0.
+    assert "localhost" in guard_env["NEXTAUTH_URL"] or "127.0.0.1" in guard_env["NEXTAUTH_URL"]

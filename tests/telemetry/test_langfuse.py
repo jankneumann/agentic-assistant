@@ -378,3 +378,271 @@ def test_shutdown_drains(
     p.shutdown()
     client = fake_langfuse_module["client"]
     assert client.shut_down == 1
+
+
+# ---------------------------------------------------------------------------
+# Resilience: SDK emission failures MUST NOT propagate (req observability.2).
+# Iter-2 fix for IMPL_REVIEW round 1 finding C.
+# ---------------------------------------------------------------------------
+
+
+class _RaisingFakeLangfuse(_FakeLangfuse):
+    """A fake whose ``start_as_current_observation`` always raises.
+
+    Stands in for an SDK whose backend is unreachable, whose auth has
+    rotated, or whose payload is malformed — every observation enter
+    raises a transport-shaped exception. The provider MUST swallow it
+    so the application is not crashed by telemetry.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.flush_should_raise = False
+
+    @contextmanager
+    def start_as_current_observation(
+        self, **kwargs: Any
+    ) -> Iterator[Any]:
+        raise RuntimeError("simulated SDK transport failure")
+        yield  # pragma: no cover — unreachable
+
+    def flush(self) -> None:
+        if self.flush_should_raise:
+            raise RuntimeError("simulated SDK flush failure")
+        super().flush()
+
+
+@pytest.fixture
+def raising_langfuse_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[dict[str, _RaisingFakeLangfuse]]:
+    """Install a fake ``langfuse`` module whose SDK calls raise."""
+    holder: dict[str, _RaisingFakeLangfuse] = {}
+
+    def _factory(**kwargs: Any) -> _RaisingFakeLangfuse:
+        client = _RaisingFakeLangfuse(**kwargs)
+        holder["client"] = client
+        return client
+
+    fake_mod = types.ModuleType("langfuse")
+    fake_mod.Langfuse = _factory  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "langfuse", fake_mod)
+    monkeypatch.delitem(
+        sys.modules, "assistant.telemetry.providers.langfuse", raising=False
+    )
+    yield holder
+
+
+def _make_provider_with_raising_sdk(
+    raising_langfuse_module: dict[str, _RaisingFakeLangfuse],
+    flush_mode: str = "shutdown",
+) -> Any:
+    from assistant.telemetry.config import TelemetryConfig
+    from assistant.telemetry.providers.langfuse import LangfuseProvider
+
+    cfg = TelemetryConfig(
+        enabled=True,
+        public_key="pk-lf-test",
+        secret_key="sk-lf-test",
+        host="https://example.test",
+        environment="ci",
+        flush_mode=flush_mode,
+        sample_rate=1.0,
+    )
+    p = LangfuseProvider(cfg)
+    p.setup()
+    return p
+
+
+def test_trace_llm_call_swallows_sdk_emission_exceptions(
+    raising_langfuse_module: dict[str, _RaisingFakeLangfuse],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Per req observability.2 the application MUST NEVER crash due to
+    telemetry. SDK emission failures are logged at WARNING and
+    swallowed; callers see ``None`` returned as if emission succeeded.
+    """
+    p = _make_provider_with_raising_sdk(raising_langfuse_module)
+
+    with caplog.at_level("WARNING", logger="assistant.telemetry"):
+        result = p.trace_llm_call(
+            model="anthropic:claude-sonnet-4-20250514",
+            persona="personal",
+            role="assistant",
+            messages=None,
+            input_tokens=10,
+            output_tokens=20,
+            duration_ms=1.5,
+        )
+    assert result is None
+    assert any(
+        "Langfuse emission for span 'llm_call' failed" in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_trace_delegation_swallows_sdk_emission_exceptions(
+    raising_langfuse_module: dict[str, _RaisingFakeLangfuse],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    p = _make_provider_with_raising_sdk(raising_langfuse_module)
+
+    with caplog.at_level("WARNING", logger="assistant.telemetry"):
+        p.trace_delegation(
+            parent_role="assistant",
+            sub_role="researcher",
+            task="find X",
+            persona="personal",
+            duration_ms=1.0,
+            outcome="success",
+        )
+    assert any(
+        "Langfuse emission for span 'delegation' failed" in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_trace_tool_call_swallows_sdk_emission_exceptions(
+    raising_langfuse_module: dict[str, _RaisingFakeLangfuse],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    p = _make_provider_with_raising_sdk(raising_langfuse_module)
+
+    with caplog.at_level("WARNING", logger="assistant.telemetry"):
+        p.trace_tool_call(
+            tool_name="gmail.search",
+            tool_kind="extension",
+            persona="personal",
+            role="assistant",
+            duration_ms=1.0,
+        )
+    assert any(
+        "Langfuse emission for span 'tool:gmail.search' failed" in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_trace_memory_op_swallows_sdk_emission_exceptions(
+    raising_langfuse_module: dict[str, _RaisingFakeLangfuse],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    p = _make_provider_with_raising_sdk(raising_langfuse_module)
+
+    with caplog.at_level("WARNING", logger="assistant.telemetry"):
+        p.trace_memory_op(
+            op="search",
+            target="recent decisions",
+            persona="personal",
+            duration_ms=1.0,
+        )
+    assert any(
+        "Langfuse emission for span 'memory:search' failed" in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_flush_swallows_sdk_exceptions(
+    raising_langfuse_module: dict[str, _RaisingFakeLangfuse],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Top-level ``flush()`` is also wrapped — a transport failure on
+    drain MUST NOT propagate from the provider.
+    """
+    p = _make_provider_with_raising_sdk(raising_langfuse_module)
+    raising_langfuse_module["client"].flush_should_raise = True
+
+    with caplog.at_level("WARNING", logger="assistant.telemetry"):
+        p.flush()  # MUST NOT raise
+    assert any(
+        "Langfuse flush failed" in rec.message for rec in caplog.records
+    )
+
+
+def test_per_op_flush_failure_does_not_propagate(
+    raising_langfuse_module: dict[str, _RaisingFakeLangfuse],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Per-op mode flushes after each ``trace_*`` call. Even if flush
+    fails inside ``_emit_observation`` the trace method MUST return
+    cleanly — the same try/except covers the flush path.
+    """
+    # Use a fake whose enter succeeds (so we reach the flush branch) but
+    # whose flush raises. We do this via a subclass of _FakeLangfuse.
+    class _FlushRaising(_FakeLangfuse):
+        def flush(self) -> None:
+            raise RuntimeError("simulated flush failure")
+
+    holder: dict[str, _FlushRaising] = {}
+
+    def _factory(**kwargs: Any) -> _FlushRaising:
+        c = _FlushRaising(**kwargs)
+        holder["client"] = c
+        return c
+
+    fake_mod = types.ModuleType("langfuse")
+    fake_mod.Langfuse = _factory  # type: ignore[attr-defined]
+    sys.modules["langfuse"] = fake_mod
+    sys.modules.pop("assistant.telemetry.providers.langfuse", None)
+
+    try:
+        from assistant.telemetry.config import TelemetryConfig
+        from assistant.telemetry.providers.langfuse import LangfuseProvider
+
+        cfg = TelemetryConfig(
+            enabled=True,
+            public_key="pk-lf-test",
+            secret_key="sk-lf-test",
+            host="https://example.test",
+            environment="ci",
+            flush_mode="per_op",
+            sample_rate=1.0,
+        )
+        p = LangfuseProvider(cfg)
+        p.setup()
+
+        with caplog.at_level("WARNING", logger="assistant.telemetry"):
+            p.trace_llm_call(
+                model="m",
+                persona="personal",
+                role="assistant",
+                messages=None,
+                input_tokens=1,
+                output_tokens=2,
+                duration_ms=1.0,
+            )
+        assert any(
+            "Langfuse emission for span 'llm_call' failed" in rec.message
+            for rec in caplog.records
+        )
+    finally:
+        sys.modules.pop("langfuse", None)
+
+
+# ---------------------------------------------------------------------------
+# Cleanup: dead module-level __getattr__ removed.
+# Iter-2 fix for IMPL_REVIEW round 1 finding I.
+# ---------------------------------------------------------------------------
+
+
+def test_module_level_getattr_was_removed(
+    fake_langfuse_module: dict[str, _FakeLangfuse],
+) -> None:
+    """The dead module-level ``__getattr__`` (raised AttributeError, the
+    Python default for missing module attributes) was removed in iter-2.
+    Looking up a missing attribute MUST still raise AttributeError but
+    via the language default rather than via custom code.
+    """
+    import importlib
+
+    # Reload to ensure we get the post-removal version.
+    import assistant.telemetry.providers.langfuse as lf_mod
+
+    importlib.reload(lf_mod)
+
+    assert not hasattr(lf_mod, "__getattr__")
+    # Build the attribute name dynamically so neither mypy nor ruff
+    # complain about a literal access to a missing attribute — what we
+    # care about is the runtime AttributeError behaviour.
+    missing_name = "this_attribute_does_not_exist_" + "iter2"
+    with pytest.raises(AttributeError):
+        getattr(lf_mod, missing_name)

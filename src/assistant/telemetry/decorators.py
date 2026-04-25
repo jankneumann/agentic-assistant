@@ -142,31 +142,60 @@ def traced_harness[R](
             result = await fn(self_obj, *args, **kwargs)
         except BaseException as exc:
             duration_ms = (time.perf_counter() - start) * 1000.0
+            in_tok, out_tok = _consume_usage(self_obj)
             provider.trace_llm_call(
                 model=model,
                 persona=persona,
                 role=role,
                 messages=None,
-                input_tokens=None,
-                output_tokens=None,
+                input_tokens=in_tok,
+                output_tokens=out_tok,
                 duration_ms=duration_ms,
                 metadata={"error": type(exc).__name__},
             )
             raise
         duration_ms = (time.perf_counter() - start) * 1000.0
+        in_tok, out_tok = _consume_usage(self_obj)
         provider.trace_llm_call(
             model=model,
             persona=persona,
             role=role,
             messages=None,
-            input_tokens=None,
-            output_tokens=None,
+            input_tokens=in_tok,
+            output_tokens=out_tok,
             duration_ms=duration_ms,
             metadata=None,
         )
         return result
 
     return wrapper
+
+
+def _consume_usage(self_obj: Any) -> tuple[int, int]:
+    """Read and clear ``self._last_usage`` (set by harness invoke).
+
+    Returns ``(0, 0)`` when no usage was recorded — happens for the MS
+    Agent stub which raises before recording, and for any harness whose
+    underlying SDK does not expose token-count metadata. Returning a
+    deterministic int pair satisfies req observability.3 (the trace
+    call MUST include ``input_tokens`` / ``output_tokens``) without
+    forcing the decorator to invent values.
+    """
+    usage = getattr(self_obj, "_last_usage", None)
+    if (
+        isinstance(usage, tuple)
+        and len(usage) == 2
+        and all(isinstance(n, int) for n in usage)
+    ):
+        # Clear so a subsequent invoke does not see a stale stash if the
+        # harness fails to set it (e.g. early-return paths). Best-effort:
+        # silently ignore if the attribute is read-only.
+        try:
+            self_obj._last_usage = None
+        except Exception:  # pragma: no cover — defensive against frozen models
+            pass
+        return usage
+    return (0, 0)
 
 
 def traced_delegation[R](

@@ -1,0 +1,92 @@
+{
+  "review_type": "implementation",
+  "target": "observability",
+  "vendor": "claude",
+  "round": 1,
+  "findings": [
+    {
+      "id": 1,
+      "type": "spec_gap",
+      "criticality": "medium",
+      "description": "Design decision D9 (design.md:225) explicitly says: 'the compose file SHALL include a startup-check sidecar script that refuses to start the Langfuse container if any LANGFUSE_INIT_* value is `DUMMY-*` AND the `HOST` environment does not include `localhost` or `127.0.0.1` \u2014 preventing accidental launch with dev defaults outside a developer machine.' The compose file's header comment (line 12-13) claims this exists ('the entrypoint check in langfuse-web refuses to start with DUMMY- credentials when the host is not localhost'), but the `langfuse-web` service block (lines 125-174) has no `entrypoint:` override, no `command:` override, no init container, no sidecar service, and no startup script. The promised guard is not implemented. The risk is mitigated by the visual `DUMMY-` prefix and the `127.0.0.1:3100:3000` port binding, but the spec gap remains.",
+      "resolution": "Either (a) implement the guard via a small init container that runs before langfuse-web, scans LANGFUSE_INIT_* env values for the DUMMY- prefix, checks the HOST env does not match localhost/127.0.0.1, and exits 1 if both are true; or (b) downgrade the design decision to remove the SHALL clause and update the compose header comment to reflect that the guard is visual-only (DUMMY- prefix + 127.0.0.1 port binding). Option (a) preserves the design intent. Option (b) is a smaller change but requires a spec amendment.",
+      "disposition": "fix",
+      "file_path": "docker-compose.langfuse.yml",
+      "line_range": {
+        "start": 125,
+        "end": 125
+      },
+      "title": "docker-compose.langfuse.yml lacks the localhost-guard sidecar that design D9 mandates"
+    },
+    {
+      "id": 2,
+      "type": "contract_mismatch",
+      "criticality": "medium",
+      "description": "src/assistant/telemetry/factory.py:129 calls `atexit.register(provider.shutdown)` directly. The sibling module `src/assistant/telemetry/flush_hook.py` defines `register_shutdown_hook(fn)` (lines 37-49) that wraps `atexit.register` with a `_registered_callables: set` for idempotency, explicitly to handle 'callers that re-run initialisation (in tests, in serverless cold-warm, etc.)' (per its docstring). The factory bypasses this helper. In production the singleton ensures `_init_provider` runs once so the bypass is harmless. In tests the autouse `reset_telemetry_singleton` fixture (tests/telemetry/conftest.py) sets `_provider = None` before each case, so each test that triggers provider init queues another `shutdown` callable to atexit. They all fire at process exit, calling `.shutdown()` on now-stale provider instances. Each shutdown is internally guarded (`if self._client is None: return`) so no crash, but the contract advertised by flush_hook is not honored at the canonical use site.",
+      "resolution": "Replace `atexit.register(provider.shutdown)` at factory.py:129 with `from assistant.telemetry.flush_hook import register_shutdown_hook; register_shutdown_hook(provider.shutdown)`. The helper's `_registered_callables` set deduplicates by callable identity. Note: bound methods on different provider instances have different identities, so this only deduplicates re-registration of the SAME callable \u2014 which is exactly what we want. Add a test in test_factory.py that resets the singleton, calls get_observability_provider() N times, and asserts atexit only has one entry for the shutdown callable (or that flush_hook._registered_callables size is bounded).",
+      "disposition": "fix",
+      "file_path": "src/assistant/telemetry/factory.py",
+      "line_range": {
+        "start": 129,
+        "end": 129
+      },
+      "title": "factory.py registers atexit shutdown directly instead of using flush_hook.register_shutdown_hook"
+    },
+    {
+      "id": 3,
+      "type": "observability",
+      "criticality": "low",
+      "description": "src/assistant/telemetry/tool_wrap.py:122 and 135 use `not isinstance(tool, StructuredTool)` as their bypass gate. LangChain's tool ecosystem includes other BaseTool subclasses (e.g. tools constructed without StructuredTool.from_function, or future direct BaseTool subclasses). Per the spec text (extension-registry.1: 'Every LangChain `StructuredTool` returned by an `Extension.as_langchain_tools()` call'), the StructuredTool scoping is technically correct. But in practice an extension that returns BaseTool-but-not-StructuredTool instances would silently skip tracing. The MagicMock passthrough rationale is well-documented in the docstring but conflates two different cases: (a) test mocks that intentionally bypass, and (b) future real BaseTool subclasses that should be flagged.",
+      "resolution": "Add a `logger.debug(...)` (or `logger.warning(...)` if you want louder feedback) at the bypass site noting that the tool was not wrapped because it is not a StructuredTool, plus the tool's class name. Tests using MagicMock will silence the log automatically; production extensions will surface the bypass in debug logs. Alternatively, add a registry of 'known-bypass classes' (test-mock types) and treat anything else as a warning. The cheapest fix is just the debug-log.",
+      "disposition": "fix",
+      "file_path": "src/assistant/telemetry/tool_wrap.py",
+      "line_range": {
+        "start": 122,
+        "end": 122
+      },
+      "title": "wrap_extension_tool / wrap_http_tool silently bypass non-StructuredTool BaseTool subclasses"
+    },
+    {
+      "id": 4,
+      "type": "architecture",
+      "criticality": "low",
+      "description": "src/assistant/telemetry/config.py:97-103 emits `logger.warning(...)` directly when LANGFUSE_ENABLED=true but credentials are empty. This is spec-compliant per req observability.10 which pins the emission to from_env(). However, the rest of the warning architecture (factory._warn_once at factory.py:51-61) provides per-process deduplication via a module-level `_warned_levels: set[str]` keyed by level name. The config-level warning has no such dedup. In production the singleton ensures from_env() runs once, so the warning fires once. In tests the autouse `reset_telemetry_singleton` fixture causes from_env() to run multiple times, and the warning emits multiple times. Architectural coherence argues for moving the dedup to factory._warn_once with a new level key 'empty_creds_with_enabled'; spec-compliance argues for leaving it where the spec text pins it. This was raised by the iter 1 Explore agent and deferred to this review for multi-vendor arbitration.",
+      "resolution": "Two viable directions. (a) Architectural-coherence fix: move the empty-cred check from config.from_env() into factory._init_provider() between the disabled-check and the import-attempt. Use _warn_once('empty_creds_with_enabled', ...). Update the spec scenario to say 'a warning log record MUST be emitted' without pinning the call site. (b) Spec-letter fix: keep emission at from_env() but add a module-level `_config_warned: set[str]` in config.py mirroring factory._warned_levels. Maintain the spec wording verbatim. Prefer (a) for coherence; only choose (b) if you want to minimize spec deltas.",
+      "disposition": "fix",
+      "file_path": "src/assistant/telemetry/config.py",
+      "line_range": {
+        "start": 97,
+        "end": 97
+      },
+      "title": "Empty-credential warning at config.from_env is not factored through the factory's _warn_once"
+    },
+    {
+      "id": 5,
+      "type": "style",
+      "criticality": "low",
+      "description": "src/assistant/telemetry/providers/langfuse.py:262-264 defines a module-level `def __getattr__(name: str) -> AbstractContextManager[Any]: raise AttributeError(name)`. Module-level __getattr__ (PEP 562) is invoked when a normal attribute lookup fails on the module. The function's body raises AttributeError \u2014 which is the default behavior when a missing attribute is looked up on a module that has no __getattr__ defined. The function adds no behavior over the language default. The docstring says 'Module-level placeholder so test imports succeed even before setup' but the body does not implement that intent \u2014 it raises rather than returning a placeholder.",
+      "resolution": "Remove the function entirely. If a test scenario actually requires a placeholder (the docstring intent), implement that scenario explicitly \u2014 e.g. return a context-manager-shaped object or a noop sentinel. Otherwise the function is just visual noise that confuses readers and adds a coverage-pragma. Removing it reduces langfuse.py from 264 to 261 lines and changes nothing observable.",
+      "disposition": "fix",
+      "file_path": "src/assistant/telemetry/providers/langfuse.py",
+      "line_range": {
+        "start": 262,
+        "end": 262
+      },
+      "title": "Module-level __getattr__ at langfuse.py:262 is functionally dead code"
+    },
+    {
+      "id": 6,
+      "type": "contract_mismatch",
+      "criticality": "low",
+      "description": "src/assistant/telemetry/providers/noop.py:38-43 conditionally calls `_validate_tool_kind` only when `tool_kind is not None` (`if tool_kind is not None: _validate_tool_kind(tool_kind)`). src/assistant/telemetry/providers/langfuse.py:173 calls `_validate_tool_kind(tool_kind)` unconditionally \u2014 passing None would raise TypeError on the membership check. The Protocol declares `tool_kind: str` as required, so a properly-typed caller cannot omit it. But duck-typed callers (tests with **{} kwargs, dynamic dispatch) would observe different behaviors: noop is silent, langfuse raises. Same asymmetry exists for `trace_memory_op` / `op`. This is unlikely to be reached at runtime due to keyword-arg enforcement but the asymmetry is a contract-design smell.",
+      "resolution": "Make NoopProvider validate unconditionally to match LangfuseProvider: drop the `if tool_kind is not None` guard at noop.py:41-42 and at noop.py:46-47. NoopProvider's contract is that ValueError MUST fire for invalid enum values regardless of provider; the conditional guard relaxes that to 'fire only if a value was provided'. Either tighten the noop or loosen the langfuse to match \u2014 picking tighten is safer and more spec-aligned. Add a test that asserts both providers raise ValueError on `trace_tool_call(tool_kind=None, ...)` (or alternatively assert both gracefully return).",
+      "disposition": "fix",
+      "file_path": "src/assistant/telemetry/providers/noop.py",
+      "line_range": {
+        "start": 40,
+        "end": 40
+      },
+      "title": "NoopProvider.trace_tool_call quietly returns on missing tool_kind; LangfuseProvider raises"
+    }
+  ]
+}

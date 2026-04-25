@@ -160,6 +160,82 @@ def test_one_warning_per_process(
     assert second_count == first_count
 
 
+def test_factory_emits_empty_creds_warning_when_enabled_with_blank(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Iter-2 fix H — empty-but-present credential warning is emitted
+    by the factory (not by config.from_env), routed through
+    ``_warn_once`` so the rest of the degradation warnings dedup with
+    it. The warning identifies the empty env var name(s) so users can
+    distinguish this case from the fully-unset disabled case.
+    """
+    monkeypatch.setenv("LANGFUSE_ENABLED", "true")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "")
+    from assistant.telemetry.factory import get_observability_provider
+
+    with caplog.at_level(logging.WARNING, logger="assistant.telemetry"):
+        provider = get_observability_provider()
+
+    assert provider.name == "noop"
+    msg_blob = "\n".join(rec.message for rec in caplog.records)
+    assert "empty" in msg_blob.lower()
+    assert "LANGFUSE_PUBLIC_KEY" in msg_blob
+    assert "LANGFUSE_SECRET_KEY" in msg_blob
+
+
+def test_factory_empty_creds_warning_dedups_across_calls(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The empty-creds warning routes through ``_warn_once`` so a
+    second ``get_observability_provider()`` call does NOT re-emit it.
+    """
+    monkeypatch.setenv("LANGFUSE_ENABLED", "true")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-real")
+
+    from assistant.telemetry import factory as fmod
+    from assistant.telemetry.factory import get_observability_provider
+
+    with caplog.at_level(logging.WARNING, logger="assistant.telemetry"):
+        get_observability_provider()
+        first = sum(
+            1 for r in caplog.records if "empty" in r.message.lower()
+        )
+        # Reset only the singleton so init runs again — _warned_levels
+        # MUST persist for the dedup to take effect.
+        fmod._provider = None
+        get_observability_provider()
+        second = sum(
+            1 for r in caplog.records if "empty" in r.message.lower()
+        )
+    assert first == 1
+    assert second == 1  # MUST NOT re-emit
+
+
+def test_factory_no_empty_creds_warning_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """When LANGFUSE_ENABLED is false, set-but-blank creds MUST NOT
+    trigger the empty-creds warning — the user did not signal intent.
+    """
+    monkeypatch.setenv("LANGFUSE_ENABLED", "false")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "")
+    from assistant.telemetry.factory import get_observability_provider
+
+    with caplog.at_level(logging.WARNING, logger="assistant.telemetry"):
+        provider = get_observability_provider()
+
+    assert provider.name == "noop"
+    assert not any(
+        "empty" in rec.message.lower() for rec in caplog.records
+    )
+
+
 def test_atexit_registered_once(monkeypatch: pytest.MonkeyPatch) -> None:
     """Factory MUST register atexit.register(provider.shutdown) exactly once."""
     monkeypatch.delenv("LANGFUSE_ENABLED", raising=False)

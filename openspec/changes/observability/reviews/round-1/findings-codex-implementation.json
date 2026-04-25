@@ -1,0 +1,134 @@
+{
+  "review_type": "implementation",
+  "target": "observability",
+  "vendor": "codex",
+  "round": 1,
+  "findings": [
+    {
+      "id": 1,
+      "type": "resilience",
+      "criticality": "high",
+      "description": "The factory catches setup-time failures, but LangfuseProvider trace methods do not catch SDK failures during actual emission. If start_as_current_observation(), obs.update(), or per-op flush raises at src/assistant/telemetry/providers/langfuse.py:113, :152, :188, :219, or :238, the telemetry exception propagates into harness/tool/memory/delegation call paths. On decorator exception paths this can also mask the original application exception, contradicting the graceful-degradation requirement that observability unavailability must not crash the app.",
+      "resolution": "Wrap SDK emission and _maybe_flush() in a provider-level safe helper in src/assistant/telemetry/providers/langfuse.py that catches Exception, logs a one-shot assistant.telemetry warning, optionally disables the client for the process, and returns None. Add tests with a fake Langfuse client whose start_as_current_observation and flush raise, asserting the wrapped application call still returns or re-raises the original exception unchanged.",
+      "disposition": "fix",
+      "file_path": "src/assistant/telemetry/providers/langfuse.py",
+      "line_range": {
+        "start": 113,
+        "end": 113
+      },
+      "title": "Langfuse emission failures can still crash application paths"
+    },
+    {
+      "id": 2,
+      "type": "security",
+      "criticality": "high",
+      "description": "trace_llm_call passes messages directly to the SDK as input at src/assistant/telemetry/providers/langfuse.py:117, and trace_tool_call copies the error parameter directly into metadata at line 187. sanitize_mapping() only covers the metadata argument, so a caller that passes messages containing a bearer token, API key, private URL, or an error string with credentials will emit the raw value to Langfuse. The current decorators mostly pass messages=None and error type names, but the provider contract itself accepts these fields and should enforce sanitization at the emission boundary.",
+      "resolution": "Add a recursive sanitizer for arbitrary provider payloads in src/assistant/telemetry/sanitize.py and apply it to messages before line 117 and to error before line 187. Add LangfuseProvider tests that pass messages=[{\"content\": \"Bearer ...\"}] and error=\"Authorization: Bearer ...\" and assert the fake client only receives redacted values.",
+      "disposition": "fix",
+      "file_path": "src/assistant/telemetry/providers/langfuse.py",
+      "line_range": {
+        "start": 117,
+        "end": 117
+      },
+      "title": "LangfuseProvider leaves non-metadata payload strings unsanitized"
+    },
+    {
+      "id": 3,
+      "type": "spec_gap",
+      "criticality": "high",
+      "description": "traced_harness always emits input_tokens=None and output_tokens=None on both success and error paths at src/assistant/telemetry/decorators.py:150-151 and :162-163. DeepAgentsHarness.invoke has access to the raw agent result at src/assistant/harnesses/sdk/deep_agents.py:48 before reducing it to a string, but no code extracts usage metadata. This leaves the cost-attribution fields required by observability.3 and harness-adapter.1 permanently empty whenever a harness reports token usage.",
+      "resolution": "Add a harness-specific usage extraction hook or helper so DeepAgentsHarness.invoke can expose input/output token counts to traced_harness before returning the final text. Add a test with a fake agent result carrying usage_metadata/response_metadata token counts and assert trace_llm_call receives non-None input_tokens and output_tokens.",
+      "disposition": "fix",
+      "file_path": "src/assistant/telemetry/decorators.py",
+      "line_range": {
+        "start": 150,
+        "end": 150
+      },
+      "title": "Harness tracing never reports token counts"
+    },
+    {
+      "id": 4,
+      "type": "correctness",
+      "criticality": "high",
+      "description": "wrap_extension_tool and wrap_http_tool reconstruct every wrapped StructuredTool with only coroutine=_traced_async at src/assistant/telemetry/tool_wrap.py:99-104. The resulting tool has func=None, so wrapped.invoke({...}) raises NotImplementedError: StructuredTool does not support sync invocation. This violates the extension-registry scenario that calls gmail.search.invoke({...}) and breaks any sync StructuredTool returned by extensions, even though the spec requires tracing both _run and _arun paths.",
+      "resolution": "Preserve sync capability by passing a traced func wrapper to StructuredTool.from_function whenever the source tool has src_func. Keep the traced coroutine for async invocation. Add tests for a sync StructuredTool using wrapped.invoke({...}) on success and exception, asserting trace_tool_call is emitted exactly once.",
+      "disposition": "fix",
+      "file_path": "src/assistant/telemetry/tool_wrap.py",
+      "line_range": {
+        "start": 99,
+        "end": 99
+      },
+      "title": "StructuredTool wrapper breaks synchronous invocation"
+    },
+    {
+      "id": 5,
+      "type": "security",
+      "criticality": "high",
+      "description": "Design D9 requires a startup-check sidecar or equivalent logic that refuses to start Langfuse with DUMMY LANGFUSE_INIT_* values when the host is not localhost/127.0.0.1. docker-compose.langfuse.yml only contains comments about that guard at lines 9-13 and the langfuse-web service at line 125 has no entrypoint, command wrapper, sidecar service, or HOST check. The static tests also only assert three init values are DUMMY-prefixed and never verify guard behavior.",
+      "resolution": "Add the guard as an entrypoint/command wrapper or dedicated startup-check sidecar in docker-compose.langfuse.yml before langfuse-web starts. Extend tests/telemetry/test_docker_compose.py to assert the guard exists and checks both DUMMY-* values and localhost/127.0.0.1 host conditions.",
+      "disposition": "fix",
+      "file_path": "docker-compose.langfuse.yml",
+      "line_range": {
+        "start": 125,
+        "end": 125
+      },
+      "title": "Langfuse compose documents but does not implement the localhost DUMMY guard"
+    },
+    {
+      "id": 6,
+      "type": "spec_gap",
+      "criticality": "medium",
+      "description": "The http-tools spec scenario says an HTTP error message containing Authorization: Bearer ... should appear in emitted span metadata as Bearer REDACTED. The wrapper currently emits only error=type(exc).__name__ and metadata=None at src/assistant/telemetry/tool_wrap.py:77-84, while tests/telemetry/test_http_tool_hooks.py:117-131 only call sanitize() directly and never assert the emitted trace metadata. This can pass even if the wrapper/provider boundary drops or leaks the exception message.",
+      "resolution": "For HTTP tool wrappers, include a sanitized exception message in metadata, for example metadata={\"error_message\": str(exc)} with provider-side sanitization. Replace the direct sanitize() unit assertion with an emitted-span test using an HTTPStatusError message containing Authorization: Bearer eyJ... and assert the captured provider metadata contains Bearer REDACTED and not the JWT fragment.",
+      "disposition": "fix",
+      "file_path": "src/assistant/telemetry/tool_wrap.py",
+      "line_range": {
+        "start": 77,
+        "end": 77
+      },
+      "title": "HTTP authorization-header sanitization scenario is not exercised at the emitted span boundary"
+    },
+    {
+      "id": 7,
+      "type": "contract_mismatch",
+      "criticality": "low",
+      "description": "NoopProvider.trace_tool_call and trace_memory_op only validate when kwargs.get('tool_kind') or kwargs.get('op') is not None at src/assistant/telemetry/providers/noop.py:40-48. Calling NoopProvider().trace_tool_call() or trace_memory_op() therefore returns None, while LangfuseProvider raises TypeError for missing required keyword-only arguments. This is hard to hit through typed call sites, but it weakens the stated provider-contract symmetry.",
+      "resolution": "Make NoopProvider explicitly reject missing tool_kind/op before the early return, or give NoopProvider concrete keyword-only signatures matching ObservabilityProvider while keeping zero-allocation bodies for valid calls. Add tests for missing tool_kind and missing op on noop.",
+      "disposition": "fix",
+      "file_path": "src/assistant/telemetry/providers/noop.py",
+      "line_range": {
+        "start": 40,
+        "end": 40
+      },
+      "title": "NoopProvider silently accepts missing enum arguments"
+    },
+    {
+      "id": 8,
+      "type": "style",
+      "criticality": "low",
+      "description": "src/assistant/telemetry/providers/langfuse.py:262 defines module-level __getattr__ that only raises AttributeError(name), which is the default behavior for missing module attributes. The docstring says it lets test imports succeed before setup, but it does not provide any fallback value or lazy import behavior.",
+      "resolution": "Delete the module-level __getattr__ and any tests or comments that imply it has behavior. If a lazy module attribute is actually needed, implement a real branch that returns it.",
+      "disposition": "fix",
+      "file_path": "src/assistant/telemetry/providers/langfuse.py",
+      "line_range": {
+        "start": 262,
+        "end": 262
+      },
+      "title": "Module-level Langfuse __getattr__ is dead code"
+    },
+    {
+      "id": 9,
+      "type": "observability",
+      "criticality": "medium",
+      "description": "docs/observability.md:34-35 says every memory operation, Graphiti call, and tool call emits a span. The final observability spec says Graphiti client calls are not separately instrumented and are observed only through MemoryManager boundaries to avoid double-counting. The doc therefore suggests lower-level Graphiti spans that the implementation intentionally does not emit.",
+      "resolution": "Change the quickstart wording to say MemoryManager operations emit spans, including operations that internally call Graphiti, and that direct Graphiti client calls are intentionally not separately instrumented in this change.",
+      "disposition": "fix",
+      "file_path": "docs/observability.md",
+      "line_range": {
+        "start": 34,
+        "end": 34
+      },
+      "title": "Observability docs overpromise separate Graphiti tracing"
+    }
+  ]
+}

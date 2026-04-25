@@ -48,7 +48,14 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         result = await agent.ainvoke(
             {"messages": [{"role": "user", "content": message}]}
         )
-        for msg in reversed(result.get("messages", [])):
+        messages = result.get("messages", [])
+        # Stash usage so the @traced_harness decorator can include token
+        # counts in trace_llm_call (req observability.3 — "MUST include
+        # input_tokens, output_tokens"). Records (0, 0) when the SDK does
+        # not expose usage metadata so the decorator never has to pass
+        # None for the spec-required fields.
+        self._last_usage = _extract_usage(messages)
+        for msg in reversed(messages):
             role = _msg_role(msg)
             if role == "assistant":
                 return _msg_content(msg)
@@ -76,3 +83,33 @@ def _msg_content(msg: Any) -> str:
     if isinstance(msg, dict):
         return msg.get("content", "")
     return getattr(msg, "content", "") or ""
+
+
+def _extract_usage(messages: list[Any]) -> tuple[int, int]:
+    """Sum input/output token counts across all messages in the result.
+
+    Walks every message and pulls token usage from whichever LangChain
+    field carries it. Recent LangChain Core versions expose
+    ``usage_metadata`` on ``AIMessage``; older releases stash usage
+    under ``response_metadata.token_usage`` with the OpenAI-style
+    ``prompt_tokens`` / ``completion_tokens`` keys. Returns ``(0, 0)``
+    when no usage info is present so the harness can record a
+    deterministic int pair regardless of SDK version (avoids passing
+    ``None`` for the spec-required token fields per req
+    observability.3).
+    """
+    in_tokens = 0
+    out_tokens = 0
+    for msg in messages:
+        usage_meta = getattr(msg, "usage_metadata", None)
+        if isinstance(usage_meta, dict):
+            in_tokens += int(usage_meta.get("input_tokens") or 0)
+            out_tokens += int(usage_meta.get("output_tokens") or 0)
+            continue
+        resp_meta = getattr(msg, "response_metadata", None)
+        if isinstance(resp_meta, dict):
+            tu = resp_meta.get("token_usage") or {}
+            if isinstance(tu, dict):
+                in_tokens += int(tu.get("prompt_tokens") or 0)
+                out_tokens += int(tu.get("completion_tokens") or 0)
+    return in_tokens, out_tokens

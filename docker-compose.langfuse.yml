@@ -89,6 +89,42 @@ services:
       retries: 10
       start_period: 10s
 
+  init-dummy-guard:
+    # Spec req observability.14 (Dev Infrastructure Safety) + design D9 —
+    # refuse to start the Langfuse stack if any LANGFUSE_INIT_* value
+    # carries the ``DUMMY-`` prefix AND ``NEXTAUTH_URL`` does not point
+    # at localhost / 127.0.0.1. Iter-2 fix B (codex blocking) — the
+    # header comment promised this guard but the implementation was
+    # missing.
+    image: alpine:3
+    restart: "no"
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        if printf '%s' "$$NEXTAUTH_URL" | grep -qE 'localhost|127\.0\.0\.1'; then
+          echo "[dummy-guard] NEXTAUTH_URL=$$NEXTAUTH_URL points at localhost; DUMMY-prefixed init values are acceptable for local dev."
+          exit 0
+        fi
+        joined="$$LANGFUSE_INIT_ORG_ID $$LANGFUSE_INIT_PROJECT_ID $$LANGFUSE_INIT_PROJECT_PUBLIC_KEY $$LANGFUSE_INIT_PROJECT_SECRET_KEY $$LANGFUSE_INIT_USER_EMAIL $$LANGFUSE_INIT_USER_PASSWORD $$LANGFUSE_INIT_ORG_NAME $$LANGFUSE_INIT_PROJECT_NAME $$LANGFUSE_INIT_USER_NAME"
+        if printf '%s' "$$joined" | grep -q 'DUMMY-'; then
+          echo "[dummy-guard] REFUSING to start: NEXTAUTH_URL=$$NEXTAUTH_URL is not localhost/127.0.0.1 but LANGFUSE_INIT_* contains DUMMY-prefixed values. These are dev defaults; set real org/project/keys/user values before launching the stack on this host." >&2
+          exit 1
+        fi
+        echo "[dummy-guard] No DUMMY- prefixes detected and host is non-local; startup allowed."
+    environment:
+      NEXTAUTH_URL: http://localhost:3100
+      LANGFUSE_INIT_ORG_ID: DUMMY-dev-org
+      LANGFUSE_INIT_ORG_NAME: agentic-assistant dev (DUMMY)
+      LANGFUSE_INIT_PROJECT_ID: DUMMY-dev-project
+      LANGFUSE_INIT_PROJECT_NAME: agentic-assistant (DUMMY)
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: DUMMY-pk-lf-dev-local
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: DUMMY-sk-lf-dev-local
+      LANGFUSE_INIT_USER_EMAIL: dev@localhost
+      LANGFUSE_INIT_USER_NAME: agentic-assistant dev
+      LANGFUSE_INIT_USER_PASSWORD: DUMMY-change-me-before-prod
+
   langfuse-worker:
     image: langfuse/langfuse-worker:3
     restart: unless-stopped
@@ -126,6 +162,8 @@ services:
     image: langfuse/langfuse:3
     restart: unless-stopped
     depends_on:
+      init-dummy-guard:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       clickhouse:

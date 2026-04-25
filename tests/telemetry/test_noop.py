@@ -95,6 +95,35 @@ def test_noop_trace_tool_call_rejects_invalid_kind() -> None:
         )
 
 
+def test_noop_trace_tool_call_rejects_missing_kind() -> None:
+    """Iter-2 Fix G (3-vendor confirmed): the noop validator MUST fire
+    even when ``tool_kind`` is omitted entirely under duck-typed
+    dispatch — symmetry with LangfuseProvider, which raises
+    unconditionally because its typed kwarg cannot be omitted.
+    """
+    from assistant.telemetry.providers.noop import NoopProvider
+
+    with pytest.raises(ValueError, match="tool_kind"):
+        # Omit tool_kind via dynamic call (kwargs.get returns None).
+        NoopProvider().trace_tool_call()
+
+
+def test_noop_trace_tool_call_rejects_none_kind() -> None:
+    """Explicit ``tool_kind=None`` MUST raise (rather than silently
+    short-circuiting on the noop fast path).
+    """
+    from assistant.telemetry.providers.noop import NoopProvider
+
+    with pytest.raises(ValueError, match="tool_kind"):
+        NoopProvider().trace_tool_call(
+            tool_name="x",
+            tool_kind=None,
+            persona=None,
+            role=None,
+            duration_ms=0.0,
+        )
+
+
 def test_noop_trace_memory_op_accepts_each_op() -> None:
     from assistant.telemetry.providers.noop import NoopProvider
 
@@ -120,6 +149,27 @@ def test_noop_trace_memory_op_rejects_wrong_case() -> None:
     with pytest.raises(ValueError, match="op"):
         NoopProvider().trace_memory_op(
             op="CONTEXT",  # wrong case is invalid
+            target="x",
+            persona=None,
+            duration_ms=0.0,
+        )
+
+
+def test_noop_trace_memory_op_rejects_missing_op() -> None:
+    """Iter-2 Fix G (3-vendor confirmed) — symmetry with trace_tool_call.
+    """
+    from assistant.telemetry.providers.noop import NoopProvider
+
+    with pytest.raises(ValueError, match="op"):
+        NoopProvider().trace_memory_op()
+
+
+def test_noop_trace_memory_op_rejects_none_op() -> None:
+    from assistant.telemetry.providers.noop import NoopProvider
+
+    with pytest.raises(ValueError, match="op"):
+        NoopProvider().trace_memory_op(
+            op=None,
             target="x",
             persona=None,
             duration_ms=0.0,

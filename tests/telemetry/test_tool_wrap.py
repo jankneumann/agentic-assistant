@@ -199,3 +199,119 @@ def test_wrap_extension_tools_returns_wrapped_list() -> None:
     assert {t.name for t in wrapped} == {"gmail.search", "gmail.send"}
     # Wrapping happened — they are not the same object as the originals.
     assert all(t is not src1 and t is not src2 for t in wrapped)
+
+
+# ---------------------------------------------------------------------------
+# Iter-2 Fix E — sync invocation must not break after wrapping.
+# ---------------------------------------------------------------------------
+
+
+def _make_sync_tool(name: str = "gmail.search") -> StructuredTool:
+    """A tool whose source has BOTH ``func`` and ``coroutine`` set, so
+    consumers can call either ``invoke()`` or ``ainvoke()``.
+    """
+
+    def _sync(query: str) -> str:
+        return f"sync-hit:{query}"
+
+    async def _async(query: str) -> str:
+        return f"async-hit:{query}"
+
+    return StructuredTool.from_function(
+        func=_sync,
+        coroutine=_async,
+        name=name,
+        description="A test tool with both sync and async paths.",
+        args_schema=_Args,
+    )
+
+
+def test_wrap_extension_tool_preserves_sync_invocation(
+    monkeypatch: pytest.MonkeyPatch, spy_provider: Any
+) -> None:
+    """Iter-2 fix E (codex blocking): a source tool with ``func``
+    must keep working under ``tool.invoke(...)`` after wrapping. The
+    pre-fix wrapper only set ``coroutine=`` so sync callers got an
+    error.
+    """
+    from assistant.telemetry.tool_wrap import wrap_extension_tool
+
+    _install_spy(monkeypatch, spy_provider)
+    wrapped = wrap_extension_tool(_make_sync_tool())
+
+    # Sync invocation MUST work and MUST emit one trace_tool_call.
+    out = wrapped.invoke({"query": "foo"})
+    assert out == "sync-hit:foo"
+    calls = spy_provider.calls["trace_tool_call"]
+    assert len(calls) == 1
+    assert calls[0]["tool_name"] == "gmail.search"
+    assert calls[0]["tool_kind"] == "extension"
+    assert calls[0].get("error") is None
+
+
+@pytest.mark.asyncio
+async def test_wrap_extension_tool_keeps_async_invocation_after_sync_added(
+    monkeypatch: pytest.MonkeyPatch, spy_provider: Any
+) -> None:
+    """Adding the sync wrapper MUST NOT break the async path."""
+    from assistant.telemetry.tool_wrap import wrap_extension_tool
+
+    _install_spy(monkeypatch, spy_provider)
+    wrapped = wrap_extension_tool(_make_sync_tool())
+
+    out = await wrapped.ainvoke({"query": "bar"})
+    # Async path uses src_coroutine, not src_func.
+    assert out == "async-hit:bar"
+
+
+def test_wrap_extension_tool_async_only_source_has_no_sync_func(
+    monkeypatch: pytest.MonkeyPatch, spy_provider: Any
+) -> None:
+    """When the source tool has only ``coroutine`` (no ``func``), the
+    wrapped tool ALSO has only ``coroutine``. We do not invent sync
+    capability the source did not provide — preserves the source's
+    invocation surface exactly.
+    """
+    from assistant.telemetry.tool_wrap import wrap_extension_tool
+
+    _install_spy(monkeypatch, spy_provider)
+    src = _make_tool()  # async-only (only `coroutine` set)
+    wrapped = wrap_extension_tool(src)
+
+    # Source's ``func`` was None; wrapper's ``func`` MUST also be None.
+    assert src.func is None
+    assert wrapped.func is None
+    assert wrapped.coroutine is not None
+
+
+def test_wrap_extension_tool_sync_path_traces_errors(
+    monkeypatch: pytest.MonkeyPatch, spy_provider: Any
+) -> None:
+    """Sync wrapper records ``error=<type>`` on failure, like the async
+    one, then re-raises.
+    """
+    from assistant.telemetry.tool_wrap import wrap_extension_tool
+
+    _install_spy(monkeypatch, spy_provider)
+
+    def _sync_fails(query: str) -> str:
+        raise RuntimeError("sync boom")
+
+    async def _async_unused(query: str) -> str:
+        return ""
+
+    src = StructuredTool.from_function(
+        func=_sync_fails,
+        coroutine=_async_unused,
+        name="gmail.search",
+        description="failing sync tool",
+        args_schema=_Args,
+    )
+    wrapped = wrap_extension_tool(src)
+
+    with pytest.raises(RuntimeError, match="sync boom"):
+        wrapped.invoke({"query": "x"})
+
+    calls = spy_provider.calls["trace_tool_call"]
+    assert len(calls) == 1
+    assert calls[0]["error"] == "RuntimeError"
