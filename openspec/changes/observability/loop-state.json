@@ -30,11 +30,60 @@
       "note": "3-vendor consensus; 9 bugs fixed"
     },
     "IMPLEMENT": {
-      "status": "in_progress",
+      "status": "completed",
       "started_at": "2026-04-25T00:00:00Z",
-      "tier": "coordinated",
+      "completed_at": "2026-04-25T00:00:00Z",
+      "tier": "subagent-parallel (degraded from coordinated)",
+      "tier_note": "Per user direction at Stage 1 checkpoint; same DAG topology as coordinated tier but dispatched via Agent tool subagents rather than coord.rotkohl.ai work queue",
       "work_packages": ["wp-contracts", "wp-hooks", "wp-devops", "wp-integration"],
-      "package_authors": {}
+      "package_authors": {
+        "wp-contracts": "claude (subagent, sonnet)",
+        "wp-hooks": "claude (subagent, sonnet)",
+        "wp-devops": "claude (subagent, sonnet)",
+        "wp-integration": "claude (subagent, sonnet — partial; finished by orchestrator after usage-limit hit)"
+      },
+      "package_status": {
+        "wp-contracts": {
+          "status": "completed",
+          "commit": "a8d3a2d",
+          "tasks_completed": 18,
+          "tests_passing": 95
+        },
+        "wp-hooks": {
+          "status": "completed",
+          "commit": "bdb53b2",
+          "tasks_completed": 16,
+          "tests_added": 36,
+          "tests_passing_telemetry": 137,
+          "tests_passing_full_suite": 386
+        },
+        "wp-devops": {
+          "status": "completed",
+          "commit": "bdb53b2 (combined with wp-hooks)",
+          "tasks_completed": 4
+        },
+        "wp-integration": {
+          "status": "completed (5.5 deferred as optional)",
+          "commit": "1925eb3",
+          "tasks_completed": [5.1, 5.2, 5.3, 5.4],
+          "tasks_deferred": [5.5],
+          "tests_added": 9,
+          "tests_passing_telemetry": 145,
+          "tests_passing_full_suite": 394
+        }
+      },
+      "tasks_summary": "42/43 complete (5.5 optional smoke test deferred per task description)",
+      "deviations_for_impl_review": [
+        "Langfuse v3 SDK API drift: start_as_current_observation(as_type=...) replaces trace()/generation() — design.md predates v3, implementation matches v3",
+        "auth_check() unavailable in Langfuse v3 docs; auth-failure detection moved to factory level-3 degradation (catch on construction or first emission)",
+        "wrap_extension_tool / wrap_http_tool accept Any with passthrough for non-StructuredTool inputs (kept tests with MagicMock tools green; spec language targets StructuredTool specifically)",
+        "PEP 695 generic syntax (def traced_harness[R]) instead of TypeVar — Python 3.12 idiom, satisfies ruff UP047",
+        "set_assistant_ctx invoked in BOTH `run` and `export` CLI commands so export path is also tagged",
+        "Langfuse-worker compose service intentionally lacks LANGFUSE_INIT_* (only web service performs headless init in v3 self-hosting)",
+        "FINDING — trace_delegation's task field is spec'd to be emitted verbatim when ≤256 chars (req observability.4): short delegation prompts containing sensitive content would land in Langfuse without sanitization. Spec is internally consistent but reviewers should confirm intended privacy posture"
+      ],
+      "change_context_status": "all_phases_complete (RTM 18/18 with Files Changed populated; Coverage Summary at 18/18 traced)",
+      "checkpoint_at": "2026-04-25T00:00:00Z (post-IMPLEMENT, awaiting direction for IMPL_ITERATE / IMPL_REVIEW)"
     },
     "IMPL_ITERATE": {"status": "pending"},
     "IMPL_REVIEW": {"status": "pending"},
