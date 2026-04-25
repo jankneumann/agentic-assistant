@@ -21,6 +21,7 @@ from assistant.harnesses.base import HostHarnessAdapter, SdkHarnessAdapter
 from assistant.harnesses.factory import create_harness as _default_create_harness
 from assistant.http_tools import HttpToolRegistry
 from assistant.http_tools.discovery import discover_tools
+from assistant.telemetry import set_assistant_ctx
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,13 @@ def run(
     except ValueError as e:
         raise click.UsageError(str(e)) from e
 
+    # Bind the assistant ContextVar (D4) so every span emitted during
+    # this CLI run carries the right persona + role labels without
+    # threading them through every method signature. Set once per CLI
+    # invocation; the delegation decorator pushes a sub-role scope on
+    # top of this when sub-agents are spawned.
+    set_assistant_ctx(pc.name, rc.name)
+
     try:
         adapter = _create_harness(pc, rc, harness)
     except ValueError as e:
@@ -152,6 +160,11 @@ def export(persona: str, role: str | None, harness: str) -> None:
         rc = role_reg.load(role_name, pc)
     except ValueError as e:
         raise click.UsageError(str(e)) from e
+
+    # Same ContextVar binding as the run command, so any tracing in
+    # the export path (e.g. tool wraps in capabilities.tools) sees the
+    # correct (persona, role) labels.
+    set_assistant_ctx(pc.name, rc.name)
 
     try:
         adapter = _create_harness(pc, rc, harness)

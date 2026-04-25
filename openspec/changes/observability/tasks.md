@@ -76,89 +76,89 @@ Task IDs map to work-packages. Packages and their scopes are defined in `work-pa
 
 ## Phase 2 — Core Hooks: Harness + Delegation (wp-hooks)
 
-- [ ] **2.1** Write tests for `@traced_harness` decorator — successful invoke emits trace_llm_call with correct kwargs, exception path emits trace before propagating, noop provider produces no side effects.
+- [x] **2.1** Write tests for `@traced_harness` decorator — successful invoke emits trace_llm_call with correct kwargs, exception path emits trace before propagating, noop provider produces no side effects.
   **Spec scenarios**: harness-adapter — all three added scenarios
   **Design decisions**: D3 (decorator-based integration)
   **Dependencies**: 1.15
 
-- [ ] **2.2** Implement `@traced_harness` in `src/assistant/telemetry/decorators.py`.
+- [x] **2.2** Implement `@traced_harness` in `src/assistant/telemetry/decorators.py`.
   **Dependencies**: 2.1
 
-- [ ] **2.3** Apply `@traced_harness` to each **concrete** `SdkHarnessAdapter` subclass (decorator-at-base is dead code because subclasses override `invoke` entirely without `super()`). Apply to:
+- [x] **2.3** Apply `@traced_harness` to each **concrete** `SdkHarnessAdapter` subclass (decorator-at-base is dead code because subclasses override `invoke` entirely without `super()`). Apply to:
   - `DeepAgentsHarness.invoke` at `src/assistant/harnesses/sdk/deep_agents.py`
   - `MSAgentFrameworkHarness.invoke` stub at `src/assistant/harnesses/sdk/ms_agent_fw.py` (which raises `NotImplementedError` until the `ms-graph-extension` phase lands)
   Verify via test that the stub's trace emits exactly once with `metadata={"error": "NotImplementedError"}` before the exception propagates. The abstract base at `src/assistant/harnesses/base.py` (class `SdkHarnessAdapter`) does NOT need direct decoration.
   **Spec scenarios**: harness-adapter — "Deep Agents harness invocation is traced", "Harness exception still emits trace before propagating", "MSAgentFrameworkHarness stub is traced with the raised-exception path"
   **Dependencies**: 2.2
 
-- [ ] **2.4** Write tests for `@traced_delegation` decorator — success path, error path (`outcome="error"`), long-task hashing.
+- [x] **2.4** Write tests for `@traced_delegation` decorator — success path, error path (`outcome="error"`), long-task hashing.
   **Spec scenarios**: delegation-spawner — all three added scenarios
   **Design decisions**: D3 (decorator-based integration)
   **Dependencies**: 1.15
 
-- [ ] **2.5** Implement `@traced_delegation` in `src/assistant/telemetry/decorators.py`, including the sub-role `assistant_ctx` push.
+- [x] **2.5** Implement `@traced_delegation` in `src/assistant/telemetry/decorators.py`, including the sub-role `assistant_ctx` push.
   **Dependencies**: 2.4
 
-- [ ] **2.6** Apply `@traced_delegation` to `DelegationSpawner.delegate` in `src/assistant/delegation/spawner.py`.
+- [x] **2.6** Apply `@traced_delegation` to `DelegationSpawner.delegate` in `src/assistant/delegation/spawner.py`.
   **Spec scenarios**: delegation-spawner — "Successful delegation emits trace_delegation", "Failed delegation emits trace with outcome=error"
   **Dependencies**: 2.5
 
-- [ ] **2.7** Wire `set_assistant_ctx(persona, role)` at `src/assistant/cli.py` startup after persona+role are resolved.
+- [x] **2.7** Wire `set_assistant_ctx(persona, role)` at `src/assistant/cli.py` startup after persona+role are resolved.
   **Design decisions**: D4 (persona/role context propagation)
   **Dependencies**: 1.10
 
 ## Phase 3 — Knowledge + Tool Hooks (wp-hooks)
 
-- [ ] **3.1** Write tests for `MemoryManager` tracing — each public method (`get_context`, `store_fact`, `store_interaction`, `store_episode`, `search`, `export_memory`) emits `trace_memory_op` exactly once with the correct `op` value from the set `{"context", "fact_write", "interaction_write", "episode_write", "search", "export"}`. Assert that calling `trace_memory_op(op="CONTEXT")` (wrong case) or any value outside the set raises `ValueError`. Use the `SpyProvider` fixture to capture calls.
+- [x] **3.1** Write tests for `MemoryManager` tracing — each public method (`get_context`, `store_fact`, `store_interaction`, `store_episode`, `search`, `export_memory`) emits `trace_memory_op` exactly once with the correct `op` value from the set `{"context", "fact_write", "interaction_write", "episode_write", "search", "export"}`. Assert that calling `trace_memory_op(op="CONTEXT")` (wrong case) or any value outside the set raises `ValueError`. Use the `SpyProvider` fixture to capture calls.
   **Spec scenarios**: observability — "store_fact emits trace_memory_op with fact_write", "search emits trace_memory_op with search", "store_episode emits trace_memory_op covering the graphiti call", "Rejects mis-typed op value"
   **Dependencies**: 1.15
 
-- [ ] **3.2** Instrument `src/assistant/core/memory.py` `MemoryManager` class by applying a `@traced_memory_op("<op>")` decorator to each of its 6 public methods (`get_context` → "context", `store_fact` → "fact_write", `store_interaction` → "interaction_write", `store_episode` → "episode_write", `search` → "search", `export_memory` → "export"). The `target` argument passed to `trace_memory_op` SHALL be the method's persona/key/query argument (hashed if over 256 chars per the shared convention).
+- [x] **3.2** Instrument `src/assistant/core/memory.py` `MemoryManager` class by applying a `@traced_memory_op("<op>")` decorator to each of its 6 public methods (`get_context` → "context", `store_fact` → "fact_write", `store_interaction` → "interaction_write", `store_episode` → "episode_write", `search` → "search", `export_memory` → "export"). The `target` argument passed to `trace_memory_op` SHALL be the method's persona/key/query argument (hashed if over 256 chars per the shared convention).
   **Dependencies**: 3.1
 
-- [ ] **3.3** Verify via integration test that `MemoryManager.store_episode()` (which internally invokes the graphiti client returned by `create_graphiti_client(persona)`) emits exactly ONE `trace_memory_op` with `op="episode_write"` at the MemoryManager boundary and NO second span from inside the graphiti client. This asserts the "no double-counting" design decision. Use the `SpyProvider` fixture; no changes to `src/assistant/core/graphiti.py` are required.
+- [x] **3.3** Verify via integration test that `MemoryManager.store_episode()` (which internally invokes the graphiti client returned by `create_graphiti_client(persona)`) emits exactly ONE `trace_memory_op` with `op="episode_write"` at the MemoryManager boundary and NO second span from inside the graphiti client. This asserts the "no double-counting" design decision. Use the `SpyProvider` fixture; no changes to `src/assistant/core/graphiti.py` are required.
   **Spec scenarios**: observability — "store_episode emits trace_memory_op covering the graphiti call"
   **Dependencies**: 3.2
 
-- [ ] **3.4** (No-op placeholder — reserved) Graphiti-layer tracing was intentionally omitted in favor of the `MemoryManager`-boundary-only approach (see design "Privacy Boundary Compliance" and the `MemoryManager Operation Tracing` Requirement). This task number is kept to avoid renumbering downstream references but has no implementation work. Close as "wontfix: superseded by tasks 3.1-3.3".
+- [x] **3.4** (No-op placeholder — reserved) Graphiti-layer tracing was intentionally omitted in favor of the `MemoryManager`-boundary-only approach (see design "Privacy Boundary Compliance" and the `MemoryManager Operation Tracing` Requirement). This task number is kept to avoid renumbering downstream references but has no implementation work. Close as "wontfix: superseded by tasks 3.1-3.3".
   **Dependencies**: 3.3
 
-- [ ] **3.5** Write tests for `wrap_structured_tool()` — metadata passthrough, success path emits trace_tool_call, exception path emits trace before propagating.
+- [x] **3.5** Write tests for `wrap_structured_tool()` — metadata passthrough, success path emits trace_tool_call, exception path emits trace before propagating.
   **Spec scenarios**: extension-registry — all three added scenarios
   **Dependencies**: 1.15
 
-- [ ] **3.6** Implement `wrap_structured_tool(tool, tool_kind, ...)` in `src/assistant/telemetry/tool_wrap.py`.
+- [x] **3.6** Implement `wrap_structured_tool(tool, tool_kind, ...)` in `src/assistant/telemetry/tool_wrap.py`.
   **Dependencies**: 3.5
 
-- [ ] **3.7** Apply `wrap_structured_tool` at the extension tool aggregation sites. `Extension` is a Protocol (not a subclass-able base), so wrapping happens at the **call sites** that iterate `ext.as_langchain_tools()`:
+- [x] **3.7** Apply `wrap_structured_tool` at the extension tool aggregation sites. `Extension` is a Protocol (not a subclass-able base), so wrapping happens at the **call sites** that iterate `ext.as_langchain_tools()`:
   - `src/assistant/core/capabilities/tools.py` line ~41 — capability-resolver aggregation
   - `src/assistant/harnesses/sdk/deep_agents.py` line ~27 — harness tool bundle
   Both sites apply `[wrap_structured_tool(t, tool_kind="extension", ...) for t in ext.as_langchain_tools()]`. Factor out a shared helper `wrap_extension_tools(ext)` in `src/assistant/telemetry/tool_wrap.py` so both sites call the same function.
   **Spec scenarios**: extension-registry — "Extension tool invocation emits trace_tool_call", "Tool metadata passthrough is preserved"; capability-resolver — "Aggregated extension tools are traced"
   **Dependencies**: 3.6
 
-- [ ] **3.8** Write tests for HTTP tool wrapping — builder-constructed tools emit trace with `tool_kind="http"`, Authorization header sanitization in error paths.
+- [x] **3.8** Write tests for HTTP tool wrapping — builder-constructed tools emit trace with `tool_kind="http"`, Authorization header sanitization in error paths.
   **Spec scenarios**: http-tools — all three added scenarios
   **Dependencies**: 1.15, 1.8
 
-- [ ] **3.9** Apply `wrap_structured_tool` inside `_build_tool` (line ~186) in `src/assistant/http_tools/builder.py` so every returned `StructuredTool` is wrapped with `tool_kind="http"` before it is returned to the caller.
+- [x] **3.9** Apply `wrap_structured_tool` inside `_build_tool` (line ~186) in `src/assistant/http_tools/builder.py` so every returned `StructuredTool` is wrapped with `tool_kind="http"` before it is returned to the caller.
   **Dependencies**: 3.8
 
 ## Phase 4 — Dev Infrastructure (wp-devops)
 
-- [ ] **4.1** Write tests for `docker-compose.langfuse.yml` validity — compose file parses, all services have required env vars, `LANGFUSE_INIT_*` vars present.
+- [x] **4.1** Write tests for `docker-compose.langfuse.yml` validity — compose file parses, all services have required env vars, `LANGFUSE_INIT_*` vars present.
   **Design decisions**: D9 (LANGFUSE_INIT_* from day 1)
   **Dependencies**: None
 
-- [ ] **4.2** Create `docker-compose.langfuse.yml` at repo root — Postgres 17 + ClickHouse + Redis + MinIO + langfuse-web:3100 + langfuse-worker, with committed dev-default `LANGFUSE_INIT_*` values.
+- [x] **4.2** Create `docker-compose.langfuse.yml` at repo root — Postgres 17 + ClickHouse + Redis + MinIO + langfuse-web:3100 + langfuse-worker, with committed dev-default `LANGFUSE_INIT_*` values.
   **Dependencies**: 4.1
 
-- [ ] **4.3** Write `docs/observability.md` including these required sections: Quickstart (docker-compose up, env vars, run assistant); **Delivery guarantees** (shutdown-mode tradeoff, `LANGFUSE_FLUSH_MODE=per_op` opt-in); Privacy and sanitization notes; Dev-only credential warning (and the `DUMMY-` prefix convention); CI/CD considerations (why the `langfuse-smoke` job is opt-in); Claude Code Stop hook wiring instructions (pointer to `agent-coordinator/scripts/langfuse_hook.py`); Minimum requirements (Python 3.12, Langfuse v3.x).
+- [x] **4.3** Write `docs/observability.md` including these required sections: Quickstart (docker-compose up, env vars, run assistant); **Delivery guarantees** (shutdown-mode tradeoff, `LANGFUSE_FLUSH_MODE=per_op` opt-in); Privacy and sanitization notes; Dev-only credential warning (and the `DUMMY-` prefix convention); CI/CD considerations (why the `langfuse-smoke` job is opt-in); Claude Code Stop hook wiring instructions (pointer to `agent-coordinator/scripts/langfuse_hook.py`); Minimum requirements (Python 3.12, Langfuse v3.x).
   **Spec scenarios**: observability — "Shutdown-mode delivery loss is documented"
   **Design decisions**: D6 (shutdown-mode tradeoff), D9 (dev credentials + DUMMY prefix), D10 (documentation-only Stop hook), D12 (optional extra rationale)
   **Dependencies**: 4.2
 
-- [ ] **4.4** Update `README.md` — add a brief "Observability" section linking to `docs/observability.md`.
+- [x] **4.4** Update `README.md` — add a brief "Observability" section linking to `docs/observability.md`.
   **Dependencies**: 4.3
 
 ## Phase 5 — Integration & Validation (wp-integration)

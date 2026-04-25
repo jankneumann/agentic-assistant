@@ -10,6 +10,8 @@ from langchain.chat_models import init_chat_model
 from assistant.core.composition import compose_system_prompt
 from assistant.core.role import RoleConfig
 from assistant.harnesses.base import SdkHarnessAdapter
+from assistant.telemetry.decorators import traced_harness
+from assistant.telemetry.tool_wrap import wrap_extension_tools
 
 
 class DeepAgentsHarness(SdkHarnessAdapter):
@@ -24,7 +26,10 @@ class DeepAgentsHarness(SdkHarnessAdapter):
 
         ext_tools: list[Any] = []
         for ext in extensions:
-            ext_tools.extend(ext.as_langchain_tools())
+            # Wrap each extension's StructuredTools so they emit
+            # ``trace_tool_call(tool_kind="extension", ...)`` per spec
+            # capability-resolver "Aggregated Extension Tools Are Traced".
+            ext_tools.extend(wrap_extension_tools(ext))
 
         skills_dirs: list[str] = ["./src/assistant/skills"]
         if self.role.skills_dir:
@@ -38,6 +43,7 @@ class DeepAgentsHarness(SdkHarnessAdapter):
             skills=skills_dirs,
         )
 
+    @traced_harness
     async def invoke(self, agent: Any, message: str) -> str:
         result = await agent.ainvoke(
             {"messages": [{"role": "user", "content": message}]}

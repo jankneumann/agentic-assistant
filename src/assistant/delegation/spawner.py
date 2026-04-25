@@ -8,6 +8,7 @@ from assistant.core.capabilities.guardrails import AllowAllGuardrails, Guardrail
 from assistant.core.persona import PersonaConfig
 from assistant.core.role import RoleConfig, RoleRegistry
 from assistant.harnesses.base import SdkHarnessAdapter
+from assistant.telemetry.decorators import traced_delegation
 
 
 class DelegationSpawner:
@@ -30,6 +31,7 @@ class DelegationSpawner:
         self.guardrails: GuardrailProvider = guardrails or AllowAllGuardrails()
         self._active: int = 0
 
+    @traced_delegation
     async def delegate(self, sub_role_name: str, task: str) -> str:
         allowed = self.parent_role.delegation.get("allowed_sub_roles", []) or []
         if sub_role_name not in allowed:

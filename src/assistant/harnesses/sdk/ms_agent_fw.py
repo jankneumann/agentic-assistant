@@ -6,6 +6,7 @@ from typing import Any
 
 from assistant.core.role import RoleConfig
 from assistant.harnesses.base import SdkHarnessAdapter
+from assistant.telemetry.decorators import traced_harness
 
 _NOT_IMPLEMENTED_MSG = (
     "MS Agent Framework harness is not yet implemented. "
@@ -23,6 +24,7 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
     ) -> Any:
         raise NotImplementedError(_NOT_IMPLEMENTED_MSG)
 
+    @traced_harness
     async def invoke(self, agent: Any, message: str) -> str:
         raise NotImplementedError(_NOT_IMPLEMENTED_MSG)
 

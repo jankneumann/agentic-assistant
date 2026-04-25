@@ -50,6 +50,28 @@ personal│  P+R        P+P      P+CoS           P+W     P+C
 See `CLAUDE.md` for more conventions and `openspec/roadmap.md` for the
 planned proposal sequence.
 
+## Observability
+
+Optional Langfuse-backed tracing for harness invocations, sub-agent
+delegations, memory operations, and tool calls. Off by default; opt in
+via the `[telemetry]` extra plus `LANGFUSE_*` env vars.
+
+```bash
+# Bring up a self-hosted Langfuse stack (postgres, clickhouse, redis,
+# minio, langfuse-web on http://localhost:3100). Seeded org/project/keys
+# via LANGFUSE_INIT_* — no UI signup needed.
+docker compose -f docker-compose.langfuse.yml -p langfuse up -d
+
+uv sync --extra telemetry
+export LANGFUSE_ENABLED=true LANGFUSE_HOST=http://localhost:3100
+export LANGFUSE_PUBLIC_KEY=DUMMY-pk-lf-dev-local
+export LANGFUSE_SECRET_KEY=DUMMY-sk-lf-dev-local
+uv run assistant -p personal
+```
+
+See `docs/observability.md` for the full quickstart, delivery-guarantee
+tradeoffs, privacy notes, and Claude Code Stop hook wiring instructions.
+
 ## Status
 
 `bootstrap-vertical-slice` (archived, 2026-04-12): ships the core
