@@ -315,3 +315,83 @@ def test_sanitize_mapping_handles_lists_of_strings() -> None:
     assert items[0] == "safe"
     assert "Bearer REDACTED" in items[1]
     assert items[2] == "also safe"
+
+
+def test_list_elements_under_safe_key_are_still_sanitized() -> None:
+    """List elements always go through the redaction chain.
+
+    SAFE_FIELDS describes scalar identifiers chosen by the operator
+    (persona name, role name, etc.) — it does not describe lists under
+    those keys. A list under a safe key may carry attacker-influenced
+    data, so each element MUST be scrubbed regardless of the parent
+    key's safety status. (Iter 1 fix for sanitize.py:_sanitize_value.)
+    """
+    from assistant.telemetry.sanitize import sanitize_mapping
+
+    secret_token = "sk-lf-" + _alnum(20)
+    secret_bearer = "Bearer " + _alnum(40)
+    out = sanitize_mapping(
+        {
+            "persona": ["personal", secret_token],
+            "role": [secret_bearer, "researcher"],
+            "tool_name": ["safe-tool", "Authorization: Basic " + _alnum(24)],
+        }
+    )
+    # Secrets MUST be scrubbed even under safe-field keys.
+    assert secret_token not in out["persona"][1]
+    assert "LF-KEY-REDACTED" in out["persona"][1]
+    assert "Bearer REDACTED" in out["role"][0]
+    assert "Authorization: Basic REDACTED" in out["tool_name"][1]
+    # Innocuous list entries under safe keys are still preserved.
+    assert out["persona"][0] == "personal"
+    assert out["role"][1] == "researcher"
+    assert out["tool_name"][0] == "safe-tool"
+
+
+def test_scalar_safe_field_still_passes_through_after_list_fix() -> None:
+    """Regression guard: the list-fix MUST NOT break the scalar
+    pass-through behavior for SAFE_FIELDS values that are plain strings.
+    """
+    from assistant.telemetry.sanitize import sanitize_mapping
+
+    out = sanitize_mapping(
+        {
+            "persona": "personal",
+            "role": "researcher",
+            "tool_name": "gmail.search",
+            "model": "claude-opus-4-7",
+        }
+    )
+    assert out["persona"] == "personal"
+    assert out["role"] == "researcher"
+    assert out["tool_name"] == "gmail.search"
+    assert out["model"] == "claude-opus-4-7"
+
+
+def test_nested_list_under_safe_key_sanitizes_all_levels() -> None:
+    """Nested lists (list of lists) under a safe key sanitize every
+    level — the safety status of the top-level key does not propagate
+    down through any container depth.
+    """
+    from assistant.telemetry.sanitize import sanitize_mapping
+
+    secret = "ghp_" + _alnum(40)
+    out = sanitize_mapping({"persona": [["nested", secret], "outer"]})
+    assert "GH-TOKEN-REDACTED" in out["persona"][0][1]
+    assert out["persona"][0][0] == "nested"
+    assert out["persona"][1] == "outer"
+
+
+def test_dict_under_safe_key_re_evaluates_keys_independently() -> None:
+    """Sanity check: dict-recursion already re-keys per child entry;
+    secrets nested under a dict that lives under a safe key ARE
+    sanitized when the inner key is not in SAFE_FIELDS.
+    """
+    from assistant.telemetry.sanitize import sanitize_mapping
+
+    secret = "sk-" + _alnum(32)
+    out = sanitize_mapping(
+        {"persona": {"detail": secret, "name": "personal"}}
+    )
+    assert "SK-REDACTED" in out["persona"]["detail"]
+    assert out["persona"]["name"] == "personal"

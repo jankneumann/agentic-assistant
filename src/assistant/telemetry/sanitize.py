@@ -120,9 +120,13 @@ def sanitize_mapping(data: Mapping[str, Any]) -> dict[str, Any]:
     - String values for known-safe fields (``SAFE_FIELDS``) pass
       through unmodified.
     - String values for any other field are run through ``sanitize()``.
-    - Nested dicts are recursed.
-    - Lists of strings are walked element-wise (string elements are
-      sanitized; non-strings are left alone).
+    - Nested dicts are recursed; each key is re-evaluated against
+      ``SAFE_FIELDS`` independently.
+    - Lists are walked element-wise. List *elements* are always
+      sanitized (the parent key's safety status does not propagate),
+      because ``SAFE_FIELDS`` is a contract about scalar string values
+      whose shape is operator-chosen — a list under one of those keys
+      may carry attacker-influenced data and must be scrubbed.
     - Non-string scalars (int, float, bool, None) are unchanged.
     """
     out: dict[str, Any] = {}
@@ -131,13 +135,16 @@ def sanitize_mapping(data: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _sanitize_value(key: str, value: Any) -> Any:
+def _sanitize_value(key: str, value: Any, *, force_sanitize: bool = False) -> Any:
     if isinstance(value, str):
-        if key in SAFE_FIELDS:
+        if not force_sanitize and key in SAFE_FIELDS:
             return value
         return sanitize(value)
     if isinstance(value, Mapping):
         return sanitize_mapping(value)
     if isinstance(value, list):
-        return [_sanitize_value(key, item) for item in value]
+        # List elements always go through the redaction chain regardless
+        # of parent-key safety: SAFE_FIELDS describes scalar identifiers,
+        # not container contents.
+        return [_sanitize_value(key, item, force_sanitize=True) for item in value]
     return value
