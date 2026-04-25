@@ -44,7 +44,12 @@ _provider: ObservabilityProvider | None = None
 _provider_lock = threading.Lock()
 
 # One-shot warning tracker — D2. Each membership marker is the level
-# string ("import_error", "init_error", "empty_creds_with_enabled").
+# string ("import_error", "init_error", "empty_creds_with_enabled"). The
+# "empty_creds_with_enabled" key is emitted from this module (not from
+# config.py) per iter-2 fix H so the dedup architecture stays
+# consistent — every degradation-shaped warning routes through
+# ``_warn_once`` regardless of where the underlying observation was
+# captured.
 _warned_levels: set[str] = set()
 
 
@@ -67,6 +72,20 @@ def _init_provider() -> ObservabilityProvider:
     Always returns a functional provider — never raises.
     """
     config = TelemetryConfig.from_env()
+
+    # Iter-2 fix H — distinguish the empty-but-present credential case
+    # from the fully-unset case. ``config.empty_creds_present`` is set
+    # by ``TelemetryConfig.from_env()`` when LANGFUSE_ENABLED=true but
+    # one or both creds are blank. Emitting via ``_warn_once`` here
+    # (not from inside ``from_env``) keeps the dedup centralised.
+    if config.empty_creds_present:
+        _warn_once(
+            "empty_creds_with_enabled",
+            "Telemetry disabled: LANGFUSE_ENABLED=true but the following "
+            "credentials are empty (set but blank or whitespace-only): "
+            f"{', '.join(config.empty_creds_present)}. Set non-empty "
+            "values or unset LANGFUSE_ENABLED to silence this warning.",
+        )
 
     # Level 1: disabled.
     if not config.enabled:

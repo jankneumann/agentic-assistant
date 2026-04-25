@@ -265,7 +265,8 @@ The telemetry configuration SHALL be resolved through the existing `_env()` help
 
 - **WHEN** `TelemetryConfig.from_env()` is called with `LANGFUSE_ENABLED=true` but `LANGFUSE_PUBLIC_KEY=""` (empty string, whitespace, or unset) or `LANGFUSE_SECRET_KEY=""` (empty)
 - **THEN** the returned config's `enabled` field MUST equal `False`
-- **AND** a warning log record MUST be emitted identifying the empty-but-present credential as the reason for the disabled state (distinguishing this from a fully-unset case)
+- **AND** the returned config's `empty_creds_present` tuple MUST list the names of the env vars that were set-but-blank (e.g. `("LANGFUSE_PUBLIC_KEY",)` or `("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY")`) so the factory can emit a distinguishing warning
+- **AND** when `get_observability_provider()` is invoked the factory MUST emit (exactly once per process via the `_warn_once` dedup) a warning log record identifying the empty-but-present credential as the reason for the disabled state (distinguishing this from a fully-unset case)
 
 ### Requirement: Persona and Role Context Propagation
 
@@ -315,3 +316,29 @@ The telemetry module SHALL document, in both `src/assistant/telemetry/flush_hook
 
 - **WHEN** `docs/observability.md` is read
 - **THEN** it MUST contain a section titled "Delivery guarantees" that describes the shutdown-mode tradeoff and the `LANGFUSE_FLUSH_MODE=per_op` opt-in
+
+### Requirement: Dev Infrastructure Refuses DUMMY Credentials Outside Localhost
+
+The bundled `docker-compose.langfuse.yml` SHALL include a startup-check service that refuses to launch the Langfuse stack if any `LANGFUSE_INIT_*` env value carries the `DUMMY-` prefix AND `NEXTAUTH_URL` does not point at `localhost` or `127.0.0.1`. The check MUST run as a dependency of the `langfuse-web` service via `depends_on` with `condition: service_completed_successfully` so a non-zero exit blocks `langfuse-web` from starting.
+
+This requirement escalates design decision D9's SHALL clause from design-only to a testable spec contract. Iter-2 fix B (IMPL_REVIEW round 1, codex blocking).
+
+#### Scenario: Compose file declares the init guard service
+
+- **WHEN** `docker-compose.langfuse.yml` is parsed as YAML
+- **THEN** it MUST contain a top-level service named `init-dummy-guard`
+- **AND** the service's `command` MUST inspect both `NEXTAUTH_URL` and the `LANGFUSE_INIT_*` env values for the `DUMMY-` prefix
+- **AND** `langfuse-web.depends_on` MUST include `init-dummy-guard` with `condition: service_completed_successfully` so the web service cannot start until the guard exits 0
+
+#### Scenario: Guard exits 0 when NEXTAUTH_URL points at localhost
+
+- **WHEN** the guard runs with `NEXTAUTH_URL=http://localhost:3100` and any combination of `LANGFUSE_INIT_*` values (including DUMMY-prefixed ones)
+- **THEN** the guard MUST exit with status 0
+- **AND** the web service MUST proceed with startup
+
+#### Scenario: Guard exits non-zero when DUMMY values would reach a non-local host
+
+- **WHEN** the guard runs with a `NEXTAUTH_URL` that does NOT contain `localhost` or `127.0.0.1` AND at least one `LANGFUSE_INIT_*` value still carries the `DUMMY-` prefix
+- **THEN** the guard MUST exit with non-zero status
+- **AND** the failure message MUST identify which env var(s) carried the DUMMY prefix and instruct the operator to set real values
+- **AND** `langfuse-web` MUST NOT start (the `depends_on` condition is unmet)

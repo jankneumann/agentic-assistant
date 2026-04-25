@@ -1,0 +1,106 @@
+{
+  "review_type": "implementation",
+  "target": "observability",
+  "vendor": "gemini",
+  "round": 1,
+  "findings": [
+    {
+      "id": 1,
+      "type": "spec_gap",
+      "criticality": "high",
+      "description": "Requirement observability.3 and harness-adapter.1 mandate that trace_llm_call include tokens. However, the @traced_harness decorator wraps the invoke() method which returns only a string (src/assistant/harnesses/base.py:34), shedding the token usage information from the underlying LLM response. Consequently, src/assistant/telemetry/decorators.py:127-142 hardcodes input_tokens=None and output_tokens=None.",
+      "resolution": "Change SdkHarnessAdapter.invoke to return a HarnessResult object containing both the response string and token counts, then update the @traced_harness decorator to extract and pass these tokens to trace_llm_call.",
+      "disposition": "fix",
+      "file_path": "src/assistant/telemetry/decorators.py",
+      "line_range": {
+        "start": 133,
+        "end": 133
+      },
+      "title": "traced_harness decorator fails to capture token counts"
+    },
+    {
+      "id": 2,
+      "type": "correctness",
+      "criticality": "high",
+      "description": "LangfuseProvider.trace_* methods use start_as_current_observation() after the operation is already complete. The SDK measures duration from the start of the context manager to its end, resulting in an effectively zero-duration span in the Langfuse UI. The duration_ms argument is only recorded as a metadata attribute (src/assistant/telemetry/providers/langfuse.py:92-104).",
+      "resolution": "In LangfuseProvider, calculate start_time and end_time from the current time and duration_ms, then pass them to start_as_current_observation() to ensure Langfuse records the correct wall-clock duration.",
+      "disposition": "fix",
+      "file_path": "src/assistant/telemetry/providers/langfuse.py",
+      "line_range": {
+        "start": 126,
+        "end": 126
+      },
+      "title": "Langfuse span duration reflects provider latency rather than operation duration"
+    },
+    {
+      "id": 3,
+      "type": "contract_mismatch",
+      "criticality": "medium",
+      "description": "NoopProvider uses **kwargs for trace_* methods (e.g. src/assistant/telemetry/providers/noop.py:40), whereas the ObservabilityProvider Protocol and LangfuseProvider define explicit keyword-only arguments. This allows callers to omit required arguments (like tool_kind or duration_ms) on the noop path without a TypeError, leading to runtime failures only when Langfuse is enabled.",
+      "resolution": "Update all trace_* methods in NoopProvider to match the explicit keyword-only signatures defined in the ObservabilityProvider Protocol.",
+      "disposition": "fix",
+      "file_path": "src/assistant/telemetry/providers/noop.py",
+      "line_range": {
+        "start": 40,
+        "end": 40
+      },
+      "title": "NoopProvider fails to enforce Protocol required arguments"
+    },
+    {
+      "id": 4,
+      "type": "architecture",
+      "criticality": "medium",
+      "description": "TelemetryConfig.from_env() emits a warning directly via logger.warning (src/assistant/telemetry/config.py:97-103). This bypasses the _warn_once() deduplication tracker in factory.py, potentially leading to repeated warnings if the config is loaded outside the singleton factory path.",
+      "resolution": "Remove the warning from config.py. Instead, set a flag in TelemetryConfig and have get_observability_provider() in factory.py emit the warning using _warn_once().",
+      "disposition": "fix",
+      "file_path": "src/assistant/telemetry/config.py",
+      "line_range": {
+        "start": 97,
+        "end": 97
+      },
+      "title": "TelemetryConfig warning bypasses factory deduplication mechanism"
+    },
+    {
+      "id": 5,
+      "type": "performance",
+      "criticality": "low",
+      "description": "LangfuseProvider.trace_llm_call passes md to start_as_current_observation, then immediately calls obs.update(metadata=md) (src/assistant/telemetry/providers/langfuse.py:126-140). This is redundant in the Langfuse v3 SDK and adds unnecessary overhead.",
+      "resolution": "Remove the redundant obs.update(metadata=md) calls from trace_llm_call, trace_delegation, trace_tool_call, and trace_memory_op.",
+      "disposition": "fix",
+      "file_path": "src/assistant/telemetry/providers/langfuse.py",
+      "line_range": {
+        "start": 140,
+        "end": 140
+      },
+      "title": "Redundant metadata update in LangfuseProvider"
+    },
+    {
+      "id": 6,
+      "type": "architecture",
+      "criticality": "low",
+      "description": "The module-level __getattr__ in langfuse.py (line 262) merely raises AttributeError(name), which is the default Python behavior for missing attributes on a module. It provides no functional benefit.",
+      "resolution": "Delete the __getattr__ function from src/assistant/telemetry/providers/langfuse.py.",
+      "disposition": "fix",
+      "file_path": "src/assistant/telemetry/providers/langfuse.py",
+      "line_range": {
+        "start": 262,
+        "end": 262
+      },
+      "title": "Dead module-level __getattr__ in langfuse.py"
+    },
+    {
+      "id": 7,
+      "type": "style",
+      "criticality": "low",
+      "description": "The 'Claude Code Stop hook wiring' section in docs/observability.md starts abruptly. A brief introductory sentence explaining the purpose of the hook (session-level tracing) would improve UX.",
+      "resolution": "Add an introductory sentence: 'You can correlate CLI spans with full Claude Code sessions by wiring a Stop hook.'",
+      "disposition": "fix",
+      "file_path": "docs/observability.md",
+      "line_range": {
+        "start": 154,
+        "end": 154
+      },
+      "title": "Improve clarity of Claude Code Stop hook documentation"
+    }
+  ]
+}

@@ -128,7 +128,81 @@
         "openspec_validate_strict": "valid"
       }
     },
-    "IMPL_REVIEW": {"status": "pending"},
+    "IMPL_REVIEW": {
+      "status": "in_progress",
+      "started_at": "2026-04-25T00:00:00Z",
+      "max_rounds": 3,
+      "min_quorum": 2,
+      "fix_mode": "targeted",
+      "mode": "whole-branch",
+      "current_round": 2,
+      "vendors_dispatched": ["codex-local", "gemini-local"],
+      "rounds": [
+        {
+          "round": 1,
+          "vendors": {
+            "codex-local": {"success": true, "findings": 9, "elapsed_seconds": 351, "model": "gpt-5.5"},
+            "gemini-local": {"success": true, "findings": 7, "elapsed_seconds": 128, "model": "auto"},
+            "claude-primary": {"success": true, "findings": 6, "elapsed_seconds": 0, "model": "claude-opus-4-7"}
+          },
+          "raw_findings_total": 22,
+          "consensus_artifact": "openspec/changes/observability/reviews/round-1/consensus-impl.json",
+          "fixes_applied_in_round": 9,
+          "fixes": {
+            "A_token_counts": {
+              "consensus": "2-vendor blocking (codex, gemini)",
+              "fix": "deep_agents.invoke extracts usage from result messages, stashes self._last_usage; traced_harness consumes via _consume_usage; defaults to (0,0) so spec MUST-include never sees None"
+            },
+            "B_compose_localhost_guard": {
+              "consensus": "1 blocking (codex) + 1 medium (claude)",
+              "fix": "init-dummy-guard service in compose with shell-script localhost+DUMMY check; langfuse-web depends_on with service_completed_successfully; spec escalated D9 to req observability.14 with 3 scenarios"
+            },
+            "C_langfuse_emission_resilience": {
+              "consensus": "1 blocking (codex)",
+              "fix": "_emit_observation helper wraps every SDK ctx-mgr + per-op flush in try/except; flush()/start_span also defensive; spec req observability.2 'MUST never crash' now enforced at runtime"
+            },
+            "E_tool_wrap_sync_support": {
+              "consensus": "1 blocking (codex)",
+              "fix": "wrap_extension_tool/wrap_http_tool now propagate sync func= when source has it; preserves source invocation surface (no capability uplift, no narrowing)"
+            },
+            "G_noop_validators_unconditional": {
+              "consensus": "3-vendor (codex+gemini+claude)",
+              "fix": "_validate_tool_kind/_validate_op typed Any; NoopProvider drops `if x is not None` guards so missing/None tool_kind+op raise ValueError symmetric with LangfuseProvider"
+            },
+            "H_empty_cred_warning_to_factory": {
+              "consensus": "2-vendor (gemini, claude)",
+              "fix": "TelemetryConfig.empty_creds_present tuple records env var names; factory._init_provider emits via _warn_once('empty_creds_with_enabled', ...); spec scenario amended to allow factory-level emission"
+            },
+            "I_dead_getattr_removed": {
+              "consensus": "3-vendor (codex+gemini+claude)",
+              "fix": "module-level __getattr__ at langfuse.py:262 removed; AttributeError now via Python language default"
+            },
+            "J_redundant_obs_update_removed": {
+              "consensus": "1 info (gemini)",
+              "fix": "obs.update(metadata=md) inside ctx-mgr removed; metadata set at start_as_current_observation only"
+            },
+            "K_docs_graphiti_claim_corrected": {
+              "consensus": "1 warning (codex)",
+              "fix": "docs/observability.md quickstart code-comment rephrased to disclaim separate Graphiti tracing per req observability.6"
+            }
+          },
+          "deferred_to_round_2_or_post_merge": [
+            "D: messages sanitization in trace_llm_call — spec interpretation question (req observability.7 scopes to attrs/metadata/error messages, not LLM input). Defer for human / spec amendment.",
+            "F: span duration_ms includes obs.update overhead — Langfuse-UI concern, decorator-measured value is correct in metadata. Low impact.",
+            "L: wrap_extension_tool BaseTool bypass silent log — single-vendor info; nice to have, not blocking.",
+            "M: factory.atexit bypasses flush_hook helper — single-vendor warning; acceptable production behavior. Could refactor in a follow-up.",
+            "N: stop-hook docs intro clarity — gemini info, claude already verified docs/observability.md:181 has intro context. Withdrawn."
+          ],
+          "test_count_change": "149 → 180 telemetry tests (+31 from iter-2 fixes)",
+          "quality_gates_post_round_1": {
+            "pytest_telemetry": "180 passed, 1 skipped",
+            "mypy_src_tests": "no issues (119 files)",
+            "ruff_src_tests": "all checks passed",
+            "openspec_strict": "valid"
+          }
+        }
+      ]
+    },
     "VALIDATE": {"status": "pending"},
     "SUBMIT_PR": {"status": "pending"}
   },

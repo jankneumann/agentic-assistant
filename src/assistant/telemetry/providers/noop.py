@@ -36,16 +36,19 @@ class NoopProvider:
 
     def trace_tool_call(self, **kwargs: Any) -> None:
         # Validation MUST run before the zero-allocation early return
-        # (D7 + spec scenario "Rejects mis-typed tool_kind").
-        tool_kind = kwargs.get("tool_kind")
-        if tool_kind is not None:
-            _validate_tool_kind(tool_kind)
+        # (D7 + spec scenario "Rejects mis-typed tool_kind"). The check
+        # is unconditional — passing ``tool_kind=None`` (or omitting the
+        # required kwarg via duck-typed dispatch) raises ValueError so
+        # the noop and Langfuse providers behave symmetrically. Iter-2
+        # fix for IMPL_REVIEW round 1 finding G (3-vendor confirmed).
+        _validate_tool_kind(kwargs.get("tool_kind"))
         return None
 
     def trace_memory_op(self, **kwargs: Any) -> None:
-        op = kwargs.get("op")
-        if op is not None:
-            _validate_op(op)
+        # Same symmetry fix as trace_tool_call above (req observability.1
+        # Protocol Contract — "Rejects mis-typed op value", including
+        # the ``op is None`` case under duck-typed dispatch).
+        _validate_op(kwargs.get("op"))
         return None
 
     @contextmanager

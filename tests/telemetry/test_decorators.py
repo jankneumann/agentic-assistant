@@ -165,6 +165,173 @@ async def test_traced_harness_uses_assistant_ctx_when_persona_attr_missing(
     assert call["role"] == "assistant"
 
 
+@pytest.mark.asyncio
+async def test_traced_harness_emits_token_counts_from_last_usage(
+    monkeypatch: pytest.MonkeyPatch, spy_provider: Any
+) -> None:
+    """When the harness body stashes ``self._last_usage``, the decorator
+    forwards those token counts to ``trace_llm_call``. Iter-2 fix for
+    IMPL_REVIEW round 1 finding A — the spec (req observability.3)
+    requires ``input_tokens`` / ``output_tokens`` on the trace call.
+    """
+    from assistant.telemetry.decorators import traced_harness
+
+    _install_spy(monkeypatch, spy_provider)
+
+    class H(_FakeHarness):
+        @traced_harness
+        async def invoke(self, agent: Any, message: str) -> str:
+            self._last_usage = (123, 456)
+            return "ok"
+
+    h = H("personal", "assistant", "x:y")
+    await h.invoke(object(), "hi")
+
+    call = spy_provider.calls["trace_llm_call"][0]
+    assert call["input_tokens"] == 123
+    assert call["output_tokens"] == 456
+
+
+@pytest.mark.asyncio
+async def test_traced_harness_emits_zero_tokens_when_usage_not_recorded(
+    monkeypatch: pytest.MonkeyPatch, spy_provider: Any
+) -> None:
+    """When the harness body does not set ``_last_usage``, the decorator
+    records ``(0, 0)`` rather than ``None`` — this satisfies req
+    observability.3's MUST-include contract without inventing values.
+    """
+    from assistant.telemetry.decorators import traced_harness
+
+    _install_spy(monkeypatch, spy_provider)
+
+    class H(_FakeHarness):
+        @traced_harness
+        async def invoke(self, agent: Any, message: str) -> str:
+            return "ok"
+
+    h = H("personal", "assistant", "x:y")
+    await h.invoke(object(), "hi")
+
+    call = spy_provider.calls["trace_llm_call"][0]
+    assert call["input_tokens"] == 0
+    assert call["output_tokens"] == 0
+    # Both must be int — never None — so consumers can do arithmetic.
+    assert isinstance(call["input_tokens"], int)
+    assert isinstance(call["output_tokens"], int)
+
+
+@pytest.mark.asyncio
+async def test_traced_harness_emits_zero_tokens_on_exception_path(
+    monkeypatch: pytest.MonkeyPatch, spy_provider: Any
+) -> None:
+    """The exception path also records concrete int tokens (0/0 when
+    nothing was stashed), not ``None``.
+    """
+    from assistant.telemetry.decorators import traced_harness
+
+    _install_spy(monkeypatch, spy_provider)
+
+    class H(_FakeHarness):
+        @traced_harness
+        async def invoke(self, agent: Any, message: str) -> str:
+            raise RuntimeError("boom")
+
+    h = H("personal", "assistant", "x:y")
+    with pytest.raises(RuntimeError):
+        await h.invoke(object(), "hi")
+
+    call = spy_provider.calls["trace_llm_call"][0]
+    assert isinstance(call["input_tokens"], int)
+    assert isinstance(call["output_tokens"], int)
+    assert call["input_tokens"] == 0
+    assert call["output_tokens"] == 0
+
+
+@pytest.mark.asyncio
+async def test_traced_harness_clears_last_usage_after_consume(
+    monkeypatch: pytest.MonkeyPatch, spy_provider: Any
+) -> None:
+    """Each invocation reads + clears ``_last_usage`` so a subsequent
+    invoke that fails to record fresh usage does not see stale values.
+    """
+    from assistant.telemetry.decorators import traced_harness
+
+    _install_spy(monkeypatch, spy_provider)
+
+    class H(_FakeHarness):
+        recorded_first_call = False
+
+        @traced_harness
+        async def invoke(self, agent: Any, message: str) -> str:
+            if not self.recorded_first_call:
+                self._last_usage = (10, 20)
+                self.recorded_first_call = True
+            # Second invocation does NOT set _last_usage.
+            return "ok"
+
+    h = H("personal", "assistant", "x:y")
+    await h.invoke(object(), "first")
+    await h.invoke(object(), "second")
+
+    calls = spy_provider.calls["trace_llm_call"]
+    assert calls[0]["input_tokens"] == 10
+    assert calls[0]["output_tokens"] == 20
+    # Stale stash MUST not leak into the second call.
+    assert calls[1]["input_tokens"] == 0
+    assert calls[1]["output_tokens"] == 0
+
+
+def test_extract_usage_handles_langchain_core_usage_metadata() -> None:
+    """``_extract_usage`` reads the modern ``usage_metadata`` attribute
+    that LangChain Core 0.3+ puts on ``AIMessage``.
+    """
+    from assistant.harnesses.sdk.deep_agents import _extract_usage
+
+    msg = type("Msg", (), {})()
+    msg.usage_metadata = {"input_tokens": 7, "output_tokens": 11}
+    in_tok, out_tok = _extract_usage([msg])
+    assert (in_tok, out_tok) == (7, 11)
+
+
+def test_extract_usage_handles_legacy_response_metadata_token_usage() -> None:
+    """Older LangChain releases stash usage under
+    ``response_metadata.token_usage`` with OpenAI-style keys.
+    """
+    from assistant.harnesses.sdk.deep_agents import _extract_usage
+
+    msg = type("Msg", (), {})()
+    msg.response_metadata = {
+        "token_usage": {"prompt_tokens": 13, "completion_tokens": 17}
+    }
+    in_tok, out_tok = _extract_usage([msg])
+    assert (in_tok, out_tok) == (13, 17)
+
+
+def test_extract_usage_sums_across_multiple_messages() -> None:
+    """When a result contains multiple assistant messages (e.g. tool-use
+    iterations), token counts MUST be summed.
+    """
+    from assistant.harnesses.sdk.deep_agents import _extract_usage
+
+    m1 = type("Msg", (), {})()
+    m1.usage_metadata = {"input_tokens": 5, "output_tokens": 6}
+    m2 = type("Msg", (), {})()
+    m2.usage_metadata = {"input_tokens": 7, "output_tokens": 8}
+    in_tok, out_tok = _extract_usage([m1, m2])
+    assert (in_tok, out_tok) == (12, 14)
+
+
+def test_extract_usage_returns_zeros_when_no_usage_present() -> None:
+    """Messages with neither modern nor legacy usage metadata yield
+    ``(0, 0)`` — never ``None``.
+    """
+    from assistant.harnesses.sdk.deep_agents import _extract_usage
+
+    msg = type("Msg", (), {})()
+    in_tok, out_tok = _extract_usage([msg])
+    assert (in_tok, out_tok) == (0, 0)
+
+
 # ---------------------------------------------------------------------------
 # @traced_delegation
 # ---------------------------------------------------------------------------

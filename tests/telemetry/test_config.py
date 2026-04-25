@@ -79,11 +79,14 @@ def test_environment_falls_back_to_local_when_unset(
     assert cfg.environment == "local"
 
 
-def test_empty_public_key_disables_with_distinct_warning(
+def test_empty_public_key_records_in_empty_creds_present(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """D13 — empty-but-present credential vs fully-unset must be distinguishable."""
+    """D13 (iter-2 fix H) — empty-but-present credential records the
+    env var name in ``empty_creds_present`` rather than emitting a
+    warning here. Factory ``_warn_once`` handles emission.
+    """
     monkeypatch.setenv("LANGFUSE_ENABLED", "true")
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-real")
@@ -93,9 +96,12 @@ def test_empty_public_key_disables_with_distinct_warning(
         cfg = TelemetryConfig.from_env()
 
     assert cfg.enabled is False
-    msg_blob = "\n".join(rec.message for rec in caplog.records)
-    assert "empty" in msg_blob.lower()
-    assert "LANGFUSE_PUBLIC_KEY" in msg_blob
+    assert cfg.empty_creds_present == ("LANGFUSE_PUBLIC_KEY",)
+    # ``from_env`` itself MUST NOT emit any warning — that is the
+    # factory's responsibility now (iter-2 fix H).
+    assert not any(
+        "empty" in rec.message.lower() for rec in caplog.records
+    )
 
 
 def test_whitespace_credential_treated_as_empty(
@@ -108,31 +114,61 @@ def test_whitespace_credential_treated_as_empty(
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-real")
     from assistant.telemetry.config import TelemetryConfig
 
-    with caplog.at_level(logging.WARNING, logger="assistant.telemetry"):
-        cfg = TelemetryConfig.from_env()
+    cfg = TelemetryConfig.from_env()
 
     assert cfg.enabled is False
-    msg_blob = "\n".join(rec.message for rec in caplog.records)
-    assert "empty" in msg_blob.lower()
+    assert cfg.empty_creds_present == ("LANGFUSE_PUBLIC_KEY",)
 
 
-def test_unset_credentials_no_distinct_empty_warning(
+def test_both_empty_creds_with_enabled_recorded(
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """D13 — fully-unset case MUST NOT emit the empty-but-present warning."""
+    """When both creds are blank-but-set, ``empty_creds_present``
+    contains both env var names, ordered by appearance in spec.
+    """
+    monkeypatch.setenv("LANGFUSE_ENABLED", "true")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "")
+    from assistant.telemetry.config import TelemetryConfig
+
+    cfg = TelemetryConfig.from_env()
+    assert cfg.empty_creds_present == (
+        "LANGFUSE_PUBLIC_KEY",
+        "LANGFUSE_SECRET_KEY",
+    )
+
+
+def test_unset_credentials_no_empty_creds_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D13 — fully-unset case yields empty ``empty_creds_present`` and
+    no factory warning is appropriate (only the disabled-noop path).
+    """
     monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
     monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
     monkeypatch.setenv("LANGFUSE_ENABLED", "true")
     from assistant.telemetry.config import TelemetryConfig
 
-    with caplog.at_level(logging.WARNING, logger="assistant.telemetry"):
-        cfg = TelemetryConfig.from_env()
-
+    cfg = TelemetryConfig.from_env()
     assert cfg.enabled is False
-    # No warning specifically calling out empty-but-present must be logged.
-    for rec in caplog.records:
-        assert "empty" not in rec.message.lower()
+    assert cfg.empty_creds_present == ()
+
+
+def test_disabled_with_blank_creds_does_not_record_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If LANGFUSE_ENABLED is false, set-but-blank creds are NOT
+    recorded — the user did not signal intent to enable so there is
+    no misconfiguration to flag.
+    """
+    monkeypatch.setenv("LANGFUSE_ENABLED", "false")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "")
+    from assistant.telemetry.config import TelemetryConfig
+
+    cfg = TelemetryConfig.from_env()
+    assert cfg.enabled is False
+    assert cfg.empty_creds_present == ()
 
 
 def test_telemetry_config_is_frozen() -> None:

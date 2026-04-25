@@ -32,7 +32,11 @@ export LANGFUSE_SECRET_KEY=DUMMY-sk-lf-dev-local
 export LANGFUSE_HOST=http://localhost:3100
 
 # 4. Run the assistant — every harness invocation, sub-agent delegation,
-#    memory operation, Graphiti call, and tool call now emits a span.
+#    memory operation, and tool call now emits a span. Graphiti queries
+#    that the assistant's MemoryManager triggers are traced once at the
+#    MemoryManager boundary (op="episode_write"/"search"/etc.); they are
+#    NOT separately instrumented at the Graphiti client layer per req
+#    observability.6 to avoid double-counting.
 uv run assistant -p personal
 ```
 

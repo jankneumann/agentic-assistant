@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "review_type": "implementation",
+  "target": "observability",
+  "reviewers": [
+    {
+      "vendor": "implementation",
+      "agent_id": "implementation",
+      "success": true,
+      "findings_count": 6,
+      "elapsed_seconds": 0.0,
+      "error": null
+    },
+    {
+      "vendor": "implementation",
+      "agent_id": "implementation",
+      "success": true,
+      "findings_count": 9,
+      "elapsed_seconds": 0.0,
+      "error": null
+    },
+    {
+      "vendor": "implementation",
+      "agent_id": "implementation",
+      "success": true,
+      "findings_count": 7,
+      "elapsed_seconds": 0.0,
+      "error": null
+    }
+  ],
+  "quorum_met": true,
+  "quorum_requested": 3,
+  "quorum_received": 3,
+  "consensus_findings": [
+    {
+      "id": 1,
+      "status": "unconfirmed",
+      "primary_vendor": "implementation",
+      "primary_finding_id": 1,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "spec_gap",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "Design decision D9 (design.md:225) explicitly says: 'the compose file SHALL include a startup-check sidecar script that refuses to start the Langfuse container if any LANGFUSE_INIT_* value is `DUMMY-*` AND the `HOST` environment does not include `localhost` or `127.0.0.1` \u2014 preventing accidental launch with dev defaults outside a developer machine.' The compose file's header comment (line 12-13) claims this exists ('the entrypoint check in langfuse-web refuses to start with DUMMY- credentials when the host is not localhost'), but the `langfuse-web` service block (lines 125-174) has no `entrypoint:` override, no `command:` override, no init container, no sidecar service, and no startup script. The promised guard is not implemented. The risk is mitigated by the visual `DUMMY-` prefix and the `127.0.0.1:3100:3000` port binding, but the spec gap remains."
+    },
+    {
+      "id": 2,
+      "status": "unconfirmed",
+      "primary_vendor": "implementation",
+      "primary_finding_id": 2,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "contract_mismatch",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "src/assistant/telemetry/factory.py:129 calls `atexit.register(provider.shutdown)` directly. The sibling module `src/assistant/telemetry/flush_hook.py` defines `register_shutdown_hook(fn)` (lines 37-49) that wraps `atexit.register` with a `_registered_callables: set` for idempotency, explicitly to handle 'callers that re-run initialisation (in tests, in serverless cold-warm, etc.)' (per its docstring). The factory bypasses this helper. In production the singleton ensures `_init_provider` runs once so the bypass is harmless. In tests the autouse `reset_telemetry_singleton` fixture (tests/telemetry/conftest.py) sets `_provider = None` before each case, so each test that triggers provider init queues another `shutdown` callable to atexit. They all fire at process exit, calling `.shutdown()` on now-stale provider instances. Each shutdown is internally guarded (`if self._client is None: return`) so no crash, but the contract advertised by flush_hook is not honored at the canonical use site."
+    },
+    {
+      "id": 3,
+      "status": "unconfirmed",
+      "primary_vendor": "implementation",
+      "primary_finding_id": 3,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "observability",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "src/assistant/telemetry/tool_wrap.py:122 and 135 use `not isinstance(tool, StructuredTool)` as their bypass gate. LangChain's tool ecosystem includes other BaseTool subclasses (e.g. tools constructed without StructuredTool.from_function, or future direct BaseTool subclasses). Per the spec text (extension-registry.1: 'Every LangChain `StructuredTool` returned by an `Extension.as_langchain_tools()` call'), the StructuredTool scoping is technically correct. But in practice an extension that returns BaseTool-but-not-StructuredTool instances would silently skip tracing. The MagicMock passthrough rationale is well-documented in the docstring but conflates two different cases: (a) test mocks that intentionally bypass, and (b) future real BaseTool subclasses that should be flagged."
+    },
+    {
+      "id": 4,
+      "status": "unconfirmed",
+      "primary_vendor": "implementation",
+      "primary_finding_id": 4,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "architecture",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "src/assistant/telemetry/config.py:97-103 emits `logger.warning(...)` directly when LANGFUSE_ENABLED=true but credentials are empty. This is spec-compliant per req observability.10 which pins the emission to from_env(). However, the rest of the warning architecture (factory._warn_once at factory.py:51-61) provides per-process deduplication via a module-level `_warned_levels: set[str]` keyed by level name. The config-level warning has no such dedup. In production the singleton ensures from_env() runs once, so the warning fires once. In tests the autouse `reset_telemetry_singleton` fixture causes from_env() to run multiple times, and the warning emits multiple times. Architectural coherence argues for moving the dedup to factory._warn_once with a new level key 'empty_creds_with_enabled'; spec-compliance argues for leaving it where the spec text pins it. This was raised by the iter 1 Explore agent and deferred to this review for multi-vendor arbitration."
+    },
+    {
+      "id": 5,
+      "status": "unconfirmed",
+      "primary_vendor": "implementation",
+      "primary_finding_id": 5,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "style",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "src/assistant/telemetry/providers/langfuse.py:262-264 defines a module-level `def __getattr__(name: str) -> AbstractContextManager[Any]: raise AttributeError(name)`. Module-level __getattr__ (PEP 562) is invoked when a normal attribute lookup fails on the module. The function's body raises AttributeError \u2014 which is the default behavior when a missing attribute is looked up on a module that has no __getattr__ defined. The function adds no behavior over the language default. The docstring says 'Module-level placeholder so test imports succeed even before setup' but the body does not implement that intent \u2014 it raises rather than returning a placeholder."
+    },
+    {
+      "id": 6,
+      "status": "unconfirmed",
+      "primary_vendor": "implementation",
+      "primary_finding_id": 6,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "contract_mismatch",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "src/assistant/telemetry/providers/noop.py:38-43 conditionally calls `_validate_tool_kind` only when `tool_kind is not None` (`if tool_kind is not None: _validate_tool_kind(tool_kind)`). src/assistant/telemetry/providers/langfuse.py:173 calls `_validate_tool_kind(tool_kind)` unconditionally \u2014 passing None would raise TypeError on the membership check. The Protocol declares `tool_kind: str` as required, so a properly-typed caller cannot omit it. But duck-typed callers (tests with **{} kwargs, dynamic dispatch) would observe different behaviors: noop is silent, langfuse raises. Same asymmetry exists for `trace_memory_op` / `op`. This is unlikely to be reached at runtime due to keyword-arg enforcement but the asymmetry is a contract-design smell."
+    },
+    {
+      "id": 7,
+      "status": "unconfirmed",
+      "primary_vendor": "implementation",
+      "primary_finding_id": 7,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "contract_mismatch",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "NoopProvider.trace_tool_call and trace_memory_op only validate when kwargs.get('tool_kind') or kwargs.get('op') is not None at src/assistant/telemetry/providers/noop.py:40-48. Calling NoopProvider().trace_tool_call() or trace_memory_op() therefore returns None, while LangfuseProvider raises TypeError for missing required keyword-only arguments. This is hard to hit through typed call sites, but it weakens the stated provider-contract symmetry."
+    },
+    {
+      "id": 8,
+      "status": "unconfirmed",
+      "primary_vendor": "implementation",
+      "primary_finding_id": 8,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "style",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "src/assistant/telemetry/providers/langfuse.py:262 defines module-level __getattr__ that only raises AttributeError(name), which is the default behavior for missing module attributes. The docstring says it lets test imports succeed before setup, but it does not provide any fallback value or lazy import behavior."
+    },
+    {
+      "id": 9,
+      "status": "unconfirmed",
+      "primary_vendor": "implementation",
+      "primary_finding_id": 9,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "observability",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "docs/observability.md:34-35 says every memory operation, Graphiti call, and tool call emits a span. The final observability spec says Graphiti client calls are not separately instrumented and are observed only through MemoryManager boundaries to avoid double-counting. The doc therefore suggests lower-level Graphiti spans that the implementation intentionally does not emit."
+    }
+  ],
+  "summary": {
+    "total_unique_findings": 9,
+    "confirmed_count": 0,
+    "unconfirmed_count": 9,
+    "disagreement_count": 0,
+    "blocking_count": 0
+  }
+}

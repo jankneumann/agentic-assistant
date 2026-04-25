@@ -10,7 +10,24 @@ single one-shot warning.
 Sanitization runs at emission (D5): every ``trace_*`` method calls
 :func:`sanitize_mapping` on its ``metadata`` argument before passing
 it to the SDK so secrets never reach the backend even if a hook site
-forgets to scrub.
+forgets to scrub. The ``messages`` argument to :meth:`trace_llm_call`
+is NOT run through the sanitizer — it is the LLM conversation input
+that operators expect to see verbatim in the Langfuse UI for span
+diagnosis. The 15-pattern regex chain targets secret-shaped tokens
+(``Bearer …``, ``sk-…``, etc.) which would still get redacted if they
+appeared in conversation, but free-form prose stays unmodified per
+req observability.7's "every string value in span attributes,
+metadata dicts, and error messages" scoping (which excludes
+LLM-input fields).
+
+Resilience (req observability.2 — "MUST never crash"):
+
+Every emission path goes through :meth:`_emit_observation`, which
+wraps the SDK ctx-mgr + per-op flush in a single try/except. Any
+SDK-side failure (network down, auth error, malformed payload) is
+logged at WARNING and swallowed so the application never sees an
+exception caused by telemetry. The same protection applies to the
+top-level :meth:`flush` and :meth:`shutdown` methods.
 
 Flush semantics (D6):
 
@@ -25,7 +42,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 from assistant.telemetry.providers.base import _validate_op, _validate_tool_kind
@@ -66,15 +83,59 @@ class LangfuseProvider:
 
     # ── helpers ────────────────────────────────────────────────────
 
-    def _maybe_flush(self) -> None:
-        if self._config.flush_mode == "per_op" and self._client is not None:
-            self._client.flush()
-
     @staticmethod
     def _sanitise_md(metadata: dict[str, Any] | None) -> dict[str, Any]:
         if not metadata:
             return {}
         return sanitize_mapping(metadata)
+
+    def _emit_observation(
+        self,
+        *,
+        name: str,
+        as_type: str,
+        metadata: dict[str, Any],
+        **extra: Any,
+    ) -> None:
+        """Open a Langfuse observation and (per-op mode) flush, safely.
+
+        Per req observability.2, the application MUST NEVER crash due
+        to telemetry. Any SDK-side exception (network down, auth
+        failed, malformed payload, partial outage) is caught here,
+        logged once at WARNING, and swallowed. The span is dropped on
+        failure rather than partially emitted.
+
+        ``metadata`` is set at observation creation time; we do NOT
+        also call ``obs.update(metadata=...)`` inside the ctx-mgr
+        because that is redundant — the same metadata dict was already
+        attached by ``start_as_current_observation``.
+
+        Caller contract: only invoke after checking ``self._client is
+        not None`` — the trace_* methods all guard that. The local
+        ``client`` rebind below makes the not-None invariant visible
+        to type checkers.
+        """
+        client = self._client
+        if client is None:
+            return
+        try:
+            with client.start_as_current_observation(
+                name=name,
+                as_type=as_type,
+                metadata=metadata,
+                **extra,
+            ):
+                pass
+            if self._config.flush_mode == "per_op":
+                client.flush()
+        except Exception as exc:
+            logger.warning(
+                "Telemetry: Langfuse emission for span %r failed "
+                "(%s: %s); span dropped, continuing without raising.",
+                name,
+                type(exc).__name__,
+                exc,
+            )
 
     # ── Protocol methods ───────────────────────────────────────────
 
@@ -110,20 +171,14 @@ class LangfuseProvider:
                 "completion_tokens", 0
             )
 
-        with self._client.start_as_current_observation(
+        self._emit_observation(
             name="llm_call",
             as_type="generation",
+            metadata=md,
             model=model,
             input=messages,
-            metadata=md,
             usage_details=usage or None,
-        ) as obs:
-            # The duration is captured as metadata; the Langfuse SDK
-            # will compute its own elapsed time from the ctx-manager
-            # entry/exit, but we surface our measurement explicitly so
-            # callers see the exact number we measured.
-            obs.update(metadata=md)
-        self._maybe_flush()
+        )
         return None
 
     def trace_delegation(
@@ -149,14 +204,12 @@ class LangfuseProvider:
                 "outcome": outcome,
             }
         )
-        with self._client.start_as_current_observation(
+        self._emit_observation(
             name="delegation",
             as_type="agent",
-            input={"task": sanitize(task)},
             metadata=md,
-        ) as obs:
-            obs.update(metadata=md)
-        self._maybe_flush()
+            input={"task": sanitize(task)},
+        )
         return None
 
     def trace_tool_call(
@@ -185,13 +238,11 @@ class LangfuseProvider:
         )
         if error:
             md["error"] = error
-        with self._client.start_as_current_observation(
+        self._emit_observation(
             name=f"tool:{tool_name}",
             as_type="tool",
             metadata=md,
-        ) as obs:
-            obs.update(metadata=md)
-        self._maybe_flush()
+        )
         return None
 
     def trace_memory_op(
@@ -216,13 +267,11 @@ class LangfuseProvider:
         )
         if target is not None:
             md["target"] = sanitize(target)
-        with self._client.start_as_current_observation(
+        self._emit_observation(
             name=f"memory:{op}",
             as_type="span",
             metadata=md,
-        ) as obs:
-            obs.update(metadata=md)
-        self._maybe_flush()
+        )
         return None
 
     @contextmanager
@@ -231,21 +280,61 @@ class LangfuseProvider:
         name: str,
         attributes: dict[str, Any] | None = None,
     ) -> Iterator[Any]:
+        """Open an arbitrary named span (escape hatch).
+
+        Unlike the four first-class ``trace_*`` methods this ctx-mgr
+        yields the underlying observation to the caller and runs user
+        code inside the ``with`` block. If the SDK enter fails we log
+        and fall back to yielding ``None`` so the caller can continue.
+        Exceptions from the user code itself propagate unchanged so
+        callers can still react to their own failures.
+        """
         if self._client is None:
             yield None
             return
         attrs = self._sanitise_md(attributes)
-        with self._client.start_as_current_observation(
-            name=name,
-            as_type="span",
-            metadata=attrs,
-        ) as obs:
+        try:
+            cm = self._client.start_as_current_observation(
+                name=name,
+                as_type="span",
+                metadata=attrs,
+            )
+            obs = cm.__enter__()
+        except Exception as exc:
+            logger.warning(
+                "Telemetry: Langfuse start_span %r enter failed "
+                "(%s: %s); yielding None as fallback.",
+                name,
+                type(exc).__name__,
+                exc,
+            )
+            yield None
+            return
+        try:
             yield obs
+        finally:
+            try:
+                cm.__exit__(None, None, None)
+            except Exception as exc:
+                logger.warning(
+                    "Telemetry: Langfuse start_span %r exit failed "
+                    "(%s: %s); ignored.",
+                    name,
+                    type(exc).__name__,
+                    exc,
+                )
 
     def flush(self) -> None:
         if self._client is None:
             return None
-        self._client.flush()
+        try:
+            self._client.flush()
+        except Exception as exc:
+            logger.warning(
+                "Telemetry: Langfuse flush failed (%s: %s); ignored.",
+                type(exc).__name__,
+                exc,
+            )
 
     def shutdown(self) -> None:
         if self._client is None:
@@ -257,8 +346,3 @@ class LangfuseProvider:
             # released network resources; never let the atexit hook
             # propagate.
             logger.debug("LangfuseProvider.shutdown raised — ignoring")
-
-
-def __getattr__(name: str) -> AbstractContextManager[Any]:  # pragma: no cover
-    """Module-level placeholder so test imports succeed even before setup."""
-    raise AttributeError(name)

@@ -49,6 +49,16 @@ def _wrap(
 
     ``tool_kind`` is one of ``"extension"`` or ``"http"``; provider
     validation rejects any other value.
+
+    The wrapped tool preserves the source tool's invocation surface:
+    if the source had ``func`` (sync) the wrapped tool also has ``func``
+    so ``tool.invoke(...)`` keeps working; if the source had only
+    ``coroutine``, the wrapped tool exposes only ``coroutine`` and a
+    sync caller will see the same async-only behaviour as before. This
+    matters because LangChain's ReAct agents and most async harnesses
+    call ``ainvoke`` while CLI tooling and certain test paths still use
+    ``.invoke()`` — wrapping must not narrow the source contract. (Iter
+    2 fix for IMPL_REVIEW round 1 finding E.)
     """
     name = tool.name
     description = tool.description
@@ -56,9 +66,25 @@ def _wrap(
     src_coroutine = tool.coroutine
     src_func = tool.func
 
+    def _emit(
+        persona: str | None,
+        role: str | None,
+        start: float,
+        error: str | None,
+    ) -> None:
+        duration_ms = (time.perf_counter() - start) * 1000.0
+        get_observability_provider().trace_tool_call(
+            tool_name=name,
+            tool_kind=tool_kind,
+            persona=persona,
+            role=role,
+            duration_ms=duration_ms,
+            error=error,
+            metadata=None,
+        )
+
     async def _traced_async(**kwargs: Any) -> Any:
         persona, role = get_assistant_ctx()
-        provider = get_observability_provider()
         start = time.perf_counter()
         try:
             if src_coroutine is not None:
@@ -73,31 +99,36 @@ def _wrap(
                     f"Tool {name!r} has neither coroutine nor func"
                 )
         except BaseException as exc:
-            duration_ms = (time.perf_counter() - start) * 1000.0
-            provider.trace_tool_call(
-                tool_name=name,
-                tool_kind=tool_kind,
-                persona=persona,
-                role=role,
-                duration_ms=duration_ms,
-                error=type(exc).__name__,
-                metadata=None,
-            )
+            _emit(persona, role, start, type(exc).__name__)
             raise
-        duration_ms = (time.perf_counter() - start) * 1000.0
-        provider.trace_tool_call(
-            tool_name=name,
-            tool_kind=tool_kind,
-            persona=persona,
-            role=role,
-            duration_ms=duration_ms,
-            error=None,
-            metadata=None,
-        )
+        _emit(persona, role, start, None)
         return result
 
+    def _traced_sync(**kwargs: Any) -> Any:
+        """Sync entry point — only constructed when the source has
+        ``func`` so we never invent sync support that the underlying
+        tool does not provide.
+        """
+        persona, role = get_assistant_ctx()
+        start = time.perf_counter()
+        try:
+            assert src_func is not None  # guarded by caller below
+            result = src_func(**kwargs)
+        except BaseException as exc:
+            _emit(persona, role, start, type(exc).__name__)
+            raise
+        _emit(persona, role, start, None)
+        return result
+
+    # Match the source tool's invocation surface. ``StructuredTool.from_function``
+    # accepts ``func=None`` and ``coroutine=None`` independently, but
+    # requires at least one. Since ``_wrap`` is only called for real
+    # StructuredTool instances (the isinstance gate above), at least
+    # one of ``src_func`` / ``src_coroutine`` is present.
+    sync_callable = _traced_sync if src_func is not None else None
     return StructuredTool.from_function(
         coroutine=_traced_async,
+        func=sync_callable,
         name=name,
         description=description,
         args_schema=args_schema,

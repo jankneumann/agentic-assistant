@@ -28,11 +28,15 @@ _VALID_OPS: frozenset[str] = frozenset(
 )
 
 
-def _validate_tool_kind(tool_kind: str) -> None:
+def _validate_tool_kind(tool_kind: Any) -> None:
     """Raise ``ValueError`` if ``tool_kind`` is not one of the allowed values.
 
     Per spec scenario "Rejects mis-typed tool_kind": validation MUST
-    fire before any span is emitted.
+    fire before any span is emitted. The parameter is typed ``Any``
+    (not ``str``) because this is an entry-point validator; duck-typed
+    dispatch — including ``None`` from a ``kwargs.get("tool_kind")``
+    on a NoopProvider call without the required arg — MUST also raise
+    rather than silently passing the type check.
     """
     if tool_kind not in _VALID_TOOL_KINDS:
         raise ValueError(
@@ -41,11 +45,12 @@ def _validate_tool_kind(tool_kind: str) -> None:
         )
 
 
-def _validate_op(op: str) -> None:
+def _validate_op(op: Any) -> None:
     """Raise ``ValueError`` if ``op`` is not one of the allowed values.
 
     Per spec scenario "Rejects mis-typed op value": case mismatch is
-    explicitly rejected too — ``op="CONTEXT"`` MUST fail.
+    explicitly rejected too — ``op="CONTEXT"`` MUST fail. Same
+    ``Any``-typed entry-point rationale as :func:`_validate_tool_kind`.
     """
     if op not in _VALID_OPS:
         raise ValueError(
