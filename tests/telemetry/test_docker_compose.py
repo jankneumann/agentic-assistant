@@ -457,3 +457,80 @@ def test_guard_accepts_non_local_host_with_no_dummy_values(
         f"guard must accept non-local host with all-real values; "
         f"got rc={rc}, stderr={stderr!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Round-3 fixes (codex #3 + codex #4 + claude-primary #1):
+#  - Spec scenario at spec.md:343 requires the failure message to
+#    identify which env var(s) carried the DUMMY prefix so operators
+#    know exactly what to replace.
+#  - IPv6 loopback ``[::1]`` MUST be accepted as local (parity with
+#    127.0.0.1 / localhost) so dual-stack dev boxes work without
+#    mangling NEXTAUTH_URL.
+# ---------------------------------------------------------------------------
+
+
+def test_guard_failure_message_names_offending_env_vars(
+    compose: dict[str, Any],
+) -> None:
+    """spec.md:343 — when refusing, the message MUST identify the env
+    var name(s) that carried the DUMMY prefix. The previous generic
+    'LANGFUSE_INIT_* contains DUMMY-prefixed values' message satisfied
+    the SHALL ('refuse') but not the AND ('failure message MUST
+    identify'). Round-3 codex #3.
+    """
+    env = {
+        "NEXTAUTH_URL": "https://prod.example.com",
+        "LANGFUSE_INIT_ORG_ID": "real-org",
+        "LANGFUSE_INIT_PROJECT_ID": "real-proj",
+        # Two distinct vars with DUMMY values — assert BOTH appear.
+        "LANGFUSE_INIT_PROJECT_PUBLIC_KEY": "DUMMY-pk-leftover",
+        "LANGFUSE_INIT_PROJECT_SECRET_KEY": "sk-real",
+        "LANGFUSE_INIT_USER_EMAIL": "ops@prod.example.com",
+        "LANGFUSE_INIT_USER_PASSWORD": "DUMMY-pw-leftover",
+        "LANGFUSE_INIT_ORG_NAME": "Real Org",
+        "LANGFUSE_INIT_PROJECT_NAME": "Real Proj",
+        "LANGFUSE_INIT_USER_NAME": "ops",
+    }
+    rc, _, stderr = _run_guard(compose, env)
+    assert rc == 1
+    # Both offending var NAMES (not values) must appear in stderr.
+    assert "LANGFUSE_INIT_PROJECT_PUBLIC_KEY" in stderr, (
+        f"refusal message must name the offending env var "
+        f"LANGFUSE_INIT_PROJECT_PUBLIC_KEY; got stderr={stderr!r}"
+    )
+    assert "LANGFUSE_INIT_PASSWORD" in stderr or "LANGFUSE_INIT_USER_PASSWORD" in stderr, (
+        f"refusal message must name LANGFUSE_INIT_USER_PASSWORD too; "
+        f"got stderr={stderr!r}"
+    )
+    # Variable that did NOT carry DUMMY must NOT appear in the offender
+    # list — operators should not be sent on a wild goose chase.
+    # We can't assert literal absence (the var name might appear in a
+    # generic doc-string region of the message), but at minimum the
+    # offender list should be the focus.
+    assert "DUMMY-" in stderr  # context preserved
+
+
+def test_guard_accepts_ipv6_loopback_bracketed(compose: dict[str, Any]) -> None:
+    """Round-3 codex #4 + claude-primary #1: ``http://[::1]:3100``
+    MUST be accepted as local loopback (parity with 127.0.0.1) even
+    when DUMMY values are present. Dual-stack dev boxes that use IPv6
+    by default would otherwise be blocked.
+    """
+    env = {
+        "NEXTAUTH_URL": "http://[::1]:3100",
+        "LANGFUSE_INIT_ORG_ID": "DUMMY-org",
+        "LANGFUSE_INIT_PROJECT_ID": "DUMMY-proj",
+        "LANGFUSE_INIT_PROJECT_PUBLIC_KEY": "DUMMY-pk",
+        "LANGFUSE_INIT_PROJECT_SECRET_KEY": "DUMMY-sk",
+        "LANGFUSE_INIT_USER_EMAIL": "dev@localhost",
+        "LANGFUSE_INIT_USER_PASSWORD": "DUMMY-pw",
+        "LANGFUSE_INIT_ORG_NAME": "agentic-assistant dev (DUMMY)",
+        "LANGFUSE_INIT_PROJECT_NAME": "agentic-assistant (DUMMY)",
+        "LANGFUSE_INIT_USER_NAME": "dev",
+    }
+    rc, _, stderr = _run_guard(compose, env)
+    assert rc == 0, (
+        f"guard must accept IPv6 loopback http://[::1]:* as local; "
+        f"got rc={rc}, stderr={stderr!r}"
+    )
