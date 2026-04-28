@@ -619,6 +619,175 @@ def test_per_op_flush_failure_does_not_propagate(
 
 
 # ---------------------------------------------------------------------------
+# start_span: exception info MUST be forwarded to the SDK ctx-mgr exit so
+# Langfuse can mark the span as failed when the user's code raises.
+# Iter-2 round-2 fix (claude #2).
+# ---------------------------------------------------------------------------
+
+
+def test_start_span_forwards_exception_info_to_sdk_ctx_mgr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When user code inside the ``with provider.start_span(...)`` block
+    raises, ``cm.__exit__`` MUST receive the actual ``(exc_type,
+    exc_value, exc_tb)`` triple — not ``(None, None, None)`` — so the
+    Langfuse SDK can record the span as errored. Iter-2 round-2 fix
+    addresses the original bug where ``finally: cm.__exit__(None,
+    None, None)`` always erased the failure signal.
+    """
+    captured_exit: dict[str, Any] = {}
+
+    class _ExitRecordingObs:
+        def __enter__(self) -> _ExitRecordingObs:
+            return self
+
+        def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+            captured_exit["exc_type"] = exc_type
+            captured_exit["exc_val"] = exc_val
+            captured_exit["exc_tb"] = exc_tb
+
+    class _ExitRecordingFake:
+        """Standalone (non-subclass) fake — different observation return
+        type would otherwise break LSP variance vs ``_FakeLangfuse``.
+        """
+
+        def __init__(self, **kwargs: Any) -> None:
+            self.init_kwargs = kwargs
+
+        @contextmanager
+        def start_as_current_observation(
+            self, **kwargs: Any
+        ) -> Iterator[_ExitRecordingObs]:
+            obs = _ExitRecordingObs()
+            with obs:
+                yield obs
+
+        def flush(self) -> None:
+            pass
+
+        def shutdown(self) -> None:
+            pass
+
+    holder: dict[str, _ExitRecordingFake] = {}
+
+    def _factory(**kwargs: Any) -> _ExitRecordingFake:
+        c = _ExitRecordingFake(**kwargs)
+        holder["client"] = c
+        return c
+
+    fake_mod = types.ModuleType("langfuse")
+    fake_mod.Langfuse = _factory  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "langfuse", fake_mod)
+    monkeypatch.delitem(
+        sys.modules, "assistant.telemetry.providers.langfuse", raising=False
+    )
+
+    from assistant.telemetry.config import TelemetryConfig
+    from assistant.telemetry.providers.langfuse import LangfuseProvider
+
+    cfg = TelemetryConfig(
+        enabled=True,
+        public_key="pk-lf-test",
+        secret_key="sk-lf-test",
+        host="https://example.test",
+        environment="ci",
+        flush_mode="shutdown",
+        sample_rate=1.0,
+    )
+    p = LangfuseProvider(cfg)
+    p.setup()
+
+    sentinel = RuntimeError("user code blew up")
+    with pytest.raises(RuntimeError) as excinfo:
+        with p.start_span("user-block"):
+            raise sentinel
+    assert excinfo.value is sentinel
+
+    # The SDK ctx-mgr saw the actual exception, not None — so Langfuse
+    # can record the span as failed.
+    assert captured_exit["exc_type"] is RuntimeError
+    assert captured_exit["exc_val"] is sentinel
+    assert captured_exit["exc_tb"] is not None
+
+
+def test_start_span_passes_none_to_sdk_ctx_mgr_on_clean_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The success path (no exception inside the ``with``) MUST still
+    pass ``(None, None, None)`` to the SDK ctx-mgr exit so it does not
+    falsely mark a clean span as errored.
+    """
+    captured_exit: dict[str, Any] = {}
+
+    class _ExitRecordingObs:
+        def __enter__(self) -> _ExitRecordingObs:
+            return self
+
+        def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+            captured_exit["exc_type"] = exc_type
+            captured_exit["exc_val"] = exc_val
+            captured_exit["exc_tb"] = exc_tb
+
+    class _ExitRecordingFake:
+        """Standalone (non-subclass) fake — different observation return
+        type would otherwise break LSP variance vs ``_FakeLangfuse``.
+        """
+
+        def __init__(self, **kwargs: Any) -> None:
+            self.init_kwargs = kwargs
+
+        @contextmanager
+        def start_as_current_observation(
+            self, **kwargs: Any
+        ) -> Iterator[_ExitRecordingObs]:
+            obs = _ExitRecordingObs()
+            with obs:
+                yield obs
+
+        def flush(self) -> None:
+            pass
+
+        def shutdown(self) -> None:
+            pass
+
+    holder: dict[str, _ExitRecordingFake] = {}
+
+    def _factory(**kwargs: Any) -> _ExitRecordingFake:
+        c = _ExitRecordingFake(**kwargs)
+        holder["client"] = c
+        return c
+
+    fake_mod = types.ModuleType("langfuse")
+    fake_mod.Langfuse = _factory  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "langfuse", fake_mod)
+    monkeypatch.delitem(
+        sys.modules, "assistant.telemetry.providers.langfuse", raising=False
+    )
+
+    from assistant.telemetry.config import TelemetryConfig
+    from assistant.telemetry.providers.langfuse import LangfuseProvider
+
+    cfg = TelemetryConfig(
+        enabled=True,
+        public_key="pk-lf-test",
+        secret_key="sk-lf-test",
+        host="https://example.test",
+        environment="ci",
+        flush_mode="shutdown",
+        sample_rate=1.0,
+    )
+    p = LangfuseProvider(cfg)
+    p.setup()
+
+    with p.start_span("clean"):
+        pass
+
+    assert captured_exit["exc_type"] is None
+    assert captured_exit["exc_val"] is None
+    assert captured_exit["exc_tb"] is None
+
+
+# ---------------------------------------------------------------------------
 # Cleanup: dead module-level __getattr__ removed.
 # Iter-2 fix for IMPL_REVIEW round 1 finding I.
 # ---------------------------------------------------------------------------

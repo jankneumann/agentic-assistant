@@ -8,6 +8,7 @@ from deepagents import create_deep_agent
 from langchain.chat_models import init_chat_model
 
 from assistant.core.composition import compose_system_prompt
+from assistant.core.persona import PersonaConfig
 from assistant.core.role import RoleConfig
 from assistant.harnesses.base import SdkHarnessAdapter
 from assistant.telemetry.decorators import traced_harness
@@ -15,6 +16,18 @@ from assistant.telemetry.tool_wrap import wrap_extension_tools
 
 
 class DeepAgentsHarness(SdkHarnessAdapter):
+    # Class-level default surfaces through ``_resolve_model`` so spans
+    # report the real model id even when the persona omits a harness
+    # ``model`` override (Iter-2 round-2 fix gemini #5). Concrete
+    # ``create_agent`` overrides ``self._active_model`` with the value
+    # that actually drove ``init_chat_model`` so the resolution order
+    # is: instance attr (most specific) → persona config → "unknown".
+    _DEFAULT_MODEL = "anthropic:claude-sonnet-4-20250514"
+
+    def __init__(self, persona: PersonaConfig, role: RoleConfig) -> None:
+        super().__init__(persona, role)
+        self._active_model: str = self._DEFAULT_MODEL
+
     def name(self) -> str:
         return "deep_agents"
 
@@ -22,7 +35,10 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         self, tools: list[Any], extensions: list[Any]
     ) -> Any:
         cfg = self.persona.harnesses.get("deep_agents", {}) or {}
-        model_id = cfg.get("model", "anthropic:claude-sonnet-4-20250514")
+        model_id = cfg.get("model", self._DEFAULT_MODEL)
+        # Stash so ``_resolve_model`` reports the real id regardless of
+        # whether the persona supplied a ``model`` override.
+        self._active_model = model_id
 
         ext_tools: list[Any] = []
         for ext in extensions:
@@ -45,16 +61,16 @@ class DeepAgentsHarness(SdkHarnessAdapter):
 
     @traced_harness
     async def invoke(self, agent: Any, message: str) -> str:
+        # Token usage is captured by the ``@traced_harness`` decorator
+        # via LangChain Core's ``get_usage_metadata_callback`` context
+        # manager — no instance-level stash is required, which keeps
+        # concurrent ``asyncio.gather`` invocations isolated and
+        # prevents prior-turn tokens from being summed once a
+        # checkpointer-backed agent re-uses the same harness.
         result = await agent.ainvoke(
             {"messages": [{"role": "user", "content": message}]}
         )
         messages = result.get("messages", [])
-        # Stash usage so the @traced_harness decorator can include token
-        # counts in trace_llm_call (req observability.3 — "MUST include
-        # input_tokens, output_tokens"). Records (0, 0) when the SDK does
-        # not expose usage metadata so the decorator never has to pass
-        # None for the spec-required fields.
-        self._last_usage = _extract_usage(messages)
         for msg in reversed(messages):
             role = _msg_role(msg)
             if role == "assistant":
@@ -84,32 +100,3 @@ def _msg_content(msg: Any) -> str:
         return msg.get("content", "")
     return getattr(msg, "content", "") or ""
 
-
-def _extract_usage(messages: list[Any]) -> tuple[int, int]:
-    """Sum input/output token counts across all messages in the result.
-
-    Walks every message and pulls token usage from whichever LangChain
-    field carries it. Recent LangChain Core versions expose
-    ``usage_metadata`` on ``AIMessage``; older releases stash usage
-    under ``response_metadata.token_usage`` with the OpenAI-style
-    ``prompt_tokens`` / ``completion_tokens`` keys. Returns ``(0, 0)``
-    when no usage info is present so the harness can record a
-    deterministic int pair regardless of SDK version (avoids passing
-    ``None`` for the spec-required token fields per req
-    observability.3).
-    """
-    in_tokens = 0
-    out_tokens = 0
-    for msg in messages:
-        usage_meta = getattr(msg, "usage_metadata", None)
-        if isinstance(usage_meta, dict):
-            in_tokens += int(usage_meta.get("input_tokens") or 0)
-            out_tokens += int(usage_meta.get("output_tokens") or 0)
-            continue
-        resp_meta = getattr(msg, "response_metadata", None)
-        if isinstance(resp_meta, dict):
-            tu = resp_meta.get("token_usage") or {}
-            if isinstance(tu, dict):
-                in_tokens += int(tu.get("prompt_tokens") or 0)
-                out_tokens += int(tu.get("completion_tokens") or 0)
-    return in_tokens, out_tokens

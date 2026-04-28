@@ -282,3 +282,178 @@ def test_init_dummy_guard_environment_carries_canonical_dummy_values(
     # The default committed values are ALL DUMMY-prefixed for safety,
     # but NEXTAUTH_URL is localhost so the guard returns 0.
     assert "localhost" in guard_env["NEXTAUTH_URL"] or "127.0.0.1" in guard_env["NEXTAUTH_URL"]
+
+
+# ---------------------------------------------------------------------------
+# Iter-2 round-2 fixes (claude #3 + gemini #4): the guard script's host
+# check MUST anchor on the host portion (not substring-match the whole URL)
+# and MUST tolerate quote characters embedded in any LANGFUSE_INIT_* value.
+# These tests actually shell out to ``/bin/sh`` with the extracted script.
+# ---------------------------------------------------------------------------
+
+
+def _extract_guard_script(compose: dict[str, Any]) -> str:
+    """Return the inline shell body of ``init-dummy-guard.command``.
+
+    Compose escapes ``$VAR`` as ``$$VAR`` to prevent compose-variable
+    interpolation. We undo that here so the script can be executed by a
+    plain POSIX shell where ``$VAR`` is the desired form.
+    """
+    services = cast(dict[str, Any], compose["services"])
+    cmd = services["init-dummy-guard"]["command"]
+    assert isinstance(cmd, list), (
+        "guard command must be a list of args (sh -c <body>)"
+    )
+    # Compose long-form: ['sh', '-c', '<body>']. Body is the third arg.
+    body = cmd[2] if len(cmd) >= 3 else ""
+    assert isinstance(body, str) and body
+    return body.replace("$$", "$")
+
+
+def _run_guard(
+    compose: dict[str, Any], env: dict[str, str]
+) -> tuple[int, str, str]:
+    """Execute the extracted guard body under ``/bin/sh`` with ``env``.
+
+    Returns ``(returncode, stdout, stderr)``. Uses a fresh env dict
+    rather than inheriting so the test is hermetic against host-side
+    LANGFUSE_INIT_*.
+    """
+    import subprocess
+
+    script = _extract_guard_script(compose)
+    proc = subprocess.run(
+        ["/bin/sh", "-c", script],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def test_guard_refuses_substring_localhost_host_with_dummy_values(
+    compose: dict[str, Any],
+) -> None:
+    """Iter-2 round-2 (claude #3): a NEXTAUTH_URL whose host *contains*
+    ``localhost`` as a substring (e.g. ``localhost-fixture.example.com``)
+    must NOT pass the guard when DUMMY- values are present. The
+    previous regex matched any occurrence of ``localhost`` anywhere in
+    the URL, which would have falsely greenlit a non-local host.
+    """
+    env = {
+        "NEXTAUTH_URL": "http://localhost-fixture.example.com",
+        "LANGFUSE_INIT_ORG_ID": "DUMMY-org",
+        "LANGFUSE_INIT_PROJECT_ID": "DUMMY-proj",
+        "LANGFUSE_INIT_PROJECT_PUBLIC_KEY": "DUMMY-pk",
+        "LANGFUSE_INIT_PROJECT_SECRET_KEY": "DUMMY-sk",
+        "LANGFUSE_INIT_USER_EMAIL": "dev@example.com",
+        "LANGFUSE_INIT_USER_PASSWORD": "DUMMY-pw",
+        "LANGFUSE_INIT_ORG_NAME": "Org",
+        "LANGFUSE_INIT_PROJECT_NAME": "Proj",
+        "LANGFUSE_INIT_USER_NAME": "User",
+    }
+    rc, _, stderr = _run_guard(compose, env)
+    assert rc == 1, (
+        f"guard must refuse substring-localhost host with DUMMY-* values; "
+        f"got rc={rc}, stderr={stderr!r}"
+    )
+    assert "REFUSING" in stderr
+
+
+def test_guard_accepts_exact_localhost_host(compose: dict[str, Any]) -> None:
+    """Exact host==``localhost`` MUST exit 0 even with DUMMY- values
+    (this is the canonical local-dev path).
+    """
+    env = {
+        "NEXTAUTH_URL": "http://localhost:3100",
+        "LANGFUSE_INIT_ORG_ID": "DUMMY-org",
+        "LANGFUSE_INIT_PROJECT_ID": "DUMMY-proj",
+        "LANGFUSE_INIT_PROJECT_PUBLIC_KEY": "DUMMY-pk",
+        "LANGFUSE_INIT_PROJECT_SECRET_KEY": "DUMMY-sk",
+        "LANGFUSE_INIT_USER_EMAIL": "dev@localhost",
+        "LANGFUSE_INIT_USER_PASSWORD": "DUMMY-pw",
+        "LANGFUSE_INIT_ORG_NAME": "agentic-assistant dev (DUMMY)",
+        "LANGFUSE_INIT_PROJECT_NAME": "agentic-assistant (DUMMY)",
+        "LANGFUSE_INIT_USER_NAME": "dev",
+    }
+    rc, _, stderr = _run_guard(compose, env)
+    assert rc == 0, (
+        f"guard must accept exact localhost; got rc={rc}, stderr={stderr!r}"
+    )
+
+
+def test_guard_accepts_exact_127_0_0_1_host(compose: dict[str, Any]) -> None:
+    """Exact host==``127.0.0.1`` MUST exit 0 (canonical loopback)."""
+    env = {
+        "NEXTAUTH_URL": "http://127.0.0.1:3100",
+        "LANGFUSE_INIT_ORG_ID": "DUMMY-org",
+        "LANGFUSE_INIT_PROJECT_ID": "DUMMY-proj",
+        "LANGFUSE_INIT_PROJECT_PUBLIC_KEY": "DUMMY-pk",
+        "LANGFUSE_INIT_PROJECT_SECRET_KEY": "DUMMY-sk",
+        "LANGFUSE_INIT_USER_EMAIL": "dev@127.0.0.1",
+        "LANGFUSE_INIT_USER_PASSWORD": "DUMMY-pw",
+        "LANGFUSE_INIT_ORG_NAME": "Org",
+        "LANGFUSE_INIT_PROJECT_NAME": "Proj",
+        "LANGFUSE_INIT_USER_NAME": "User",
+    }
+    rc, _, stderr = _run_guard(compose, env)
+    assert rc == 0, (
+        f"guard must accept 127.0.0.1; got rc={rc}, stderr={stderr!r}"
+    )
+
+
+def test_guard_tolerates_quote_in_init_value_and_still_refuses(
+    compose: dict[str, Any],
+) -> None:
+    """Iter-2 round-2 (gemini #4): the previous join into
+    ``"$$VAR1 $$VAR2 ..."`` would syntax-error if any value contained
+    an embedded ``"``. The per-variable iteration MUST tolerate the
+    quote AND still detect a DUMMY- prefix elsewhere.
+    """
+    env = {
+        "NEXTAUTH_URL": "http://prod.example.com",
+        "LANGFUSE_INIT_ORG_ID": "real-org",
+        "LANGFUSE_INIT_PROJECT_ID": "real-proj",
+        "LANGFUSE_INIT_PROJECT_PUBLIC_KEY": "pk-real",
+        "LANGFUSE_INIT_PROJECT_SECRET_KEY": "sk-real",
+        "LANGFUSE_INIT_USER_EMAIL": "ops@prod.example.com",
+        "LANGFUSE_INIT_USER_PASSWORD": "DUMMY-still-here",
+        # Embedded quote in the org name — the previous join would have
+        # broken on this and falsely passed the guard.
+        "LANGFUSE_INIT_ORG_NAME": 'Org "Quoted" Inc',
+        "LANGFUSE_INIT_PROJECT_NAME": "Proj",
+        "LANGFUSE_INIT_USER_NAME": "ops",
+    }
+    rc, _, stderr = _run_guard(compose, env)
+    assert rc == 1, (
+        f"guard must still refuse DUMMY-* on a non-local host even when "
+        f"a value contains an embedded quote; got rc={rc}, stderr={stderr!r}"
+    )
+    assert "REFUSING" in stderr
+
+
+def test_guard_accepts_non_local_host_with_no_dummy_values(
+    compose: dict[str, Any],
+) -> None:
+    """Non-local host with all-real values MUST exit 0 — this is the
+    eventual prod path where operators have replaced the DUMMY-* defaults.
+    """
+    env = {
+        "NEXTAUTH_URL": "https://langfuse.prod.example.com",
+        "LANGFUSE_INIT_ORG_ID": "real-org",
+        "LANGFUSE_INIT_PROJECT_ID": "real-proj",
+        "LANGFUSE_INIT_PROJECT_PUBLIC_KEY": "pk-real",
+        "LANGFUSE_INIT_PROJECT_SECRET_KEY": "sk-real",
+        "LANGFUSE_INIT_USER_EMAIL": "ops@prod.example.com",
+        "LANGFUSE_INIT_USER_PASSWORD": "real-pw",
+        "LANGFUSE_INIT_ORG_NAME": "Real Org",
+        "LANGFUSE_INIT_PROJECT_NAME": "Real Proj",
+        "LANGFUSE_INIT_USER_NAME": "ops",
+    }
+    rc, _, stderr = _run_guard(compose, env)
+    assert rc == 0, (
+        f"guard must accept non-local host with all-real values; "
+        f"got rc={rc}, stderr={stderr!r}"
+    )
