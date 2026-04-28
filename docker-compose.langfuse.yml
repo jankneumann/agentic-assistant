@@ -103,15 +103,29 @@ services:
       - -c
       - |
         set -eu
-        if printf '%s' "$$NEXTAUTH_URL" | grep -qE 'localhost|127\.0\.0\.1'; then
-          echo "[dummy-guard] NEXTAUTH_URL=$$NEXTAUTH_URL points at localhost; DUMMY-prefixed init values are acceptable for local dev."
+        # Iter-2 round-2 fix (claude #3): extract the host portion of
+        # ``NEXTAUTH_URL`` and check it for an exact match against
+        # ``localhost`` or ``127.0.0.1``. The previous substring grep
+        # matched URLs like ``http://localhost-fixture.example.com``
+        # which would have wrongly let DUMMY- values through.
+        host=$$(printf '%s' "$${NEXTAUTH_URL:-}" | sed -nE 's|^https?://([^/:]+).*|\1|p')
+        if [ "$$host" = localhost ] || [ "$$host" = 127.0.0.1 ]; then
+          echo "[dummy-guard] NEXTAUTH_URL=$${NEXTAUTH_URL:-} points at $$host; DUMMY-prefixed init values are acceptable for local dev."
           exit 0
         fi
-        joined="$$LANGFUSE_INIT_ORG_ID $$LANGFUSE_INIT_PROJECT_ID $$LANGFUSE_INIT_PROJECT_PUBLIC_KEY $$LANGFUSE_INIT_PROJECT_SECRET_KEY $$LANGFUSE_INIT_USER_EMAIL $$LANGFUSE_INIT_USER_PASSWORD $$LANGFUSE_INIT_ORG_NAME $$LANGFUSE_INIT_PROJECT_NAME $$LANGFUSE_INIT_USER_NAME"
-        if printf '%s' "$$joined" | grep -q 'DUMMY-'; then
-          echo "[dummy-guard] REFUSING to start: NEXTAUTH_URL=$$NEXTAUTH_URL is not localhost/127.0.0.1 but LANGFUSE_INIT_* contains DUMMY-prefixed values. These are dev defaults; set real org/project/keys/user values before launching the stack on this host." >&2
-          exit 1
-        fi
+        # Iter-2 round-2 fix (gemini #4): iterate per-variable rather
+        # than joining into a single quoted string. The previous join
+        # broke if any value contained an embedded ``"`` (e.g. an org
+        # name with a quote) — the shell would syntax-error before
+        # reaching the DUMMY- check, falsely passing the guard.
+        for v in "$${LANGFUSE_INIT_ORG_ID:-}" "$${LANGFUSE_INIT_PROJECT_ID:-}" "$${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:-}" "$${LANGFUSE_INIT_PROJECT_SECRET_KEY:-}" "$${LANGFUSE_INIT_USER_EMAIL:-}" "$${LANGFUSE_INIT_USER_PASSWORD:-}" "$${LANGFUSE_INIT_ORG_NAME:-}" "$${LANGFUSE_INIT_PROJECT_NAME:-}" "$${LANGFUSE_INIT_USER_NAME:-}"; do
+          case "$$v" in
+            *DUMMY-*)
+              echo "[dummy-guard] REFUSING to start: NEXTAUTH_URL=$${NEXTAUTH_URL:-} resolved host '$$host' is not localhost/127.0.0.1 but LANGFUSE_INIT_* contains DUMMY-prefixed values. These are dev defaults; set real org/project/keys/user values before launching the stack on this host." >&2
+              exit 1
+              ;;
+          esac
+        done
         echo "[dummy-guard] No DUMMY- prefixes detected and host is non-local; startup allowed."
     environment:
       NEXTAUTH_URL: http://localhost:3100

@@ -1,0 +1,73 @@
+{
+  "review_type": "implementation",
+  "target": "observability",
+  "vendor": "gemini",
+  "round": 2,
+  "findings": [
+    {
+      "id": 1,
+      "type": "correctness",
+      "criticality": "high",
+      "description": "LangfuseProvider.trace_llm_call passes token usage via the keyword argument 'usage_details'. However, the Langfuse Python SDK (v3) uses the keyword 'usage'. This mismatch likely causes token counts to be ignored by the SDK, violating req observability.3 (MUST include input_tokens, output_tokens).",
+      "resolution": "Change 'usage_details' to 'usage' in the _emit_observation call.",
+      "disposition": "fix",
+      "file_path": "src/assistant/telemetry/providers/langfuse.py",
+      "line_range": {
+        "start": 182,
+        "end": 182
+      }
+    },
+    {
+      "id": 2,
+      "type": "resilience",
+      "criticality": "medium",
+      "description": "The traced_harness decorator extracts usage from self._last_usage after the harness invocation completes. If a harness instance is used for concurrent invocations (e.g., via asyncio.gather), concurrent tasks will overwrite and clear the same attribute, leading to a race condition where some spans report zero tokens (0, 0) and others report usage from the wrong task.",
+      "resolution": "Use a task-local ContextVar to store and retrieve token usage between the harness method and its decorator, ensuring isolation across concurrent invocations.",
+      "disposition": "fix",
+      "file_path": "src/assistant/telemetry/decorators.py",
+      "line_range": {
+        "start": 133,
+        "end": 154
+      }
+    },
+    {
+      "id": 3,
+      "type": "compatibility",
+      "criticality": "medium",
+      "description": "LangfuseProvider.trace_llm_call constructs a usage dictionary with keys 'prompt_tokens' and 'completion_tokens'. While aliases might be supported, the Langfuse v3 Python SDK standardizes on 'input' and 'output' (plus 'total'). Using non-standard keys may impact cost calculation and UI consistency.",
+      "resolution": "Update usage dictionary keys to 'input', 'output', and 'total' for better alignment with Langfuse v3/v4 standards.",
+      "disposition": "fix",
+      "file_path": "src/assistant/telemetry/providers/langfuse.py",
+      "line_range": {
+        "start": 171,
+        "end": 178
+      }
+    },
+    {
+      "id": 4,
+      "type": "resilience",
+      "criticality": "low",
+      "description": "The init-dummy-guard shell command joins multiple environment variables into a single string using double quotes: joined=\"$$VAR1 $$VAR2 ...\". If any variable (e.g., ORG_NAME) contains a double quote, the shell script will fail with a syntax error, potentially blocking the Langfuse stack from starting even on a safe localhost host.",
+      "resolution": "Use a safer way to iterate and check variables, such as a for loop over the variable names, to avoid shell injection/syntax errors from unexpected characters in persona names.",
+      "disposition": "fix",
+      "file_path": "docker-compose.langfuse.yml",
+      "line_range": {
+        "start": 109,
+        "end": 109
+      }
+    },
+    {
+      "id": 5,
+      "type": "observability",
+      "criticality": "low",
+      "description": "The _resolve_model helper resolves to 'unknown' if no model is explicitly defined in the persona's harness config. However, concrete harnesses (like DeepAgentsHarness) provide their own hardcoded defaults. This results in spans reporting 'unknown' even when a specific, known default model is active.",
+      "resolution": "Expose the active model ID from the harness instance or update _resolve_model to include the same default model fallback logic used in the harnesses.",
+      "disposition": "fix",
+      "file_path": "src/assistant/telemetry/decorators.py",
+      "line_range": {
+        "start": 91,
+        "end": 113
+      }
+    }
+  ]
+}

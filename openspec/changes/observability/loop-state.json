@@ -200,6 +200,72 @@
             "ruff_src_tests": "all checks passed",
             "openspec_strict": "valid"
           }
+        },
+        {
+          "round": 2,
+          "vendors": {
+            "codex-local": {"success": false, "findings": 0, "elapsed_seconds": 900, "error": "transient timeout"},
+            "gemini-local": {"success": true, "findings": 5, "elapsed_seconds": 233, "model": "auto"},
+            "claude-primary": {"success": true, "findings": 4, "elapsed_seconds": 0, "model": "claude-opus-4-7"}
+          },
+          "raw_findings_total": 9,
+          "quorum_received": 1,
+          "quorum_requested": 2,
+          "convergence_decision": "user-directed: apply real findings + dispatch round 3 (path 1)",
+          "fixes_applied_in_round": 6,
+          "findings_dismissed": [
+            {
+              "vendor": "gemini",
+              "id": 1,
+              "severity": "high",
+              "claim": "kwarg should be 'usage' not 'usage_details'",
+              "verdict": "INVALID per Context7-verified Langfuse Python SDK v3 docs (start_as_current_observation accepts usage_details=...)",
+              "verification": "Context7 /langfuse/langfuse-python — example uses usage_details={'prompt_tokens': 15, 'completion_tokens': 120, 'total_tokens': 135}"
+            },
+            {
+              "vendor": "gemini",
+              "id": 3,
+              "severity": "medium",
+              "claim": "v3 SDK standardizes on input/output keys, not prompt_tokens/completion_tokens",
+              "verdict": "INVALID per same Context7 source — example explicitly uses prompt_tokens/completion_tokens/total_tokens"
+            }
+          ],
+          "fixes": {
+            "callback_usage_refactor_gemini2_claude1": {
+              "consensus": "2 medium findings collapse to one refactor (gemini #2 race + claude #1 multi-turn over-counting)",
+              "fix": "decorators.traced_harness wraps awaited body in get_usage_metadata_callback() context manager (LangChain Core 0.3.49+); _last_usage instance attr + _consume_usage helper + _extract_usage helper all DELETED. claude #4 (defensive try in _consume_usage) dissolves into this — code is gone. Token capture is now task-local (PEP 567 ContextVar) so concurrent gather is safe, and bounded to the awaited block so checkpointer-backed multi-turn never sums prior turns."
+            },
+            "start_span_exc_info_claude2": {
+              "consensus": "1 low (claude only)",
+              "fix": "LangfuseProvider.start_span captures (exc_type, exc_value, exc_tb) in user-code yield's except clause; forwards to cm.__exit__(*exc_info) so SDK can record span as failed. Re-raises original. 2 regression tests (exception path forwards, clean path passes None)."
+            },
+            "guard_host_regex_claude3": {
+              "consensus": "1 low (claude only)",
+              "fix": "init-dummy-guard host check now extracts host portion via sed and tests for exact match against localhost / 127.0.0.1 instead of substring grep. http://localhost-fixture.example.com no longer bypasses the DUMMY check."
+            },
+            "guard_shell_quoting_gemini4": {
+              "consensus": "1 low (gemini only)",
+              "fix": "init-dummy-guard iterates per-variable with case-glob match instead of joining all values into a single quoted string; embedded \" characters in any LANGFUSE_INIT_* value no longer syntax-error the script."
+            },
+            "resolve_model_active_gemini5": {
+              "consensus": "1 low (gemini only)",
+              "fix": "DeepAgentsHarness sets self._active_model from create_agent's resolved model_id; decorators._resolve_model checks self._active_model first before persona-config fallthrough. Spans report the real model id even when the persona omits a harness override."
+            },
+            "consume_usage_dead_try_claude4": {
+              "consensus": "1 low (claude only) — subsumed by callback refactor",
+              "fix": "Whole _consume_usage helper deleted as part of the callback refactor. Defensive try/except is gone with the code that contained it."
+            }
+          },
+          "deferred_to_round_3_or_post_merge": [
+            "Langfuse Python SDK v4 upgrade (independent follow-up). Tracked separately — pyproject pin bump + _sanitise_md str-coercion + LANGFUSE_HOST→LANGFUSE_BASE_URL alias + optional should_export_span knob."
+          ],
+          "test_count_change": "180 → 188 telemetry tests (+8 net: 5 docker-compose guard behavioral, 3 decorator callback callback regression incl. concurrent + multi-turn isolation; replaced 7 obsolete _last_usage / _extract_usage tests with 5 callback-shape tests)",
+          "quality_gates_post_round_2": {
+            "pytest_full_suite": "436 passed, 1 skipped (excluding 11 pre-existing http_tools failures, out of scope)",
+            "mypy_src_tests": "no issues (119 files)",
+            "ruff_src_tests": "all checks passed",
+            "openspec_strict": "valid"
+          }
         }
       ]
     },
@@ -212,6 +278,8 @@
   "finding_trend": {
     "plan_iterate": [20, 0],
     "plan_review": [9, 0],
-    "impl_iterate": [1, 0]
+    "impl_iterate": [1, 0],
+    "impl_review_round_1": [9, 0],
+    "impl_review_round_2": [6, 2]
   }
 }

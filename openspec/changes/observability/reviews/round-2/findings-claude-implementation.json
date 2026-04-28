@@ -1,0 +1,48 @@
+{
+  "review_type": "implementation",
+  "target": "observability",
+  "vendor": "claude",
+  "round": 2,
+  "findings": [
+    {
+      "id": 1,
+      "type": "observability",
+      "criticality": "medium",
+      "description": "_extract_usage at src/assistant/harnesses/sdk/deep_agents.py:84 sums input/output tokens across EVERY message in result['messages']. For the current bootstrap deepagents pattern (no checkpointer, no MemoryStore-backed agent), result['messages'] contains only the input + the messages produced by THIS invoke call, so summing is correct. But once memory-architecture lands and a LangGraph MessagesState checkpointer is wired, result['messages'] will include the full conversation history; _extract_usage will then double-count tokens from prior turns on every subsequent invoke. The token-count Langfuse spans will inflate per-turn, breaking cost attribution (the very thing the proposal cited as motivation).",
+      "resolution": "Two viable directions. (a) Track per-invoke usage by stamping a token onto the input messages, then summing only messages that lack the token. (b) Use LangChain's get_usage_metadata_callback context manager (LangChain Core 0.3+) which scopes usage to the awaited block. Prefer (b) because it's the canonical LangChain integration point and works regardless of whether the agent is checkpointed. Add a regression test that runs a 2-turn conversation and asserts the second turn's emitted span tokens are NOT the sum across both turns.",
+      "disposition": "fix",
+      "file_path": "src/assistant/harnesses/sdk/deep_agents.py",
+      "line_range": {"start": 84, "end": 116}
+    },
+    {
+      "id": 2,
+      "type": "correctness",
+      "criticality": "low",
+      "description": "LangfuseProvider.start_span at src/assistant/telemetry/providers/langfuse.py runs cm.__exit__(None, None, None) in its finally block even when the user's code inside the `with` raised. The Langfuse SDK ctx-mgr cannot tell from those args whether the span ran cleanly or errored — it loses the ability to mark the span as failed. This is the contextmanager-as-generator gotcha: the user's exception comes through the yield, but my finally call passes None for exc_info. Existing first-class trace_* methods are unaffected because they swallow the SDK call inside _emit_observation's pass-only with-block (no user code).",
+      "resolution": "Capture (exc_type, exc_value, exc_tb) in the user-code try/except and pass them to cm.__exit__. Pattern: `exc_info: tuple[Any, Any, Any] = (None, None, None); try: yield obs; except BaseException as e: exc_info = (type(e), e, e.__traceback__); raise; finally: try: cm.__exit__(*exc_info) except Exception: ...`. Add a test that uses start_span to wrap a user-code that raises, then asserts the SDK observation saw the exception (via spy/fake).",
+      "disposition": "fix",
+      "file_path": "src/assistant/telemetry/providers/langfuse.py",
+      "line_range": {"start": 245, "end": 274}
+    },
+    {
+      "id": 3,
+      "type": "security",
+      "criticality": "low",
+      "description": "init-dummy-guard's host check uses grep -qE 'localhost|127\\.0\\.0\\.1' against the FULL NEXTAUTH_URL string. A non-local URL that happens to contain 'localhost' as a substring (e.g., NEXTAUTH_URL=http://prod.localhost-fixture.example.com or a query string ?host=localhost) would pass the guard and allow DUMMY-prefixed init values to seed a non-local instance. The risk is low because (a) operators don't normally craft such URLs and (b) the DUMMY- prefix is itself a visual marker. But the guard's promise is tight (refuse to start) and the implementation is loose.",
+      "resolution": "Tighten the regex to anchor on the host portion: extract the host with sed (e.g. `host=$$(printf '%s' \"$$NEXTAUTH_URL\" | sed -nE 's|^https?://([^/:]+).*|\\1|p')`) then test `[ \"$$host\" = localhost ] || [ \"$$host\" = 127.0.0.1 ]`. Add a test scenario for the substring-bypass case (e.g. NEXTAUTH_URL=http://localhost-fixture.example.com should FAIL the guard, not pass).",
+      "disposition": "fix",
+      "file_path": "docker-compose.langfuse.yml",
+      "line_range": {"start": 100, "end": 117}
+    },
+    {
+      "id": 4,
+      "type": "observability",
+      "criticality": "low",
+      "description": "_consume_usage at src/assistant/telemetry/decorators.py reads then attempts to clear self._last_usage. The clear is wrapped in `try: self_obj._last_usage = None except Exception: pass` to handle frozen models, but the only callers in this codebase are HarnessAdapter subclasses which never use frozen dataclasses. The defensive try is dead code today and adds confusion. If we keep it, the failure mode is silent — a frozen-model harness would see stale tokens emitted on subsequent calls. Either make the contract explicit and assert on attribute set, or drop the defensive try.",
+      "resolution": "Drop the try/except around the attribute set. If a future harness uses a frozen model, the AttributeError will surface immediately and force the harness author to update _consume_usage's contract. That's a better failure mode than silent staleness.",
+      "disposition": "fix",
+      "file_path": "src/assistant/telemetry/decorators.py",
+      "line_range": {"start": 192, "end": 199}
+    }
+  ]
+}

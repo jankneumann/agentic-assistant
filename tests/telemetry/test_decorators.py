@@ -166,14 +166,20 @@ async def test_traced_harness_uses_assistant_ctx_when_persona_attr_missing(
 
 
 @pytest.mark.asyncio
-async def test_traced_harness_emits_token_counts_from_last_usage(
+async def test_traced_harness_captures_tokens_via_usage_callback(
     monkeypatch: pytest.MonkeyPatch, spy_provider: Any
 ) -> None:
-    """When the harness body stashes ``self._last_usage``, the decorator
-    forwards those token counts to ``trace_llm_call``. Iter-2 fix for
-    IMPL_REVIEW round 1 finding A — the spec (req observability.3)
-    requires ``input_tokens`` / ``output_tokens`` on the trace call.
+    """Iter-2 round-2 fix (claude #1 + gemini #2): tokens are captured
+    via LangChain Core's ``get_usage_metadata_callback`` context manager
+    rather than a ``self._last_usage`` instance attribute. The decorator
+    must read ``cb.usage_metadata`` and forward the per-model token
+    counts to ``trace_llm_call`` (req observability.3).
     """
+    from langchain_core.language_models.fake_chat_models import (
+        GenericFakeChatModel,
+    )
+    from langchain_core.messages import AIMessage
+
     from assistant.telemetry.decorators import traced_harness
 
     _install_spy(monkeypatch, spy_provider)
@@ -181,24 +187,34 @@ async def test_traced_harness_emits_token_counts_from_last_usage(
     class H(_FakeHarness):
         @traced_harness
         async def invoke(self, agent: Any, message: str) -> str:
-            self._last_usage = (123, 456)
+            ai = AIMessage(
+                content="hello",
+                usage_metadata={
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "total_tokens": 150,
+                },
+                response_metadata={"model_name": "fake-callback-test"},
+            )
+            llm = GenericFakeChatModel(messages=iter([ai]))
+            await llm.ainvoke("hi")
             return "ok"
 
     h = H("personal", "assistant", "x:y")
-    await h.invoke(object(), "hi")
+    await h.invoke(object(), "go")
 
     call = spy_provider.calls["trace_llm_call"][0]
-    assert call["input_tokens"] == 123
-    assert call["output_tokens"] == 456
+    assert call["input_tokens"] == 100
+    assert call["output_tokens"] == 50
 
 
 @pytest.mark.asyncio
-async def test_traced_harness_emits_zero_tokens_when_usage_not_recorded(
+async def test_traced_harness_emits_zero_tokens_when_no_llm_fires(
     monkeypatch: pytest.MonkeyPatch, spy_provider: Any
 ) -> None:
-    """When the harness body does not set ``_last_usage``, the decorator
-    records ``(0, 0)`` rather than ``None`` — this satisfies req
-    observability.3's MUST-include contract without inventing values.
+    """When the awaited body does not invoke any LLM, the decorator
+    records ``(0, 0)`` rather than ``None`` — req observability.3's
+    MUST-include contract is satisfied without inventing values.
     """
     from assistant.telemetry.decorators import traced_harness
 
@@ -225,7 +241,7 @@ async def test_traced_harness_emits_zero_tokens_on_exception_path(
     monkeypatch: pytest.MonkeyPatch, spy_provider: Any
 ) -> None:
     """The exception path also records concrete int tokens (0/0 when
-    nothing was stashed), not ``None``.
+    no LLM fired before the failure), not ``None``.
     """
     from assistant.telemetry.decorators import traced_harness
 
@@ -248,25 +264,41 @@ async def test_traced_harness_emits_zero_tokens_on_exception_path(
 
 
 @pytest.mark.asyncio
-async def test_traced_harness_clears_last_usage_after_consume(
+async def test_traced_harness_does_not_accumulate_tokens_across_invocations(
     monkeypatch: pytest.MonkeyPatch, spy_provider: Any
 ) -> None:
-    """Each invocation reads + clears ``_last_usage`` so a subsequent
-    invoke that fails to record fresh usage does not see stale values.
+    """Iter-2 round-2 regression test (claude #1): once a checkpointer
+    -backed agent re-uses the same harness instance across turns, the
+    second invocation's emitted tokens MUST reflect ONLY the second
+    body's LLM calls — not the sum across both turns. This is the
+    failure mode the previous ``_extract_usage`` walk-all-messages
+    approach would hit; the callback context manager is bounded to the
+    current ``with`` block so prior-turn AIMessages are out of scope.
     """
+    from langchain_core.language_models.fake_chat_models import (
+        GenericFakeChatModel,
+    )
+    from langchain_core.messages import AIMessage
+
     from assistant.telemetry.decorators import traced_harness
 
     _install_spy(monkeypatch, spy_provider)
 
     class H(_FakeHarness):
-        recorded_first_call = False
-
         @traced_harness
         async def invoke(self, agent: Any, message: str) -> str:
-            if not self.recorded_first_call:
-                self._last_usage = (10, 20)
-                self.recorded_first_call = True
-            # Second invocation does NOT set _last_usage.
+            tokens = (10, 20) if message == "first" else (3, 5)
+            ai = AIMessage(
+                content="ok",
+                usage_metadata={
+                    "input_tokens": tokens[0],
+                    "output_tokens": tokens[1],
+                    "total_tokens": tokens[0] + tokens[1],
+                },
+                response_metadata={"model_name": "fake-multi-turn"},
+            )
+            llm = GenericFakeChatModel(messages=iter([ai]))
+            await llm.ainvoke(message)
             return "ok"
 
     h = H("personal", "assistant", "x:y")
@@ -274,62 +306,99 @@ async def test_traced_harness_clears_last_usage_after_consume(
     await h.invoke(object(), "second")
 
     calls = spy_provider.calls["trace_llm_call"]
+    # Each turn reports its own tokens, never the running total.
     assert calls[0]["input_tokens"] == 10
     assert calls[0]["output_tokens"] == 20
-    # Stale stash MUST not leak into the second call.
-    assert calls[1]["input_tokens"] == 0
-    assert calls[1]["output_tokens"] == 0
+    assert calls[1]["input_tokens"] == 3
+    assert calls[1]["output_tokens"] == 5
 
 
-def test_extract_usage_handles_langchain_core_usage_metadata() -> None:
-    """``_extract_usage`` reads the modern ``usage_metadata`` attribute
-    that LangChain Core 0.3+ puts on ``AIMessage``.
+@pytest.mark.asyncio
+async def test_traced_harness_isolates_tokens_across_concurrent_invocations(
+    monkeypatch: pytest.MonkeyPatch, spy_provider: Any
+) -> None:
+    """Iter-2 round-2 regression test (gemini #2): under
+    ``asyncio.gather`` the previous ``self._last_usage`` instance
+    attribute would race because all tasks shared the same harness
+    object. With ``get_usage_metadata_callback`` each awaited body runs
+    inside its own callback (PEP 567 ContextVar) so each emitted span
+    sees ONLY its own token counts. This test spawns three concurrent
+    invocations on the same harness with distinct token amounts and
+    asserts the emitted spans pair them correctly (multiset equality).
     """
-    from assistant.harnesses.sdk.deep_agents import _extract_usage
+    import asyncio
 
-    msg = type("Msg", (), {})()
-    msg.usage_metadata = {"input_tokens": 7, "output_tokens": 11}
-    in_tok, out_tok = _extract_usage([msg])
-    assert (in_tok, out_tok) == (7, 11)
+    from langchain_core.language_models.fake_chat_models import (
+        GenericFakeChatModel,
+    )
+    from langchain_core.messages import AIMessage
+
+    from assistant.telemetry.decorators import traced_harness
+
+    _install_spy(monkeypatch, spy_provider)
+
+    class H(_FakeHarness):
+        @traced_harness
+        async def invoke(self, agent: Any, message: str) -> str:
+            # Token amount encoded in ``message`` so each task is distinct.
+            tok = int(message)
+            ai = AIMessage(
+                content="ok",
+                usage_metadata={
+                    "input_tokens": tok,
+                    "output_tokens": tok * 2,
+                    "total_tokens": tok * 3,
+                },
+                response_metadata={"model_name": f"fake-concurrent-{tok}"},
+            )
+            # Yield the loop so tasks interleave before reading the cb.
+            await asyncio.sleep(0)
+            llm = GenericFakeChatModel(messages=iter([ai]))
+            await llm.ainvoke(message)
+            return "ok"
+
+    h = H("personal", "assistant", "x:y")
+    await asyncio.gather(*(h.invoke(object(), str(i)) for i in (7, 11, 13)))
+
+    calls = spy_provider.calls["trace_llm_call"]
+    assert len(calls) == 3
+    pairs = sorted((c["input_tokens"], c["output_tokens"]) for c in calls)
+    # Each task's (in, out) MUST appear exactly once — no race-induced
+    # duplication or zero-leakage.
+    assert pairs == [(7, 14), (11, 22), (13, 26)]
 
 
-def test_extract_usage_handles_legacy_response_metadata_token_usage() -> None:
-    """Older LangChain releases stash usage under
-    ``response_metadata.token_usage`` with OpenAI-style keys.
+def test_sum_usage_metadata_aggregates_across_model_entries() -> None:
+    """``_sum_usage_metadata`` walks every model key in ``cb.usage_metadata``
+    and sums input/output tokens — covers the deepagents fan-out case
+    where planner and executor sub-models each emit their own entry.
     """
-    from assistant.harnesses.sdk.deep_agents import _extract_usage
+    from assistant.telemetry.decorators import _sum_usage_metadata
 
-    msg = type("Msg", (), {})()
-    msg.response_metadata = {
-        "token_usage": {"prompt_tokens": 13, "completion_tokens": 17}
+    cb_data = {
+        "claude-sonnet-4": {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+        "gpt-4o-mini": {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12},
     }
-    in_tok, out_tok = _extract_usage([msg])
-    assert (in_tok, out_tok) == (13, 17)
+    assert _sum_usage_metadata(cb_data) == (15, 27)
 
 
-def test_extract_usage_sums_across_multiple_messages() -> None:
-    """When a result contains multiple assistant messages (e.g. tool-use
-    iterations), token counts MUST be summed.
-    """
-    from assistant.harnesses.sdk.deep_agents import _extract_usage
+def test_sum_usage_metadata_returns_zeros_for_empty_dict() -> None:
+    """Empty dict (no LLM call fired in the awaited block) yields (0, 0)."""
+    from assistant.telemetry.decorators import _sum_usage_metadata
 
-    m1 = type("Msg", (), {})()
-    m1.usage_metadata = {"input_tokens": 5, "output_tokens": 6}
-    m2 = type("Msg", (), {})()
-    m2.usage_metadata = {"input_tokens": 7, "output_tokens": 8}
-    in_tok, out_tok = _extract_usage([m1, m2])
-    assert (in_tok, out_tok) == (12, 14)
+    assert _sum_usage_metadata({}) == (0, 0)
 
 
-def test_extract_usage_returns_zeros_when_no_usage_present() -> None:
-    """Messages with neither modern nor legacy usage metadata yield
-    ``(0, 0)`` — never ``None``.
-    """
-    from assistant.harnesses.sdk.deep_agents import _extract_usage
+def test_sum_usage_metadata_handles_missing_token_keys() -> None:
+    """Robust against entries that omit ``input_tokens`` / ``output_tokens``
+    (e.g. SDKs that surface only ``total_tokens``)."""
+    from assistant.telemetry.decorators import _sum_usage_metadata
 
-    msg = type("Msg", (), {})()
-    in_tok, out_tok = _extract_usage([msg])
-    assert (in_tok, out_tok) == (0, 0)
+    cb_data: dict[str, Any] = {
+        "model-a": {"total_tokens": 99},
+        "model-b": {"input_tokens": 4, "output_tokens": 6},
+    }
+    assert _sum_usage_metadata(cb_data) == (4, 6)
 
 
 # ---------------------------------------------------------------------------

@@ -41,6 +41,8 @@ import time
 from collections.abc import Callable, Coroutine
 from typing import Any
 
+from langchain_core.callbacks import get_usage_metadata_callback
+
 from assistant.telemetry.context import assistant_ctx, get_assistant_ctx
 from assistant.telemetry.factory import get_observability_provider
 
@@ -93,10 +95,19 @@ def _resolve_persona_role(self_obj: Any) -> tuple[str | None, str | None]:
 def _resolve_model(self_obj: Any) -> str:
     """Pull the harness-configured model id from ``self.persona.harnesses``.
 
-    Mirrors the lookup in :class:`DeepAgentsHarness.create_agent`. If
-    the harness shape doesn't expose a model under any known key, fall
-    back to ``"unknown"`` so the span emission never raises.
+    Mirrors the lookup in :class:`DeepAgentsHarness.create_agent`.
+    Resolution order:
+    1. ``self._active_model`` — the harness's own active model id, set by
+       concrete adapters at ``create_agent`` time so spans report the
+       real default even when the persona omits a model override
+       (Iter-2 round-2 fix gemini #5).
+    2. ``self.persona.harnesses[<harness_name>].model`` — explicit
+       per-persona override.
+    3. ``"unknown"`` — final fallback so span emission never raises.
     """
+    active = getattr(self_obj, "_active_model", None)
+    if isinstance(active, str) and active:
+        return active
     persona = getattr(self_obj, "persona", None)
     if persona is None:
         return "unknown"
@@ -122,6 +133,28 @@ def _resolve_model(self_obj: Any) -> str:
     return "unknown"
 
 
+def _sum_usage_metadata(usage_metadata: dict[str, Any]) -> tuple[int, int]:
+    """Aggregate input/output tokens across every model entry in ``cb.usage_metadata``.
+
+    LangChain Core's :func:`get_usage_metadata_callback` yields a
+    callback whose ``usage_metadata`` is keyed by model name with
+    per-model dicts of the form ``{"input_tokens": int,
+    "output_tokens": int, "total_tokens": int, ...}``. A single deep-
+    agents invocation may fan out across multiple model entries (tool
+    sub-models, planner vs executor splits) so we sum across all keys
+    to satisfy req observability.3 ("MUST include input_tokens,
+    output_tokens"). Returns ``(0, 0)`` when no LLM call fired during
+    the awaited block.
+    """
+    in_tok = 0
+    out_tok = 0
+    for entry in usage_metadata.values():
+        if isinstance(entry, dict):
+            in_tok += int(entry.get("input_tokens") or 0)
+            out_tok += int(entry.get("output_tokens") or 0)
+    return in_tok, out_tok
+
+
 def traced_harness[R](
     fn: Callable[..., Coroutine[Any, Any, R]],
 ) -> Callable[..., Coroutine[Any, Any, R]]:
@@ -130,6 +163,16 @@ def traced_harness[R](
     Per the harness-adapter spec, this decorator MUST be applied to
     each concrete subclass — applying it to the abstract base is dead
     code because subclasses override ``invoke`` without ``super()``.
+
+    Token usage is captured via LangChain Core's
+    :func:`get_usage_metadata_callback` context manager. The callback
+    is task-local (PEP 567 ``ContextVar`` semantics) so concurrent
+    invocations spawned via ``asyncio.gather`` see independent counts,
+    and only LLM calls fired *inside* the awaited body are counted —
+    so once a checkpointer-backed agent re-uses the same harness
+    instance across turns, prior-turn tokens are NOT double-counted
+    (Iter-2 round-2 fix: gemini #2 race-condition + claude #1 multi-
+    turn over-counting, both addressed by this single refactor).
     """
 
     @functools.wraps(fn)
@@ -137,12 +180,20 @@ def traced_harness[R](
         persona, role = _resolve_persona_role(self_obj)
         model = _resolve_model(self_obj)
         provider = get_observability_provider()
+        in_tok = 0
+        out_tok = 0
         start = time.perf_counter()
         try:
-            result = await fn(self_obj, *args, **kwargs)
+            with get_usage_metadata_callback() as cb:
+                try:
+                    result = await fn(self_obj, *args, **kwargs)
+                finally:
+                    # Read usage *before* the ctx-mgr exits; on the
+                    # exception path this captures whatever LLM calls
+                    # completed before the failure (best-effort).
+                    in_tok, out_tok = _sum_usage_metadata(cb.usage_metadata)
         except BaseException as exc:
             duration_ms = (time.perf_counter() - start) * 1000.0
-            in_tok, out_tok = _consume_usage(self_obj)
             provider.trace_llm_call(
                 model=model,
                 persona=persona,
@@ -155,7 +206,6 @@ def traced_harness[R](
             )
             raise
         duration_ms = (time.perf_counter() - start) * 1000.0
-        in_tok, out_tok = _consume_usage(self_obj)
         provider.trace_llm_call(
             model=model,
             persona=persona,
@@ -169,33 +219,6 @@ def traced_harness[R](
         return result
 
     return wrapper
-
-
-def _consume_usage(self_obj: Any) -> tuple[int, int]:
-    """Read and clear ``self._last_usage`` (set by harness invoke).
-
-    Returns ``(0, 0)`` when no usage was recorded — happens for the MS
-    Agent stub which raises before recording, and for any harness whose
-    underlying SDK does not expose token-count metadata. Returning a
-    deterministic int pair satisfies req observability.3 (the trace
-    call MUST include ``input_tokens`` / ``output_tokens``) without
-    forcing the decorator to invent values.
-    """
-    usage = getattr(self_obj, "_last_usage", None)
-    if (
-        isinstance(usage, tuple)
-        and len(usage) == 2
-        and all(isinstance(n, int) for n in usage)
-    ):
-        # Clear so a subsequent invoke does not see a stale stash if the
-        # harness fails to set it (e.g. early-return paths). Best-effort:
-        # silently ignore if the attribute is read-only.
-        try:
-            self_obj._last_usage = None
-        except Exception:  # pragma: no cover — defensive against frozen models
-            pass
-        return usage
-    return (0, 0)
 
 
 def traced_delegation[R](

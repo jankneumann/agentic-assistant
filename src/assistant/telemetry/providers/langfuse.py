@@ -310,18 +310,27 @@ class LangfuseProvider:
             )
             yield None
             return
+        # Forward exception info to ``cm.__exit__`` so the Langfuse SDK
+        # can mark the span as failed when the user's code inside the
+        # ``with`` block raises. Iter-2 round-2 fix (claude #2): the
+        # previous implementation always passed ``(None, None, None)``,
+        # erasing the failure signal at the SDK boundary.
+        exc_info: tuple[Any, Any, Any] = (None, None, None)
         try:
             yield obs
+        except BaseException as e:
+            exc_info = (type(e), e, e.__traceback__)
+            raise
         finally:
             try:
-                cm.__exit__(None, None, None)
-            except Exception as exc:
+                cm.__exit__(*exc_info)
+            except Exception as exit_exc:
                 logger.warning(
                     "Telemetry: Langfuse start_span %r exit failed "
                     "(%s: %s); ignored.",
                     name,
-                    type(exc).__name__,
-                    exc,
+                    type(exit_exc).__name__,
+                    exit_exc,
                 )
 
     def flush(self) -> None:
