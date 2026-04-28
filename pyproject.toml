@@ -22,7 +22,12 @@ dependencies = [
     "deepagents>=0.0.12",
     "langchain>=0.3",
     "langchain-anthropic>=0.2",
-    "langchain-core>=0.3",
+    # langchain-core>=0.3.49 introduced get_usage_metadata_callback,
+    # which traced_harness uses (via _scoped_usage_callback) to capture
+    # token counts per invocation. Earlier 0.3.x releases would
+    # ImportError on assistant.telemetry.decorators. IMPL_REVIEW round-3
+    # codex finding #1.
+    "langchain-core>=0.3.49",
 ]
 
 [project.optional-dependencies]

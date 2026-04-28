@@ -1,0 +1,60 @@
+{
+  "review_type": "implementation",
+  "target": "observability",
+  "vendor": "codex",
+  "round": 3,
+  "findings": [
+    {
+      "id": 1,
+      "type": "compatibility",
+      "criticality": "high",
+      "description": "The round-2 callback refactor imports `get_usage_metadata_callback` from `langchain_core.callbacks` at import time, but `pyproject.toml` still allows `langchain-core>=0.3`. The installed LangChain source marks this helper as added in 0.3.49; a fresh resolver may legally install langchain-core 0.3.0..0.3.48 and then `assistant.telemetry.decorators` will fail to import, breaking both harness adapters. Evidence: src/assistant/telemetry/decorators.py:37 imports the helper unconditionally, while pyproject.toml:25 permits versions before the helper exists.",
+      "resolution": "Raise the dependency floor in pyproject.toml:25 to `langchain-core>=0.3.49` (or a newer tested minimum) and refresh uv.lock. Add an import smoke test or dependency-bound check covering `assistant.telemetry.decorators` under the declared minimum.",
+      "disposition": "fix",
+      "file_path": "pyproject.toml",
+      "line_range": {
+        "start": 25,
+        "end": 25
+      }
+    },
+    {
+      "id": 2,
+      "type": "performance",
+      "criticality": "medium",
+      "description": "`traced_harness` calls `get_usage_metadata_callback()` on every invocation. In the installed LangChain Core 1.2.28 implementation, that context manager registers a new global configure hook every time it is entered and never unregisters it; I reproduced `_configure_hooks` growing by 3 after three clean callback contexts. On exception, the LangChain generator also does not clear its ContextVar because the exception is thrown through its `yield`; I reproduced a later `GenericFakeChatModel.invoke()` mutating the callback from a previously failed context. The current tests cover concurrent token isolation but not global hook growth or exception cleanup, so long-running assistant sessions accumulate callback hooks and failed invocations leave stale active callbacks in the current task.",
+      "resolution": "Replace the direct per-call `get_usage_metadata_callback()` use at src/assistant/telemetry/decorators.py:187 with a project-owned context manager that registers one module-level ContextVar hook once, sets a fresh `UsageMetadataCallbackHandler` per invocation, and resets the ContextVar token in a `finally`. Add regression tests in tests/telemetry/test_decorators.py asserting hook count remains stable across repeated invokes and that a failed invoke does not collect usage from a later LLM call outside the traced block.",
+      "disposition": "fix",
+      "file_path": "src/assistant/telemetry/decorators.py",
+      "line_range": {
+        "start": 186,
+        "end": 195
+      }
+    },
+    {
+      "id": 3,
+      "type": "spec_gap",
+      "criticality": "medium",
+      "description": "The dev-infrastructure spec requires the guard failure message to identify which `LANGFUSE_INIT_*` env var(s) carried the DUMMY prefix (openspec/changes/observability/specs/observability/spec.md:343). The implementation iterates only over values and emits the generic message `LANGFUSE_INIT_* contains DUMMY-prefixed values`, so operators cannot tell which variable needs replacement. The round-2 shell tests assert only `REFUSING` in stderr and do not cover the required variable-name diagnostic.",
+      "resolution": "Change docker-compose.langfuse.yml:121-124 to iterate over `NAME=VALUE` pairs, accumulate or immediately report the matching variable name(s), and include those names in the refusal message. Extend tests/telemetry/test_docker_compose.py around lines 429-434 to assert stderr contains the exact offending env var, e.g. `LANGFUSE_INIT_USER_PASSWORD`.",
+      "disposition": "fix",
+      "file_path": "docker-compose.langfuse.yml",
+      "line_range": {
+        "start": 121,
+        "end": 124
+      }
+    },
+    {
+      "id": 4,
+      "type": "compatibility",
+      "criticality": "low",
+      "description": "The tightened guard host parser only accepts `localhost` and `127.0.0.1`; bracketed IPv6 loopback URLs such as `http://[::1]:3100` are parsed as host `[` by the sed expression at docker-compose.langfuse.yml:111 and will be rejected even though they are local loopback. This is not a security bypass, but it is a local-dev compatibility edge case the new round-2 tests do not cover.",
+      "resolution": "Update the host extraction in docker-compose.langfuse.yml:111-112 to handle bracketed IPv6 literals and accept `::1` / `[::1]` as local loopback, then add a shell regression test in tests/telemetry/test_docker_compose.py for `NEXTAUTH_URL=http://[::1]:3100` with DUMMY init values.",
+      "disposition": "fix",
+      "file_path": "docker-compose.langfuse.yml",
+      "line_range": {
+        "start": 111,
+        "end": 112
+      }
+    }
+  ]
+}

@@ -402,6 +402,80 @@ def test_sum_usage_metadata_handles_missing_token_keys() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Round-3 codex finding #2: per-call get_usage_metadata_callback() leaks a
+# fresh configure-hook into LangChain's global ``_configure_hooks`` list AND
+# fails to reset its ContextVar on the exception path. We replaced it with
+# a project-owned ``_scoped_usage_callback`` that registers exactly one
+# hook at module import and uses ``try/finally``. These tests pin the
+# invariant.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_traced_harness_does_not_grow_configure_hooks(
+    monkeypatch: pytest.MonkeyPatch, spy_provider: Any
+) -> None:
+    """Round-3 codex #2 regression: each ``traced_harness`` invocation
+    MUST NOT register a new global configure hook in
+    ``langchain_core.tracers.context._configure_hooks``. Previously,
+    using ``get_usage_metadata_callback()`` per-call leaked one hook
+    per invocation; over a long-running session this turns into
+    unbounded handler-list growth.
+    """
+    import langchain_core.tracers.context as tc
+
+    from assistant.telemetry.decorators import traced_harness
+
+    _install_spy(monkeypatch, spy_provider)
+
+    class H(_FakeHarness):
+        @traced_harness
+        async def invoke(self, agent: Any, message: str) -> str:
+            return "ok"
+
+    h = H("personal", "assistant", "x:y")
+    initial = len(tc._configure_hooks)
+    for _ in range(5):
+        await h.invoke(object(), "hi")
+    assert len(tc._configure_hooks) == initial, (
+        f"traced_harness leaked {len(tc._configure_hooks) - initial} "
+        f"configure hook(s) over 5 invocations"
+    )
+
+
+@pytest.mark.asyncio
+async def test_traced_harness_resets_callback_var_on_exception_path(
+    monkeypatch: pytest.MonkeyPatch, spy_provider: Any
+) -> None:
+    """Round-3 codex #2 regression: when the awaited body raises, the
+    ``_usage_callback_var`` ContextVar MUST be reset before
+    ``traced_harness`` returns. Otherwise a later, untraced LLM
+    invocation in the same task would attribute its usage to a
+    discarded callback handler.
+    """
+    from assistant.telemetry.decorators import (
+        _usage_callback_var,
+        traced_harness,
+    )
+
+    _install_spy(monkeypatch, spy_provider)
+
+    class H(_FakeHarness):
+        @traced_harness
+        async def invoke(self, agent: Any, message: str) -> str:
+            assert _usage_callback_var.get() is not None
+            raise RuntimeError("boom")
+
+    h = H("personal", "assistant", "x:y")
+    with pytest.raises(RuntimeError):
+        await h.invoke(object(), "hi")
+    # After traced_harness has unwound, the contextvar MUST be cleared
+    # so a follow-up LLM call in the same task does not get its usage
+    # captured by a stale, discarded handler.
+    assert _usage_callback_var.get() is None
+
+
+# ---------------------------------------------------------------------------
 # @traced_delegation
 # ---------------------------------------------------------------------------
 

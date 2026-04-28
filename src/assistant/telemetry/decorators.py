@@ -38,13 +38,47 @@ from __future__ import annotations
 import functools
 import hashlib
 import time
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
-from langchain_core.callbacks import get_usage_metadata_callback
+from langchain_core.callbacks.usage import UsageMetadataCallbackHandler
+from langchain_core.tracers.context import register_configure_hook
 
 from assistant.telemetry.context import assistant_ctx, get_assistant_ctx
 from assistant.telemetry.factory import get_observability_provider
+
+# Project-owned ContextVar for token-usage capture. Registered with
+# LangChain Core's configure-hook list ONCE at module import time so
+# repeated harness invocations do not grow ``_configure_hooks`` (each
+# call to the public ``get_usage_metadata_callback`` would otherwise
+# register a fresh hook AND fail to reset its ContextVar on the
+# exception path because the helper's reset line follows ``yield``
+# without a ``finally``). IMPL_REVIEW round-3 codex finding #2.
+_usage_callback_var: ContextVar[UsageMetadataCallbackHandler | None] = ContextVar(
+    "assistant_usage_metadata_callback", default=None
+)
+register_configure_hook(_usage_callback_var, inheritable=True)
+
+
+@contextmanager
+def _scoped_usage_callback() -> Iterator[UsageMetadataCallbackHandler]:
+    """Project-owned replacement for ``get_usage_metadata_callback``.
+
+    Reuses the module-level ``_usage_callback_var`` (registered exactly
+    once at import) so repeated invocations do not append to
+    LangChain's ``_configure_hooks`` list. Uses ``try/finally`` so the
+    ContextVar token is always reset, including on the exception path —
+    a failed harness invocation will not leak its callback into a
+    later, unrelated LLM call within the same task.
+    """
+    cb = UsageMetadataCallbackHandler()
+    token = _usage_callback_var.set(cb)
+    try:
+        yield cb
+    finally:
+        _usage_callback_var.reset(token)
 
 # Spec: delegation-spawner — task hashing threshold is exactly 256.
 _TASK_HASH_THRESHOLD = 256
@@ -164,15 +198,18 @@ def traced_harness[R](
     each concrete subclass — applying it to the abstract base is dead
     code because subclasses override ``invoke`` without ``super()``.
 
-    Token usage is captured via LangChain Core's
-    :func:`get_usage_metadata_callback` context manager. The callback
-    is task-local (PEP 567 ``ContextVar`` semantics) so concurrent
-    invocations spawned via ``asyncio.gather`` see independent counts,
-    and only LLM calls fired *inside* the awaited body are counted —
-    so once a checkpointer-backed agent re-uses the same harness
-    instance across turns, prior-turn tokens are NOT double-counted
-    (Iter-2 round-2 fix: gemini #2 race-condition + claude #1 multi-
-    turn over-counting, both addressed by this single refactor).
+    Token usage is captured via :func:`_scoped_usage_callback` (a
+    project-owned wrapper over LangChain's ``UsageMetadataCallbackHandler``
+    that registers its configure hook exactly once at module import).
+    The callback is task-local (PEP 567 ``ContextVar`` semantics) so
+    concurrent invocations spawned via ``asyncio.gather`` see independent
+    counts, and only LLM calls fired *inside* the awaited body are
+    counted — so once a checkpointer-backed agent re-uses the same
+    harness instance across turns, prior-turn tokens are NOT double-
+    counted (Iter-2 round-2 fix: gemini #2 race-condition + claude #1
+    multi-turn over-counting). The project-owned wrapper additionally
+    avoids the global hook-leak that the public LangChain helper would
+    cause when invoked per-call (round-3 codex finding #2).
     """
 
     @functools.wraps(fn)
@@ -184,7 +221,7 @@ def traced_harness[R](
         out_tok = 0
         start = time.perf_counter()
         try:
-            with get_usage_metadata_callback() as cb:
+            with _scoped_usage_callback() as cb:
                 try:
                     result = await fn(self_obj, *args, **kwargs)
                 finally:
