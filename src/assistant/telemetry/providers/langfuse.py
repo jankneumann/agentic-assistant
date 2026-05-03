@@ -71,7 +71,7 @@ class LangfuseProvider:
         Per Context7-verified Langfuse Python SDK v3 API, the client
         constructor takes ``base_url`` (not ``host``) for the API host.
         """
-        from langfuse import Langfuse  # type: ignore[import-not-found]
+        from langfuse import Langfuse  # type: ignore[import-not-found, unused-ignore]
 
         self._client = Langfuse(
             public_key=self._config.public_key,
