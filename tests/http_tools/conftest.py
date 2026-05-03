@@ -2,8 +2,8 @@
 
 Exposes:
 
-- ``fixtures_dir``    — path to the OpenAPI fixture directory under
-  ``openspec/changes/http-tools-layer/contracts/fixtures/``.
+- ``fixtures_dir``    — path to the OpenAPI fixture directory at
+  ``tests/http_tools/fixtures/``.
 - ``load_fixture``    — callable that loads a fixture file by name and
   returns the parsed JSON payload.
 - ``httpserver``      — re-exported from ``pytest_httpserver`` so tests
@@ -27,15 +27,7 @@ import pytest
 # top-level ``tests/`` directory.
 
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_FIXTURES_DIR = (
-    _REPO_ROOT
-    / "openspec"
-    / "changes"
-    / "http-tools-layer"
-    / "contracts"
-    / "fixtures"
-)
+_FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
 @pytest.fixture(scope="session")
