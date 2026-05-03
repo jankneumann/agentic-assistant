@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "change_id": "observability",
-  "current_phase": "SUBMIT_PR",
-  "previous_phase": "VALIDATE",
+  "current_phase": "DONE",
+  "previous_phase": "SUBMIT_PR",
   "resumed_at": "2026-04-25T00:00:00Z",
   "worktree_path": "/Users/jankneumann/Coding/agentic-assistant/.git-worktrees/observability",
   "feature_branch": "openspec/observability",
@@ -233,7 +233,21 @@
       "result": "PASS"
     },
     "SUBMIT_PR": {
-      "status": "pending"
+      "status": "completed",
+      "completed_at": "2026-05-03T00:00:00Z",
+      "pr_url": "https://github.com/jankneumann/agentic-assistant/pull/21",
+      "pr_number": 21,
+      "followup_issue_url": "https://github.com/jankneumann/agentic-assistant/issues/22",
+      "followup_issue_number": 22,
+      "commits_pushed": [
+        "55196af",
+        "427c92f",
+        "16c6e06",
+        "8464572",
+        "bb5deec",
+        "b153ffb"
+      ],
+      "merge_commit": null
     }
   },
   "vendor_participation": {
@@ -283,5 +297,20 @@
       4,
       0
     ]
+  },
+  "final_summary": {
+    "total_phases_completed": 8,
+    "total_review_rounds": 4,
+    "plan_review_rounds": 1,
+    "impl_review_rounds": 3,
+    "plan_findings_total": 29,
+    "impl_findings_total": 38,
+    "all_findings_total": 67,
+    "fixes_applied": 28,
+    "dismissed_via_context7": 2,
+    "deferred_followups": 1,
+    "pr": 21,
+    "followup_issue": 22,
+    "awaiting_human_approval": true
   }
 }
