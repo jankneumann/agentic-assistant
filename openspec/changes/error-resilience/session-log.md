@@ -30,3 +30,27 @@
 
 ### Context
 Planning P9 of the OpenSpec roadmap (`error-resilience`) under autopilot. P3 (http-tools-layer) is archived, providing the call-sites this change wraps. P4 (observability) is archived, providing the wrapping pattern (`wrap_http_tool`) inside which the new resilience decorator composes. Resilience is a cross-cutting theme — the design intentionally generalizes for P5, P14, and P17 adopters.
+
+---
+
+## Phase: Plan Iteration 1 (2026-05-04)
+
+**Agent**: claude-opus-4-7 (autopilot self-review) | **Session**: N/A
+
+### Decisions
+1. **Add D11 to design.md** — hard protocol break for `health_check` plus a docs/gotchas.md migration note, no deprecation shim. Tasks.md task 4.6 referenced D11 but design.md only had D1 through D10; correcting the inconsistency by writing the actual decision rationale instead of removing the reference.
+2. **Add D12 to design.md and a new SHALL requirement to error-resilience spec** — error strings stored on `CircuitBreaker.last_error`, `CircuitBreakerOpenError.last_error_summary`, and `HealthStatus.last_error` MUST pass through `assistant.telemetry.sanitize.sanitize` and be truncated at 200 characters with a literal three-character ellipsis suffix.
+3. **Add 429 retry scenario and asyncio-non-blocking-delay scenario** to the resilience decorator requirement — strengthens testability and pins the most common transient code (rate limiting) to a concrete behavioral assertion.
+
+### Alternatives Considered
+- **Removing the D11 reference from tasks.md** rather than writing the decision: rejected because the doc-note migration path is a real decision worth recording for future maintainers, not just a tasks.md artifact.
+- **Sanitizing only at the telemetry boundary** rather than at the breaker boundary: rejected because `CircuitBreakerOpenError` is an exception that may flow through `repr()` into logs before any telemetry layer sees it; the breaker is the right boundary.
+
+### Trade-offs
+- Accepted **a small import dependency from core/resilience.py to telemetry/sanitize.py** over **duplicating sanitize logic** because the existing chain already covers 15 patterns and is the canonical secret-redaction path.
+
+### Open Questions
+- [ ] Will the multi-vendor PLAN_REVIEW phase surface additional findings? (Resolved at PLAN_REVIEW; no action here.)
+
+### Context
+Self-review pass identified 3 findings at or above the medium threshold: 1 high consistency (D11 reference orphaned), 2 medium (security: error-string sanitization gap; completeness: missing 429 scenario). All three addressed in this iteration. A fourth low-severity finding about the tenacity version pin was dismissed after PyPI confirmed 9.1.4 is current and the `>=9.0,<10.0` pin is correct. `openspec validate --strict` passes after fixes.
