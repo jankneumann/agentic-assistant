@@ -167,6 +167,11 @@ class PersonaRegistry:
                     )
                     continue
 
+            # P9 error-resilience D11: install a one-shot runtime guard so
+            # the first call to health_check() validates the return type
+            # is HealthStatus. Catches private-submodule extensions that
+            # were not migrated when health_check() was widened from bool.
+            _install_health_check_conformance_guard(ext)
             extensions.append(ext)
         return extensions
 
@@ -197,6 +202,54 @@ def _load_private_extension(
         sys.modules.pop(mod_key, None)
         raise
     return mod.create_extension(config)
+
+
+def _install_health_check_conformance_guard(ext: Any) -> None:
+    """Wrap ``ext.health_check`` so the first call validates the return type.
+
+    Per OpenSpec change ``error-resilience`` D11: with the protocol widened
+    from ``bool`` to ``HealthStatus``, a private out-of-tree extension that
+    was not migrated would otherwise return ``True`` and only fail later in
+    a confusing way. This guard fires once on first probe, raising a
+    ``TypeError`` with a clear migration recipe.
+
+    The guard self-removes after the first successful conformance check so
+    subsequent probes pay no overhead.
+    """
+    from assistant.core.resilience import HealthStatus
+
+    original = getattr(ext, "health_check", None)
+    if original is None or not callable(original):
+        return
+
+    async def _guarded(*args: Any, **kwargs: Any) -> Any:
+        result = await original(*args, **kwargs)
+        if not isinstance(result, HealthStatus):
+            raise TypeError(
+                f"Extension {ext.name!r}: health_check() returned "
+                f"{type(result).__name__}, expected HealthStatus. "
+                "Migration: `return default_health_status_for_unimplemented(self.name)`. "
+                "See docs/gotchas.md for details.",
+            )
+        # Self-remove the guard so subsequent calls are unwrapped.
+        try:
+            ext.health_check = original
+        except (AttributeError, TypeError):
+            # Some Protocol-compatible objects may forbid attribute
+            # assignment (e.g. frozen dataclasses); the guard remains
+            # active and re-validates each call. Acceptable cost.
+            pass
+        return result
+
+    try:
+        ext.health_check = _guarded
+    except (AttributeError, TypeError):
+        # If we cannot install the guard at all, skip silently — mypy
+        # remains the static check, runtime is best-effort.
+        logger.debug(
+            "could not install health_check guard on extension %r",
+            getattr(ext, "name", "<unknown>"),
+        )
 
 
 def _env(var_name: str | None) -> str:

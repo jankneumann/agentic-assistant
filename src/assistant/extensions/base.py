@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
+from assistant.core.resilience import HealthStatus
+
 
 @runtime_checkable
 class Extension(Protocol):
@@ -18,4 +20,4 @@ class Extension(Protocol):
 
     def as_ms_agent_tools(self) -> list[Any]: ...
 
-    async def health_check(self) -> bool: ...
+    async def health_check(self) -> HealthStatus: ...

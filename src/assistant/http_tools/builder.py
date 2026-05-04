@@ -18,6 +18,7 @@ import httpx
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field, create_model
 
+from assistant.core.resilience import resilient_http
 from assistant.http_tools.openapi import ParsedOperation
 from assistant.http_tools.registry import tool_key
 from assistant.telemetry.tool_wrap import wrap_http_tool
@@ -264,10 +265,20 @@ def _build_tool(
                 return None
             return json.loads(raw)
 
+    # P9 error-resilience: wrap the inner coroutine with the resilience
+    # decorator before LangChain receives it. Composition order outside-in:
+    #   wrap_http_tool (observability summary span)
+    #     → resilient_http (retry + breaker + per-attempt start_span events)
+    #       → _coroutine (raw HTTP call)
+    # See design D9 in the error-resilience proposal.
+    resilient_coroutine = resilient_http(
+        breaker_key=f"http_tools:{source_name}",
+    )(_coroutine)
+
     # LangChain's StructuredTool.from_function stores the coroutine
     # and calls it with **validated_model.model_dump().
     tool = StructuredTool.from_function(
-        coroutine=_async_wrapper(_coroutine),
+        coroutine=_async_wrapper(resilient_coroutine),
         name=name,
         description=description,
         args_schema=args_schema,
@@ -280,7 +291,7 @@ def _build_tool(
 
 
 def _async_wrapper(
-    fn: Callable[..., Coroutine[Any, Any, Any]],
+    fn: Callable[..., Any],
 ) -> Callable[..., Coroutine[Any, Any, Any]]:
     """Pass-through wrapper that lets LangChain inspect the coroutine.
 

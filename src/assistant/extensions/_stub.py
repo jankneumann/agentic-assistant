@@ -9,6 +9,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from assistant.core.resilience import (
+    HealthStatus,
+    default_health_status_for_unimplemented,
+)
+
 
 class StubExtension:
     """Minimal Extension that satisfies the Protocol."""
@@ -26,5 +31,5 @@ class StubExtension:
     def as_ms_agent_tools(self) -> list[Any]:
         return []
 
-    async def health_check(self) -> bool:
-        return True
+    async def health_check(self) -> HealthStatus:
+        return default_health_status_for_unimplemented(self.name)

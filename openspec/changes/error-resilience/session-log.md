@@ -90,3 +90,36 @@ Self-review pass identified 3 findings at or above the medium threshold: 1 high 
 
 ### Context
 Multi-vendor PLAN_REVIEW (claude excluded; codex returned 7 findings, gemini returned 5). Two findings reached cross-vendor consensus: half-open concurrency, and WriteTimeout missing from default retryable. All 7 codex findings plus 1 high-severity gemini finding addressed in this iteration. Two low-severity findings (multi-byte truncation, Retry-After header) accepted with documented future-work rationale. openspec validate --strict still passes after fixes.
+
+---
+
+## Phase: Implementation (2026-05-04)
+
+**Agent**: claude-opus-4-7 (autopilot implement-feature) | **Session**: N/A
+
+### Decisions
+1. **Single-pass implementation across all 4 phases** — the change is small enough (about 380 LOC of new code) that splitting Phase 1 (core) and Phase 2 (apply) into separate commits would have produced WIP fragments. Implemented end-to-end, then verified by running phase-by-phase pytest.
+2. **Refactored discovery into _fetch_one_path plus _fetch_openapi** — the existing graceful-skip behavior swallowed transient errors silently, which is incompatible with the resilient_http retry contract. Split the per-path GET into a helper that raises on retryable failures so the decorator can drive retries; the outer loop catches both _OpenAPINotAtPath (4xx, non-retryable) and CircuitBreakerOpenError to preserve the D4 graceful-skip contract.
+3. **Discovered that JSONDecodeError is a subclass of ValueError** — the existing test_invalid_json_skipped asserts a substring of the warning. After my refactor, the bare ValueError handler caught the JSONDecodeError first, which produced a different warning message. Reordered except clauses so JSONDecodeError is caught before the generic ValueError handler.
+4. **Lazy provider lookup for span emission** — get_observability_provider may not exist or may fail at module import time, especially during test setup. Wrapped each emission helper in a try-except that logs at debug level and continues silently if the provider is unavailable. Resilience never breaks because telemetry is in a degraded state.
+5. **Conformance guard self-removes after first successful probe** — D11 said the guard should fire on first probe. Self-removal after success means subsequent probes pay no overhead; legacy bool returns still raise TypeError every time (since the guard is not removed on the failure path).
+
+### Alternatives Considered
+- Implementing the runtime conformance check inside Extension dunder-init-subclass: rejected because Protocol classes do not invoke that hook on Protocol-implementing classes (they implement the Protocol structurally, not via inheritance).
+- Subclassing httpx.AsyncClient (Approach B from the proposal): rejected during planning, confirmed correct during implementation. There is no clean place to inject per-source breaker scope at the client level.
+
+### Trade-offs
+- Accepted a registry singleton with no eviction policy over per-test fixture cleanup because the existing test files use _fresh_breaker(key) helpers that replace registry entries. Production memory growth is bounded by the persona tool-source list (typically less than 50 entries); revisit if dynamic source registration is added.
+- Accepted silent telemetry failure over propagating telemetry errors because resilience must never be broken by an observability degradation. Logged at debug level for forensics.
+
+### Open Questions
+- [ ] Should the fast-path registry lookup use a re-entrant lock to handle lookup-during-creation races more rigorously? Current implementation uses dict.setdefault which is GIL-atomic on CPython but may require revisiting under PyPy or other implementations.
+
+### Context
+Implementation across 4 phases:
+- Phase 1: core/resilience.py (about 350 LOC) plus 23 unit tests across test_resilience.py and test_resilience_decorator.py.
+- Phase 2: builder.py wraps _coroutine with resilient_http; discovery.py refactored into _fetch_one_path plus outer _fetch_openapi loop. 7 new integration tests; updated 1 existing test (json decode error path).
+- Phase 3: extensions/base.py protocol widened; _stub.py returns HealthStatus; persona.py installs runtime conformance guard. 11 new tests.
+- Phase 4: docs/gotchas.md G9 entry added; openspec/roadmap.md P9 status flipped to in-progress.
+
+Total quality gates: pytest 529 passed (1 skipped), mypy clean across src plus tests, ruff clean, openspec validate strict passes. All 22 tasks in tasks.md checked complete.

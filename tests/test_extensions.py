@@ -47,10 +47,18 @@ def test_stubs_return_empty_tool_lists(name: str) -> None:
 
 
 @pytest.mark.parametrize("name", STUB_NAMES)
-def test_stub_health_check_returns_true(name: str) -> None:
+def test_stub_health_check_returns_unknown_health_status(name: str) -> None:
+    # Updated for P9 error-resilience: the Extension protocol now returns
+    # HealthStatus instead of bool. Stubs return the standard "unknown"
+    # status until their real backend probes ship in P5/P14.
+    from assistant.core.resilience import HealthState, HealthStatus
+
     mod = import_module(f"assistant.extensions.{name}")
     instance = mod.create_extension({})
-    assert asyncio.run(instance.health_check()) is True
+    status = asyncio.run(instance.health_check())
+    assert isinstance(status, HealthStatus)
+    assert status.state is HealthState.UNKNOWN
+    assert status.reason == "extension is a stub"
 
 
 @pytest.mark.parametrize("name", STUB_NAMES)
