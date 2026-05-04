@@ -1,0 +1,73 @@
+version: 1
+change_id: error-resilience
+tier: sequential
+packages:
+  - id: wp-main
+    name: "error-resilience — full scope"
+    description: |
+      Single-package implementation of P9 error-resilience: core/resilience.py
+      module + apply at http_tools builder + http_tools openapi discovery +
+      widen Extension.health_check protocol to HealthStatus across all seven
+      stubs. Tier=sequential because the change is small (~250 LOC core +
+      ~80 LOC across http_tools touch sites + ~30 LOC across seven stubs)
+      and the phases are causally ordered (core must exist before it is
+      applied; protocol must be widened after the new return type exists).
+    tasks:
+      - "1.1"
+      - "1.2"
+      - "1.3"
+      - "1.4"
+      - "1.5"
+      - "2.1"
+      - "2.2"
+      - "2.3"
+      - "2.4"
+      - "2.5"
+      - "2.6"
+      - "3.1"
+      - "3.2"
+      - "3.3"
+      - "3.4"
+      - "4.1"
+      - "4.2"
+      - "4.3"
+      - "4.4"
+      - "4.5"
+      - "4.6"
+    priority: 1
+    dependencies: []
+    scope:
+      write_allow:
+        - "src/assistant/core/resilience.py"
+        - "src/assistant/http_tools/builder.py"
+        - "src/assistant/http_tools/openapi.py"
+        - "src/assistant/extensions/**"
+        - "tests/core/**"
+        - "tests/http_tools/**"
+        - "tests/extensions/**"
+        - "pyproject.toml"
+        - "uv.lock"
+        - "docs/gotchas.md"
+        - "openspec/roadmap.md"
+        - "openspec/changes/error-resilience/**"
+      read_allow:
+        - "src/**"
+        - "tests/**"
+        - "openspec/**"
+        - "pyproject.toml"
+        - "docs/**"
+    locks:
+      files:
+        - "src/assistant/core/resilience.py"
+        - "src/assistant/http_tools/builder.py"
+        - "src/assistant/http_tools/openapi.py"
+        - "src/assistant/extensions/base.py"
+      keys:
+        - "py:src/assistant/core/resilience.py"
+        - "py:src/assistant/http_tools/builder.py"
+        - "py:src/assistant/http_tools/openapi.py"
+        - "py:src/assistant/extensions/base.py"
+        - "dep:tenacity"
+      ttl_minutes: 240
+      reason: "P9 error-resilience implementation touches the http_tools client and Extension protocol; held until merge."
+    verification: tier_b
