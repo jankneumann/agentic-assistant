@@ -528,12 +528,15 @@ async def _run_with_retry(
                 )
                 try:
                     result = await fn(*args, **kwargs)
-                except BaseException as exc:
+                except Exception as exc:
+                    # Note: NOT BaseException — KeyboardInterrupt /
+                    # SystemExit / asyncio.CancelledError must propagate
+                    # without being recorded as breaker failures.
                     last_error_type = type(exc).__name__
                     raise
         await breaker.record_success()
         return result
-    except BaseException as exc:
+    except Exception as exc:
         if _is_availability_failure(exc, policy):
             await breaker.record_failure(exc)
         # Non-availability failures are re-raised without affecting breaker
