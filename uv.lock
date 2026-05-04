@@ -590,6 +590,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "pyyaml" },
     { name = "sqlalchemy" },
+    { name = "tenacity" },
 ]
 
 [package.optional-dependencies]
@@ -629,6 +630,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.4" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "sqlalchemy", specifier = ">=2.0" },
+    { name = "tenacity", specifier = ">=9.0,<10.0" },
 ]
 provides-extras = ["ms", "telemetry"]
 

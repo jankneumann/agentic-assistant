@@ -340,3 +340,33 @@ Caught during `/cleanup-feature http-tools-layer` when 15 test-side
 mypy errors landed only on CI — cost one CI cycle. The Landing the
 Plane checklist in `CLAUDE.md` now enumerates the full CI scope so
 local gates match remote.
+
+## G9 — `Extension.health_check()` widened from `bool` to `HealthStatus` (P9 error-resilience)
+
+The `Extension` Protocol previously declared `async def health_check(self) -> bool`.
+After P9 (`error-resilience`), it is `async def health_check(self) -> HealthStatus`.
+
+This is a hard protocol break. All seven internal stubs were updated atomically
+in the same change. **Out-of-tree extensions** (private persona submodules) that
+defined their own `Extension`-compatible class will need a one-line migration:
+
+```python
+from assistant.core.resilience import default_health_status_for_unimplemented
+
+class MyExtension:
+    name = "my-extension"
+
+    async def health_check(self) -> HealthStatus:
+        return default_health_status_for_unimplemented(self.name)
+```
+
+If the extension already has a real backend probe, return a populated
+`HealthStatus(state=HealthState.OK | DEGRADED | UNAVAILABLE, ...)`. The
+helper `health_status_from_breaker(breaker, key=f"extension:{self.name}")`
+maps a `CircuitBreaker` to a `HealthStatus` automatically.
+
+**Why no deprecation shim**: dual-return-type protocols defeat mypy at the
+boundary. The persona registry installs a runtime conformance guard (D11)
+that raises `TypeError` with the migration recipe on the first non-conforming
+probe, so a private extension that was missed produces a clear, actionable
+error rather than silent degradation.
