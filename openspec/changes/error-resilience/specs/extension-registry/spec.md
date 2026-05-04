@@ -28,6 +28,13 @@ Extension stubs that do not yet implement a real backend probe SHALL return the 
 - **THEN** the returned `HealthStatus` MUST have `breaker_key="extension:<name>"`
 - **AND** `state` MUST reflect the breaker's current state per the mapping defined in the `error-resilience` capability
 
+#### Scenario: Runtime conformance check rejects bool-returning health_check
+
+- **WHEN** the persona registry loads any extension and calls its `health_check()` for the first time
+- **AND** the awaited return value is **not** a `HealthStatus` instance (for example a legacy out-of-tree extension still returns `True`)
+- **THEN** a `TypeError` MUST be raised identifying the offending extension by `name`, the actual return type, and the migration recipe (`return default_health_status_for_unimplemented(self.name)`)
+- **AND** the error message MUST cite `docs/gotchas.md` for the migration note
+
 ## MODIFIED Requirements
 
 ### Requirement: Stub Implementations for All Configured Extensions

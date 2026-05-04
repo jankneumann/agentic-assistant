@@ -6,7 +6,7 @@
 
 The system SHALL define a `RetryPolicy` frozen dataclass at `src/assistant/core/resilience.py` capturing every parameter that governs a retried operation: `max_attempts: int`, `base_delay_s: float`, `max_delay_s: float`, `jitter_factor: float`, `retryable_status_codes: frozenset[int]`, and `retryable_exceptions: tuple[type[BaseException], ...]`.
 
-The module SHALL expose `DEFAULT_HTTP_RETRY_POLICY: RetryPolicy` configured for HTTP tool invocations: `max_attempts=3`, `base_delay_s=0.5`, `max_delay_s=8.0`, `jitter_factor=0.25`, retryable status codes `{408, 425, 429, 500, 502, 503, 504}`, retryable exceptions `(httpx.ReadTimeout, httpx.ConnectError, httpx.RemoteProtocolError, httpx.PoolTimeout)`.
+The module SHALL expose `DEFAULT_HTTP_RETRY_POLICY: RetryPolicy` configured for HTTP tool invocations: `max_attempts=3`, `base_delay_s=0.5`, `max_delay_s=8.0`, `jitter_factor=0.25`, retryable status codes `{408, 425, 429, 500, 502, 503, 504}`, retryable exceptions `(httpx.ConnectTimeout, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout, httpx.ConnectError, httpx.RemoteProtocolError)`.
 
 `RetryPolicy` instances MUST be immutable (frozen dataclass) so callers cannot mutate a shared default.
 
@@ -16,6 +16,7 @@ The module SHALL expose `DEFAULT_HTTP_RETRY_POLICY: RetryPolicy` configured for 
 - **THEN** `max_attempts` MUST equal `3`
 - **AND** `base_delay_s` MUST equal `0.5`
 - **AND** `retryable_status_codes` MUST equal `frozenset({408, 425, 429, 500, 502, 503, 504})`
+- **AND** `retryable_exceptions` MUST be a tuple containing exactly `(httpx.ConnectTimeout, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout, httpx.ConnectError, httpx.RemoteProtocolError)`
 - **AND** every member of `retryable_exceptions` MUST be a subclass of `httpx.HTTPError`
 
 #### Scenario: Policy is frozen
@@ -28,20 +29,36 @@ The module SHALL expose `DEFAULT_HTTP_RETRY_POLICY: RetryPolicy` configured for 
 
 The system SHALL provide a `CircuitBreaker` class at `src/assistant/core/resilience.py` implementing a three-state machine: `closed`, `open`, `half_open`. The breaker SHALL transition between states under these rules:
 
-- **closed → open**: `failure_threshold` consecutive failures (default 5) move the breaker to `open` and record `opened_at` and `next_probe_at = opened_at + cooldown_seconds` (default 30 seconds).
-- **open → half_open**: a guarded call attempted at or after `next_probe_at` MUST be allowed through as a single probe, transitioning the breaker to `half_open`.
-- **half_open → closed**: a successful probe call MUST reset the breaker to `closed` and zero the failure counter.
-- **half_open → open**: a failed probe call MUST move the breaker back to `open` with a new `opened_at` and `next_probe_at`.
+- **closed → open**: `failure_threshold` consecutive **availability failures** (default 5) move the breaker to `open` and record `opened_at` and `next_probe_at = opened_at + cooldown_seconds` (default 30 seconds). An "availability failure" is one of (a) a retryable status code from the active `RetryPolicy`, (b) a retryable exception type from the active `RetryPolicy`, or (c) `CircuitBreakerOpenError` raised by an inner guarded call. **Non-availability** failures (e.g., HTTP 401 / 403 / 404 / 422) MUST NOT increment the consecutive-failure counter — they re-raise to the caller without affecting breaker state.
+- **open → half_open**: a guarded call attempted at or after `next_probe_at` MUST be allowed through as **exactly one** probe, transitioning the breaker to `half_open`. The breaker MUST track an in-flight-probe state so that any additional concurrent call arriving while the probe is in flight is short-circuited with `CircuitBreakerOpenError` instead of issuing a second probe.
+- **half_open → closed**: a successful probe call MUST reset the breaker to `closed`, zero the failure counter, and clear the in-flight-probe state.
+- **half_open → open**: a failed probe call MUST move the breaker back to `open` with a new `opened_at` and `next_probe_at`, and clear the in-flight-probe state.
 - **closed → closed**: any successful call SHALL reset the consecutive-failure counter to zero.
 
 Each `CircuitBreaker` instance SHALL be safe for concurrent use by multiple `asyncio` tasks; concurrent calls observing the breaker state MUST do so under an `asyncio.Lock` private to the breaker. The breaker SHALL expose read-only attributes `state`, `last_error: str | None`, `opened_at: datetime | None`, and `next_probe_at: datetime | None`.
 
-#### Scenario: Threshold opens the breaker
+#### Scenario: Threshold opens the breaker (availability failures only)
 
-- **WHEN** a `CircuitBreaker` with `failure_threshold=3` records three consecutive failures via `record_failure(error)`
+- **WHEN** a `CircuitBreaker` with `failure_threshold=3` records three consecutive availability failures via `record_failure(error)`
 - **THEN** `state` MUST equal `"open"`
 - **AND** `opened_at` MUST equal the timestamp of the third failure
-- **AND** `last_error` MUST equal the string representation of the third error
+- **AND** `last_error` MUST equal the **sanitized and truncated** string representation of the third error per the "Error Strings Are Sanitized And Truncated" requirement
+
+#### Scenario: Non-availability failure does not affect breaker
+
+- **WHEN** a `CircuitBreaker` with `failure_threshold=3` is `closed` with zero consecutive failures
+- **AND** a guarded call fails with HTTP 401 (a status code outside `RetryPolicy.retryable_status_codes`)
+- **THEN** the breaker MUST remain `closed`
+- **AND** the consecutive-failure counter MUST remain `0`
+- **AND** the original `httpx.HTTPStatusError` MUST be re-raised to the caller
+
+#### Scenario: Half-open admits exactly one probe
+
+- **WHEN** the breaker is `open` and the cooldown has elapsed
+- **AND** two concurrent guarded calls arrive at approximately the same instant
+- **THEN** exactly one of the two calls MUST be admitted as the probe (transitioning the breaker to `half_open`)
+- **AND** the other call MUST raise `CircuitBreakerOpenError` without invoking the wrapped function
+- **AND** the in-flight-probe state MUST be cleared once the probe completes (success or failure)
 
 #### Scenario: Successful call resets the failure counter
 
@@ -83,20 +100,22 @@ The accessor `get_breaker(key: str) -> CircuitBreaker` SHALL return the existing
 
 ### Requirement: Resilient Decorator
 
-The system SHALL provide a decorator factory `resilient_http(*, source: str, policy: RetryPolicy | None = None)` at `src/assistant/core/resilience.py` that wraps an `async def` callable and applies retry-with-backoff plus circuit-breaker protection, scoped to the breaker key derived from `source`.
+The system SHALL provide a decorator factory `resilient_http(*, breaker_key: str, policy: RetryPolicy | None = None)` at `src/assistant/core/resilience.py` that wraps an `async def` callable and applies retry-with-backoff plus circuit-breaker protection. The `breaker_key` argument is the **canonical, fully-namespaced** registry key (e.g., `"http_tools:gcal"`, `"http_tools_discovery:gcal"`, `"extension:gmail"`) — call sites MUST construct the key explicitly so that no namespace prefix is implicit in the decorator.
 
 On each invocation the wrapper SHALL:
 
-1. Look up the breaker for `source` (creating if absent).
-2. If the breaker is `open` and the cooldown has not elapsed, raise `CircuitBreakerOpenError(breaker_key, opened_at, next_probe_at, last_error_summary)` without calling the wrapped function.
+1. Look up the breaker for `breaker_key` (creating if absent).
+2. If the breaker is `open` and the cooldown has not elapsed, **or** if the breaker is `half_open` with a probe already in flight, raise `CircuitBreakerOpenError(breaker_key, opened_at, next_probe_at, last_error_summary)` without calling the wrapped function.
 3. Otherwise, execute the wrapped function under tenacity retry policy derived from `policy or DEFAULT_HTTP_RETRY_POLICY`. Retries MUST be triggered by:
    - any `httpx.HTTPStatusError` whose `response.status_code` is in `policy.retryable_status_codes`, **or**
    - any exception type in `policy.retryable_exceptions`.
-4. Apply exponential backoff with jitter: delay between attempts MUST be `min(max_delay_s, base_delay_s * 2 ** (attempt-1))` multiplied by a uniform random factor in `[1 - jitter_factor, 1 + jitter_factor]`.
+4. Apply exponential backoff with jitter: delay between attempts MUST be `min(max_delay_s, base_delay_s * 2 ** (attempt-1))` multiplied by a uniform random factor in `[1 - jitter_factor, 1 + jitter_factor]`. The delay MUST be implemented via async sleep so the event loop is not blocked.
 5. On success, call `breaker.record_success()`.
-6. On terminal failure (retries exhausted or non-retryable error), call `breaker.record_failure(error)` and re-raise the **original** exception (NOT a tenacity `RetryError` wrapper).
+6. On terminal failure, classify before recording:
+   - **Availability failure** (retries exhausted on a retryable error, OR the error matches `policy.retryable_status_codes` / `policy.retryable_exceptions`): call `breaker.record_failure(error)` and re-raise the **original** exception (NOT a tenacity `RetryError` wrapper).
+   - **Non-availability failure** (error not in `retryable_status_codes` and not an instance of any `retryable_exceptions` type — e.g., HTTP 401 / 403 / 404 / 422, `ValueError` from the 10-MiB cap): re-raise the **original** exception **without** calling `breaker.record_failure(error)`. Non-availability errors MUST NOT trip the breaker.
 
-`CircuitBreakerOpenError` SHALL inherit from `Exception` and carry the breaker key, opened-at timestamp, next-probe-at timestamp, and a string summary of the last error.
+`CircuitBreakerOpenError` SHALL inherit from `Exception` and carry the breaker key, opened-at timestamp, next-probe-at timestamp, and a sanitized string summary of the last error (per "Error Strings Are Sanitized And Truncated").
 
 #### Scenario: Retry-then-success returns the wrapped result
 
@@ -104,12 +123,18 @@ On each invocation the wrapper SHALL:
 - **THEN** the wrapper MUST return `{"ok": true}`
 - **AND** the breaker MUST be in state `"closed"` with failure counter zero
 
-#### Scenario: Non-retryable status fails on first attempt
+#### Scenario: Non-retryable status fails on first attempt and does not trip breaker
 
 - **WHEN** a wrapped coroutine fails with HTTP 401 on the first attempt
 - **THEN** the wrapper MUST raise the original `httpx.HTTPStatusError` after a single attempt
 - **AND** no further attempts SHALL be made
-- **AND** the breaker MUST record one failure
+- **AND** the breaker MUST NOT record a failure (consecutive-failure counter unchanged, state remains `closed`)
+
+#### Scenario: WriteTimeout is retried by default policy
+
+- **WHEN** a wrapped coroutine fails with `httpx.WriteTimeout` on attempt 1 and succeeds on attempt 2
+- **THEN** the wrapper MUST return the attempt-2 result
+- **AND** the breaker MUST be in state `"closed"`
 
 #### Scenario: Open breaker short-circuits without invoking wrapped function
 

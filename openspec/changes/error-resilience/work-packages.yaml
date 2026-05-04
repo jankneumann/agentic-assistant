@@ -39,8 +39,9 @@ packages:
     scope:
       write_allow:
         - "src/assistant/core/resilience.py"
+        - "src/assistant/core/persona.py"
         - "src/assistant/http_tools/builder.py"
-        - "src/assistant/http_tools/openapi.py"
+        - "src/assistant/http_tools/discovery.py"
         - "src/assistant/extensions/**"
         - "tests/core/**"
         - "tests/http_tools/**"
@@ -59,15 +60,17 @@ packages:
     locks:
       files:
         - "src/assistant/core/resilience.py"
+        - "src/assistant/core/persona.py"
         - "src/assistant/http_tools/builder.py"
-        - "src/assistant/http_tools/openapi.py"
+        - "src/assistant/http_tools/discovery.py"
         - "src/assistant/extensions/base.py"
       keys:
         - "py:src/assistant/core/resilience.py"
+        - "py:src/assistant/core/persona.py"
         - "py:src/assistant/http_tools/builder.py"
-        - "py:src/assistant/http_tools/openapi.py"
+        - "py:src/assistant/http_tools/discovery.py"
         - "py:src/assistant/extensions/base.py"
         - "dep:tenacity"
       ttl_minutes: 240
-      reason: "P9 error-resilience implementation touches the http_tools client and Extension protocol; held until merge."
+      reason: "P9 error-resilience implementation touches the http_tools client (builder + discovery), Extension protocol, and persona registry runtime conformance check; held until merge."
     verification: tier_b
