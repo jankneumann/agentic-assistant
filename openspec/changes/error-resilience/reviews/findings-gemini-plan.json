@@ -1,0 +1,47 @@
+{
+  "review_type": "plan",
+  "target": "error-resilience",
+  "reviewer_vendor": "gemini-cli-reviewer",
+  "findings": [
+    {
+      "id": 1,
+      "type": "resilience",
+      "criticality": "high",
+      "description": "The current spec requires recording ALL terminal failures in the circuit breaker (D5, Requirement: Resilient Decorator step 6). This includes non-retryable client errors like 401 (Unauthorized), 403 (Forbidden), and 400 (Bad Request). Tripping a breaker for a backend based on a single client's invalid credentials or malformed request creates a 'denial-of-service by proxy' where all other tools/users of that backend are blocked from access.",
+      "resolution": "Update Requirement: Resilient Decorator and Circuit Breaker State Machine to only record 'availability' failures (those in retryable_status_codes or retryable_exceptions) as failures that count towards the breaker threshold. Non-retryable terminal errors (like 401/403) should raise immediately but NOT increment the breaker's failure counter.",
+      "disposition": "fix"
+    },
+    {
+      "id": 2,
+      "type": "resilience",
+      "criticality": "medium",
+      "description": "Requirement: Retry Policy Data Type scenario 'Default policy carries documented values' omits httpx.WriteTimeout from the default retryable_exceptions. Write timeouts are a common transient failure mode when a backend is under load and slow to consume a request body, particularly on POST/PUT paths.",
+      "resolution": "Add httpx.WriteTimeout to the retryable_exceptions list in DEFAULT_HTTP_RETRY_POLICY within error-resilience spec and tasks.md 1.4.",
+      "disposition": "fix"
+    },
+    {
+      "id": 3,
+      "type": "performance",
+      "criticality": "medium",
+      "description": "Requirement: Circuit Breaker State Machine is ambiguous regarding concurrency during the half_open state. If multiple concurrent tasks arrive after cooldown_seconds, the current wording ('a guarded call attempted ... MUST be allowed through as a single probe') doesn't explicitly prevent multiple tasks from simultaneously entering half_open and each issuing a probe request.",
+      "resolution": "Specify that while the breaker is in half_open state, only ONE probe is permitted. Subsequent calls arriving while a probe is in-flight MUST be short-circuited with CircuitBreakerOpenError, effectively treating half_open as open for non-probe callers.",
+      "disposition": "fix"
+    },
+    {
+      "id": 4,
+      "type": "observability",
+      "criticality": "low",
+      "description": "Requirement: Error Strings Are Sanitized And Truncated Scenario: 'Long error string is truncated with ellipsis suffix' does not specify behavior for multi-byte characters at the truncation boundary (200 characters).",
+      "resolution": "Add a note or scenario clarification that truncation must use character-aware slicing (e.g. Python string slicing) rather than byte-slicing to avoid producing invalid UTF-8 sequences.",
+      "disposition": "accept"
+    },
+    {
+      "id": 5,
+      "type": "resilience",
+      "criticality": "low",
+      "description": "The plan (Requirement: Resilient Decorator) uses a fixed exponential backoff but does not account for the 'Retry-After' header often returned with 429 and 503 status codes. While exponential backoff is a safe default, it is less efficient than respecting the backend's explicit hint.",
+      "resolution": "Accept as a known limitation for the v1 resilience substrate, but consider adding a 'Future' or 'Note' section to design.md regarding Retry-After header support.",
+      "disposition": "accept"
+    }
+  ]
+}

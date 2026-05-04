@@ -1,0 +1,179 @@
+{
+  "schema_version": 1,
+  "review_type": "plan",
+  "target": "error-resilience",
+  "reviewers": [
+    {
+      "vendor": "codex",
+      "agent_id": "codex",
+      "success": true,
+      "findings_count": 7,
+      "elapsed_seconds": 0.0,
+      "error": null
+    },
+    {
+      "vendor": "gemini-cli-reviewer",
+      "agent_id": "gemini-cli-reviewer",
+      "success": true,
+      "findings_count": 5,
+      "elapsed_seconds": 0.0,
+      "error": null
+    }
+  ],
+  "quorum_met": true,
+  "quorum_requested": 2,
+  "quorum_received": 2,
+  "consensus_findings": [
+    {
+      "id": 1,
+      "status": "unconfirmed",
+      "primary_vendor": "codex",
+      "primary_finding_id": 1,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "observability",
+      "agreed_criticality": "high",
+      "recommended_disposition": "accept",
+      "description": "The observability contract is not implementable with the stated composition. design.md:80-82 and specs/observability/spec.md:7-21 require one trace_tool_call per retry attempt when resilience is inside wrap_http_tool, but src/assistant/telemetry/tool_wrap.py:86-105 emits exactly one trace after awaiting the source coroutine. With resilient_http wrapped around _coroutine before StructuredTool.from_function, tenacity retries happen inside that single await, so successful retries are invisible to trace_tool_call. The same wrapper emits metadata=None at src/assistant/telemetry/tool_wrap.py:76-84, so an open-breaker span would not include breaker_key, opened_at, or next_probe_at."
+    },
+    {
+      "id": 2,
+      "status": "unconfirmed",
+      "primary_vendor": "codex",
+      "primary_finding_id": 2,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "contract_mismatch",
+      "agreed_criticality": "high",
+      "recommended_disposition": "accept",
+      "description": "The plan targets the wrong discovery module. proposal.md:47-49 and specs/http-tools/spec.md:41 say to wrap the OpenAPI fetch in src/assistant/http_tools/openapi.py, but the actual network fetch is _fetch_openapi in src/assistant/http_tools/discovery.py:27-93. tasks.md:46 partially hedges with '(or wherever discover_tools issues the OpenAPI fetch)', but work-packages.yaml:40-52 excludes src/assistant/http_tools/discovery.py from write_allow and locks, so a scoped executor cannot modify the required file."
+    },
+    {
+      "id": 3,
+      "status": "unconfirmed",
+      "primary_vendor": "codex",
+      "primary_finding_id": 3,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "contract_mismatch",
+      "agreed_criticality": "high",
+      "recommended_disposition": "accept",
+      "description": "The builder breaker key is inconsistent across artifacts. design.md:34-37 and specs/http-tools/spec.md:11 require breaker key f\"http_tools:{source_name}\", but proposal.md:43-44, tasks.md:41, and specs/http-tools/spec.md:7 instruct the implementer to call @resilient_http(source=source_name). The generic decorator steps in specs/error-resilience/spec.md:88-91 say it looks up the breaker for source, so an implementation following tasks.md would create key 'backend' instead of 'http_tools:backend'."
+    },
+    {
+      "id": 4,
+      "status": "unconfirmed",
+      "primary_vendor": "codex",
+      "primary_finding_id": 4,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "resilience",
+      "agreed_criticality": "high",
+      "recommended_disposition": "accept",
+      "description": "The half-open concurrency semantics are underspecified. specs/error-resilience/spec.md:31-37 says open -> half_open allows a single probe and that breaker state is protected by asyncio.Lock, but specs/error-resilience/spec.md:88-97 only short-circuits when the breaker is open and cooldown has not elapsed. It does not define what concurrent callers should do after the first caller transitions the breaker to half_open and releases the lock, so multiple tasks can validly interpret half_open as allowed and all send probe requests."
+    },
+    {
+      "id": 5,
+      "status": "unconfirmed",
+      "primary_vendor": "codex",
+      "primary_finding_id": 5,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "spec_gap",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "Timeout classification is incomplete. proposal.md:13 frames 'network blip' as retryable and discovery currently catches httpx.TimeoutException at src/assistant/http_tools/discovery.py:79-81, but DEFAULT_HTTP_RETRY_POLICY in specs/error-resilience/spec.md:9 and design.md:52 includes httpx.ReadTimeout and httpx.PoolTimeout while omitting httpx.ConnectTimeout and httpx.WriteTimeout. There is no scenario stating whether those timeout modes are intentionally terminal, especially for non-idempotent POST/PUT/PATCH calls built in src/assistant/http_tools/builder.py:230-233."
+    },
+    {
+      "id": 6,
+      "status": "unconfirmed",
+      "primary_vendor": "codex",
+      "primary_finding_id": 6,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "security",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "The state-machine scenario contradicts the sanitization requirement. specs/error-resilience/spec.md:41-45 says CircuitBreaker.last_error MUST equal the string representation of the third error, while specs/error-resilience/spec.md:140-143 says every stored error string MUST first pass through sanitize() and be truncated. An implementer could satisfy the state-machine scenario with raw str(error), leaking secrets despite D12."
+    },
+    {
+      "id": 7,
+      "status": "unconfirmed",
+      "primary_vendor": "codex",
+      "primary_finding_id": 7,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "compatibility",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "The migration rationale overstates mypy coverage for out-of-tree extensions. design.md:90-96 says private extensions will surface as a mypy error, but src/assistant/core/persona.py:146-199 loads private extensions dynamically and returns list[Any]; runtime_checkable Protocol checks also do not validate health_check return types. A private extension can keep returning bool and only fail later when code expects HealthStatus fields."
+    },
+    {
+      "id": 8,
+      "status": "unconfirmed",
+      "primary_vendor": "gemini-cli-reviewer",
+      "primary_finding_id": 1,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "resilience",
+      "agreed_criticality": "high",
+      "recommended_disposition": "accept",
+      "description": "The current spec requires recording ALL terminal failures in the circuit breaker (D5, Requirement: Resilient Decorator step 6). This includes non-retryable client errors like 401 (Unauthorized), 403 (Forbidden), and 400 (Bad Request). Tripping a breaker for a backend based on a single client's invalid credentials or malformed request creates a 'denial-of-service by proxy' where all other tools/users of that backend are blocked from access."
+    },
+    {
+      "id": 9,
+      "status": "unconfirmed",
+      "primary_vendor": "gemini-cli-reviewer",
+      "primary_finding_id": 2,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "resilience",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "Requirement: Retry Policy Data Type scenario 'Default policy carries documented values' omits httpx.WriteTimeout from the default retryable_exceptions. Write timeouts are a common transient failure mode when a backend is under load and slow to consume a request body, particularly on POST/PUT paths."
+    },
+    {
+      "id": 10,
+      "status": "unconfirmed",
+      "primary_vendor": "gemini-cli-reviewer",
+      "primary_finding_id": 3,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "performance",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "Requirement: Circuit Breaker State Machine is ambiguous regarding concurrency during the half_open state. If multiple concurrent tasks arrive after cooldown_seconds, the current wording ('a guarded call attempted ... MUST be allowed through as a single probe') doesn't explicitly prevent multiple tasks from simultaneously entering half_open and each issuing a probe request."
+    },
+    {
+      "id": 11,
+      "status": "unconfirmed",
+      "primary_vendor": "gemini-cli-reviewer",
+      "primary_finding_id": 4,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "observability",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "Requirement: Error Strings Are Sanitized And Truncated Scenario: 'Long error string is truncated with ellipsis suffix' does not specify behavior for multi-byte characters at the truncation boundary (200 characters)."
+    },
+    {
+      "id": 12,
+      "status": "unconfirmed",
+      "primary_vendor": "gemini-cli-reviewer",
+      "primary_finding_id": 5,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "resilience",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "The plan (Requirement: Resilient Decorator) uses a fixed exponential backoff but does not account for the 'Retry-After' header often returned with 429 and 503 status codes. While exponential backoff is a safe default, it is less efficient than respecting the backend's explicit hint."
+    }
+  ],
+  "summary": {
+    "total_unique_findings": 12,
+    "confirmed_count": 0,
+    "unconfirmed_count": 12,
+    "disagreement_count": 0,
+    "blocking_count": 0
+  }
+}

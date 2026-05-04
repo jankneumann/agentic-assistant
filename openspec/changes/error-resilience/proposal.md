@@ -41,11 +41,11 @@ Single runtime-layer module. Exports:
 ### Apply at three call-sites
 
 **1. http_tools/builder.py — per-tool invocation hot path**
-- Wrap the `_coroutine` body inside `_build_tool()` with `@resilient_http(source=source_name)`. The retry layer composes **inside** the existing `wrap_http_tool(tool)` (P4) so retry attempts and breaker open/close events emit observability spans (`trace_tool_call` + a sibling `trace_event(kind="circuit_breaker_open", ...)` recorded via the existing `start_span` escape hatch — no new observability protocol method).
-- Retryable: HTTP `408`, `425`, `429`, `500`, `502`, `503`, `504`, plus `httpx.ReadTimeout`, `httpx.ConnectError`, `httpx.RemoteProtocolError`, `httpx.PoolTimeout`. Non-retryable: 4xx other than the listed codes (auth, validation), and `ValueError` raised by the existing 10-MiB cap or non-JSON-content-type guards.
+- Wrap the `_coroutine` body inside `_build_tool()` with `resilient_http(breaker_key=f"http_tools:{source_name}")`. The retry layer composes **inside** the existing `wrap_http_tool(tool)` (P4) so the user-level `trace_tool_call` summary remains exactly one span per tool invocation, while per-attempt visibility is delivered through `start_span("resilience.http_attempt", ...)` events emitted from inside the retry loop. Breaker state transitions emit `start_span("resilience.breaker_transition", ...)` events. **No new observability protocol method.**
+- Retryable: HTTP `408`, `425`, `429`, `500`, `502`, `503`, `504`, plus `httpx.ConnectTimeout`, `httpx.ReadTimeout`, `httpx.WriteTimeout`, `httpx.PoolTimeout`, `httpx.ConnectError`, `httpx.RemoteProtocolError`. Non-retryable: 4xx other than the listed codes (auth, validation), and `ValueError` raised by the existing 10-MiB cap or non-JSON-content-type guards. **Non-retryable errors do NOT increment the breaker's failure counter** (per D5) — this prevents one client's bad credentials from tripping the breaker for every other client of the same backend.
 
-**2. http_tools/openapi.py — discovery `GET /openapi.json`**
-- Wrap the discovery client call with `@resilient_http(source=f"http_tools_discovery:{source_name}")`. Discovery's existing graceful-skip behavior (`return None` on `HTTPError`) is preserved — but now only after retries are exhausted, so a single transient blip during startup no longer permanently drops a tool source for the session. `CircuitBreakerOpenError` from a chronically-down source is also caught at this layer and logged as the same "skip source" outcome (preserving D4).
+**2. http_tools/discovery.py — discovery `GET /openapi.json`**
+- Wrap the body of `_fetch_openapi()` (line 27 — this is where the network fetch actually lives; `openapi.py` only does parsing) with `resilient_http(breaker_key=f"http_tools_discovery:{source_name}")`. Discovery's existing graceful-skip behavior (`return None` on `HTTPError`) is preserved — but now only after retries are exhausted, so a single transient blip during startup no longer permanently drops a tool source for the session. `CircuitBreakerOpenError` from a chronically-down source is also caught at this layer and logged as the same "skip source" outcome (preserving D4 from P3).
 
 **3. extensions/base.py — `Extension.health_check()` protocol**
 - Widen the return type from `bool` to `HealthStatus`. Update all seven stub implementations (`ms_graph`, `teams`, `sharepoint`, `outlook`, `gmail`, `gcal`, `gdrive`) to return `HealthStatus(state=HealthState.UNKNOWN, reason="extension is a stub", ...)` for now — the real backend probes ship with P5/P14.
@@ -77,9 +77,9 @@ Single runtime-layer module. Exports:
 ### Affected code
 
 - **New**: `src/assistant/core/resilience.py`
-- **Instrumented**: `src/assistant/http_tools/builder.py`, `src/assistant/http_tools/openapi.py`
+- **Instrumented**: `src/assistant/http_tools/builder.py`, `src/assistant/http_tools/discovery.py` (`_fetch_openapi` wrap site)
 - **Protocol-widened**: `src/assistant/extensions/base.py` and all seven stub modules under `src/assistant/extensions/`
-- **Modified**: `pyproject.toml` (adds `tenacity` runtime dep)
+- **Modified**: `src/assistant/core/persona.py` (adds runtime conformance check on first `health_check()` call per D11), `pyproject.toml` (adds `tenacity` runtime dep)
 
 ### Test impact
 

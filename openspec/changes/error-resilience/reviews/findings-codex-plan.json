@@ -1,0 +1,63 @@
+{
+  "review_type": "plan",
+  "target": "error-resilience",
+  "reviewer_vendor": "codex",
+  "findings": [
+    {
+      "id": 1,
+      "type": "observability",
+      "criticality": "high",
+      "description": "The observability contract is not implementable with the stated composition. design.md:80-82 and specs/observability/spec.md:7-21 require one trace_tool_call per retry attempt when resilience is inside wrap_http_tool, but src/assistant/telemetry/tool_wrap.py:86-105 emits exactly one trace after awaiting the source coroutine. With resilient_http wrapped around _coroutine before StructuredTool.from_function, tenacity retries happen inside that single await, so successful retries are invisible to trace_tool_call. The same wrapper emits metadata=None at src/assistant/telemetry/tool_wrap.py:76-84, so an open-breaker span would not include breaker_key, opened_at, or next_probe_at.",
+      "resolution": "Either change the spec/tasks to require one trace_tool_call per user-level tool invocation plus explicit per-attempt/breaker start_span events from resilient_http, or change the implementation plan to instrument each retry attempt inside the retry loop and propagate breaker metadata on CircuitBreakerOpenError. Update specs/observability/spec.md scenarios and tasks.md:31 accordingly.",
+      "disposition": "fix"
+    },
+    {
+      "id": 2,
+      "type": "contract_mismatch",
+      "criticality": "high",
+      "description": "The plan targets the wrong discovery module. proposal.md:47-49 and specs/http-tools/spec.md:41 say to wrap the OpenAPI fetch in src/assistant/http_tools/openapi.py, but the actual network fetch is _fetch_openapi in src/assistant/http_tools/discovery.py:27-93. tasks.md:46 partially hedges with '(or wherever discover_tools issues the OpenAPI fetch)', but work-packages.yaml:40-52 excludes src/assistant/http_tools/discovery.py from write_allow and locks, so a scoped executor cannot modify the required file.",
+      "resolution": "Update proposal/spec/tasks to name src/assistant/http_tools/discovery.py::_fetch_openapi as the wrapped call site, add src/assistant/http_tools/discovery.py to work-packages.yaml write_allow and locks, and remove or narrow openapi.py if it is not actually changed.",
+      "disposition": "fix"
+    },
+    {
+      "id": 3,
+      "type": "contract_mismatch",
+      "criticality": "high",
+      "description": "The builder breaker key is inconsistent across artifacts. design.md:34-37 and specs/http-tools/spec.md:11 require breaker key f\"http_tools:{source_name}\", but proposal.md:43-44, tasks.md:41, and specs/http-tools/spec.md:7 instruct the implementer to call @resilient_http(source=source_name). The generic decorator steps in specs/error-resilience/spec.md:88-91 say it looks up the breaker for source, so an implementation following tasks.md would create key 'backend' instead of 'http_tools:backend'.",
+      "resolution": "Make the call-site pass the canonical key, e.g. @resilient_http(source=f\"http_tools:{source_name}\"), or rename the decorator argument to breaker_key and update all artifacts so discovery, builder, and extensions use one explicit namespace convention.",
+      "disposition": "fix"
+    },
+    {
+      "id": 4,
+      "type": "resilience",
+      "criticality": "high",
+      "description": "The half-open concurrency semantics are underspecified. specs/error-resilience/spec.md:31-37 says open -> half_open allows a single probe and that breaker state is protected by asyncio.Lock, but specs/error-resilience/spec.md:88-97 only short-circuits when the breaker is open and cooldown has not elapsed. It does not define what concurrent callers should do after the first caller transitions the breaker to half_open and releases the lock, so multiple tasks can validly interpret half_open as allowed and all send probe requests.",
+      "resolution": "Add an explicit half-open in-flight rule and scenario: when N concurrent guarded calls arrive after next_probe_at, exactly one call may enter the wrapped coroutine as the probe; all others must either fail fast with CircuitBreakerOpenError or wait for the probe result. Specify the required state field/token and test this with concurrent tasks.",
+      "disposition": "fix"
+    },
+    {
+      "id": 5,
+      "type": "spec_gap",
+      "criticality": "medium",
+      "description": "Timeout classification is incomplete. proposal.md:13 frames 'network blip' as retryable and discovery currently catches httpx.TimeoutException at src/assistant/http_tools/discovery.py:79-81, but DEFAULT_HTTP_RETRY_POLICY in specs/error-resilience/spec.md:9 and design.md:52 includes httpx.ReadTimeout and httpx.PoolTimeout while omitting httpx.ConnectTimeout and httpx.WriteTimeout. There is no scenario stating whether those timeout modes are intentionally terminal, especially for non-idempotent POST/PUT/PATCH calls built in src/assistant/http_tools/builder.py:230-233.",
+      "resolution": "Make an explicit retryability decision for ConnectTimeout and WriteTimeout. Add policy scenarios and decorator tests that either include them in retryable_exceptions or assert they are not retried under the default policy with the idempotency rationale documented.",
+      "disposition": "escalate"
+    },
+    {
+      "id": 6,
+      "type": "security",
+      "criticality": "medium",
+      "description": "The state-machine scenario contradicts the sanitization requirement. specs/error-resilience/spec.md:41-45 says CircuitBreaker.last_error MUST equal the string representation of the third error, while specs/error-resilience/spec.md:140-143 says every stored error string MUST first pass through sanitize() and be truncated. An implementer could satisfy the state-machine scenario with raw str(error), leaking secrets despite D12.",
+      "resolution": "Change the threshold-opening scenario to require last_error to equal the sanitized and possibly truncated string representation of the third error. Add a threshold-opening case where the third error contains an Authorization bearer token so the state-machine test and sanitization test enforce the same invariant.",
+      "disposition": "fix"
+    },
+    {
+      "id": 7,
+      "type": "compatibility",
+      "criticality": "medium",
+      "description": "The migration rationale overstates mypy coverage for out-of-tree extensions. design.md:90-96 says private extensions will surface as a mypy error, but src/assistant/core/persona.py:146-199 loads private extensions dynamically and returns list[Any]; runtime_checkable Protocol checks also do not validate health_check return types. A private extension can keep returning bool and only fail later when code expects HealthStatus fields.",
+      "resolution": "Either add a runtime compatibility check at the first health_check consumption point that verifies the result is HealthStatus and raises a clear migration error, or add a documented test/mypy recipe that private extension repos must adopt by annotating create_extension/instances as Extension. Update docs/gotchas.md and tasks.md:93-94 to include that concrete enforcement path.",
+      "disposition": "fix"
+    }
+  ]
+}

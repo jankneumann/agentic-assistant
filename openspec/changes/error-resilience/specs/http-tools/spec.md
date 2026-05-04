@@ -4,11 +4,11 @@
 
 ### Requirement: HTTP Tool Invocations Are Resilient
 
-The system SHALL wrap every HTTP tool coroutine produced by `_build_tool()` in `src/assistant/http_tools/builder.py` with the `@resilient_http(source=source_name)` decorator from the `error-resilience` capability. The wrapping SHALL compose **inside** the existing `wrap_http_tool(tool)` observability wrapper so retry attempts and circuit-breaker state transitions are visible to telemetry.
+The system SHALL wrap every HTTP tool coroutine produced by `_build_tool()` in `src/assistant/http_tools/builder.py` with the `resilient_http(breaker_key=f"http_tools:{source_name}")` decorator from the `error-resilience` capability. The wrapping SHALL compose **inside** the existing `wrap_http_tool(tool)` observability wrapper so the user-level `trace_tool_call` summary remains a single span per tool invocation while the per-attempt visibility is delivered through `start_span` events emitted from inside `resilient_http` (see the `observability` capability delta for the composition rule).
 
 The retry policy applied SHALL be `DEFAULT_HTTP_RETRY_POLICY` unless a per-source override is supplied at registration time. Tools that previously raised `httpx.HTTPStatusError` on a transient 5xx response SHALL now raise the same exception only after retries are exhausted or after the breaker for that source short-circuits with `CircuitBreakerOpenError`.
 
-The breaker key SHALL be `f"http_tools:{source_name}"` so all tools belonging to the same OpenAPI source share one breaker.
+The breaker key passed to the decorator MUST be the canonical, fully-namespaced string `f"http_tools:{source_name}"` so all tools belonging to the same OpenAPI source share one breaker, and so the namespace appears explicitly at the call site (no implicit prefixing inside the decorator).
 
 #### Scenario: Tool retries on 503 then succeeds
 
@@ -29,16 +29,18 @@ The breaker key SHALL be `f"http_tools:{source_name}"` so all tools belonging to
 - **AND** any tool registered for source `"backend"` is invoked
 - **THEN** `CircuitBreakerOpenError` MUST be raised
 - **AND** the underlying HTTP request MUST NOT be sent
+- **AND** the raised error's `breaker_key` attribute MUST equal `"http_tools:backend"`
 
-#### Scenario: 4xx auth error is not retried
+#### Scenario: 4xx auth error is not retried and does not trip breaker
 
 - **WHEN** a tool calls an endpoint that returns HTTP 401 on the first attempt
 - **THEN** the tool MUST raise `httpx.HTTPStatusError` after exactly one attempt
 - **AND** no further requests SHALL be sent
+- **AND** the breaker for `"http_tools:backend"` MUST remain in state `"closed"` (the consecutive-failure counter MUST be unchanged)
 
 ### Requirement: Discovery Retries Before Skip
 
-The system SHALL wrap the OpenAPI document fetch in `src/assistant/http_tools/openapi.py` (and the `/help` fallback) with `@resilient_http(source=f"http_tools_discovery:{source_name}")` so a single transient blip during startup no longer permanently drops a tool source for the session. Discovery's existing graceful-skip contract — log a warning and exclude the source from the registry on terminal failure — SHALL be preserved, but only after retries are exhausted.
+The system SHALL wrap the OpenAPI document fetch implemented in `src/assistant/http_tools/discovery.py::_fetch_openapi` with `resilient_http(breaker_key=f"http_tools_discovery:{source_name}")` so a single transient blip during startup no longer permanently drops a tool source for the session. Discovery's existing graceful-skip contract — log a warning and exclude the source from the registry on terminal failure — SHALL be preserved, but only after retries are exhausted.
 
 `CircuitBreakerOpenError` raised during discovery (e.g., when a chronically-failing source has been seen multiple times during a long-running process that re-runs discovery) SHALL be caught at the discovery layer and treated identically to the existing graceful-skip outcome: warning logged, source omitted, no exception propagated to `discover_tools`.
 
