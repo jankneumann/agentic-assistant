@@ -1,0 +1,47 @@
+{
+  "review_type": "implementation",
+  "target": "error-resilience",
+  "reviewer_vendor": "openai-codex",
+  "findings": [
+    {
+      "id": 1,
+      "type": "spec_gap",
+      "criticality": "high",
+      "description": "src/assistant/http_tools/discovery.py:119-127 returns None on terminal httpx.HTTPError from /openapi.json, so /help is never attempted after retry-exhausted 5xx. This mismatches openspec/changes/error-resilience/specs/http-tools/spec.md:52-58, which explicitly describes /openapi.json exhausting retries and the /help fallback also being attempted before the source is skipped. tests/http_tools/test_openapi_discovery_resilience.py:101-122 does not catch this because it asserts only result is None, not that /help was called.",
+      "resolution": "Handle terminal httpx.HTTPStatusError per path: log the exhausted status and continue to the next discovery path when one remains. Add an assertion that /help receives the configured retry attempts after /openapi.json exhausts.",
+      "disposition": "fix"
+    },
+    {
+      "id": 2,
+      "type": "observability",
+      "criticality": "high",
+      "description": "src/assistant/core/resilience.py:521-528 emits resilience.http_attempt before the attempt runs and uses last_error_type from the previous attempt. For a 503, 503, success sequence, attempt 1 has no error_type, attempt 2 has HTTPStatusError, and the successful attempt 3 also has HTTPStatusError. The observability spec at openspec/changes/error-resilience/specs/observability/spec.md:20-28 requires the first two failed attempt spans to carry error_type and the third successful span to omit it.",
+      "resolution": "Emit the attempt span after each attempt outcome is known, or otherwise attach error_type for the current attempt rather than the previous one. Add a retry-then-success telemetry test asserting one trace_tool_call, three attempt spans, error_type on attempts 1 and 2, and no error_type on attempt 3.",
+      "disposition": "fix"
+    },
+    {
+      "id": 3,
+      "type": "observability",
+      "criticality": "medium",
+      "description": "src/assistant/core/resilience.py:225-227 transitions open -> half_open without emitting resilience.breaker_transition, and src/assistant/core/resilience.py:199-205 transitions half_open -> closed without emitting it. The observability spec at openspec/changes/error-resilience/specs/observability/spec.md:15 requires transition spans for closed -> open, open -> half_open, half_open -> closed, and half_open -> open. The implementation only emits transitions through _open_locked at src/assistant/core/resilience.py:254-269.",
+      "resolution": "Emit _emit_transition_span when acquire_admission moves open to half_open and when record_success closes a half_open breaker. Add tests for all required transition directions.",
+      "disposition": "fix"
+    },
+    {
+      "id": 4,
+      "type": "resilience",
+      "criticality": "medium",
+      "description": "src/assistant/core/resilience.py:424-425 classifies CircuitBreakerOpenError as retryable for tenacity via _is_availability_failure, so a wrapped coroutine that raises CircuitBreakerOpenError from a nested guarded call is retried up to max_attempts at src/assistant/core/resilience.py:513-518. A nested open breaker is already a terminal admission decision; retrying it repeatedly adds delay, duplicates short-circuit telemetry, and re-enters the outer function even though no upstream request can be made until the inner breaker cooldown elapses.",
+      "resolution": "Split retry classification from availability-failure accounting. Use only policy retryable status codes and retryable exception types in the tenacity retry predicate, while still treating CircuitBreakerOpenError as an availability failure for terminal breaker.record_failure accounting.",
+      "disposition": "fix"
+    },
+    {
+      "id": 5,
+      "type": "security",
+      "criticality": "medium",
+      "description": "src/assistant/core/resilience.py:82-89 defines HealthStatus as a plain frozen dataclass and stores last_error exactly as provided. This does not enforce the requirement in openspec/changes/error-resilience/specs/error-resilience/spec.md:165-168 that every error string stored on HealthStatus.last_error is sanitized and truncated. health_status_from_breaker is safe only because breaker.last_error is already sanitized, but future real extensions can construct HealthStatus(last_error=raw_secret) directly.",
+      "resolution": "Add a HealthStatus.__post_init__ that applies _sanitize_and_truncate to non-None last_error using object.__setattr__, and add a test constructing HealthStatus with a long secret-bearing last_error.",
+      "disposition": "fix"
+    }
+  ]
+}

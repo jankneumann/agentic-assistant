@@ -1,5 +1,5 @@
 {
-  "review_type": "plan",
+  "review_type": "implementation",
   "target": "cli-dispatch",
   "dispatches": [
     {
@@ -9,22 +9,22 @@
       "models_attempted": [
         "gpt-5.5"
       ],
-      "elapsed_seconds": 210.01715745800175,
+      "elapsed_seconds": 199.24150350000127,
       "error": null,
       "error_class": null
     },
     {
       "vendor": "gemini",
-      "success": true,
-      "model_used": "auto",
+      "success": false,
+      "model_used": null,
       "models_attempted": [
         "auto"
       ],
-      "elapsed_seconds": 38.29256050000549,
-      "error": null,
-      "error_class": null
+      "elapsed_seconds": 600.0261796659906,
+      "error": "Timeout after 600s",
+      "error_class": "transient"
     }
   ],
   "quorum_requested": 2,
-  "quorum_received": 2
+  "quorum_received": 1
 }

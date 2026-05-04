@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -272,3 +273,30 @@ class TestHealthStatus:
         assert status.state is HealthState.UNKNOWN
         assert status.reason == "extension is a stub"
         assert status.breaker_key is None
+
+    def test_health_status_post_init_sanitizes_last_error(self) -> None:
+        # IMPL_REVIEW finding 5: HealthStatus must sanitize last_error on
+        # direct construction, not only when produced by helpers.
+        secret = "Authorization: Bearer sk-secret-1234567890"
+        status = HealthStatus(
+            state=HealthState.UNAVAILABLE,
+            reason=None,
+            last_error=secret,
+            checked_at=datetime.now(UTC),
+            breaker_key=None,
+        )
+        assert status.last_error is not None
+        assert "sk-secret-1234567890" not in status.last_error
+
+    def test_health_status_post_init_truncates_long_last_error(self) -> None:
+        long_error = "X" * 500
+        status = HealthStatus(
+            state=HealthState.UNAVAILABLE,
+            reason=None,
+            last_error=long_error,
+            checked_at=datetime.now(UTC),
+            breaker_key=None,
+        )
+        assert status.last_error is not None
+        assert len(status.last_error) == 200
+        assert status.last_error.endswith("...")
