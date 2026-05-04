@@ -87,6 +87,19 @@ class HealthStatus:
     checked_at: datetime
     breaker_key: str | None
 
+    def __post_init__(self) -> None:
+        # Enforce the spec invariant that any error string flowing into
+        # HealthStatus.last_error is sanitized + truncated. This protects
+        # against a future extension constructing HealthStatus directly
+        # with raw upstream error text — see error-resilience capability
+        # spec Requirement: "Error Strings Are Sanitized And Truncated".
+        if self.last_error is not None:
+            cleaned = _sanitize_and_truncate(self.last_error)
+            if cleaned != self.last_error:
+                # Frozen dataclass — must use object.__setattr__ to override
+                # the field with the sanitized form.
+                object.__setattr__(self, "last_error", cleaned)
+
 
 def default_health_status_for_unimplemented(extension_name: str) -> HealthStatus:
     """Standard "stub" status used by every unwired extension stub."""
@@ -198,11 +211,19 @@ class CircuitBreaker:
 
     async def record_success(self) -> None:
         async with self._lock:
+            prev_state = self._st.state
             self._st.consecutive_failures = 0
             self._st.state = "closed"
             self._st.opened_at = None
             self._st.next_probe_at = None
             self._st.in_flight_probe = False
+            if prev_state == "half_open":
+                _emit_transition_span(
+                    from_state="half_open",
+                    to_state="closed",
+                    breaker_key=self._key,
+                    last_error_summary=None,
+                )
 
     @asynccontextmanager
     async def acquire_admission(self) -> AsyncIterator[None]:
@@ -225,6 +246,12 @@ class CircuitBreaker:
                     self._st.state = "half_open"
                     self._st.in_flight_probe = True
                     admitted_as_probe = True
+                    _emit_transition_span(
+                        from_state="open",
+                        to_state="half_open",
+                        breaker_key=self._key,
+                        last_error_summary=self._st.last_error,
+                    )
                 else:
                     raise CircuitBreakerOpenError(
                         breaker_key=self._key,
@@ -412,15 +439,37 @@ def _emit_short_circuit_span(error: CircuitBreakerOpenError) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _is_availability_failure(
+def _is_retryable(
     error: BaseException,
     policy: RetryPolicy,
 ) -> bool:
-    """Classify an error as availability vs non-availability failure (D5)."""
+    """Classify an error as retryable by the tenacity retry predicate.
+
+    NOTE: distinct from ``_is_availability_failure``. ``CircuitBreakerOpenError``
+    is an availability failure for accounting purposes but is NOT retryable —
+    retrying would just keep hitting the same open breaker until cooldown
+    elapses, which adds latency and duplicate short-circuit telemetry without
+    a chance of recovery.
+    """
     if isinstance(error, policy.retryable_exceptions):
         return True
     if isinstance(error, httpx.HTTPStatusError):
         return error.response.status_code in policy.retryable_status_codes
+    return False
+
+
+def _is_availability_failure(
+    error: BaseException,
+    policy: RetryPolicy,
+) -> bool:
+    """Classify an error as an availability failure for breaker accounting (D5).
+
+    A superset of ``_is_retryable``: includes ``CircuitBreakerOpenError`` so
+    nested guarded calls that hit an inner open breaker are still recorded
+    as upstream-availability failures on the outer breaker.
+    """
+    if _is_retryable(error, policy):
+        return True
     if isinstance(error, CircuitBreakerOpenError):
         return True
     return False
@@ -499,7 +548,11 @@ async def _run_with_retry(
         if outcome is None or not outcome.failed:
             return False
         exc = outcome.exception()
-        return exc is not None and _is_availability_failure(exc, policy)
+        # Use _is_retryable, NOT _is_availability_failure — see the
+        # function docstrings for why CircuitBreakerOpenError must not
+        # be retried (it is an availability failure but retrying it has
+        # no chance of recovery before cooldown elapses).
+        return exc is not None and _is_retryable(exc, policy)
 
     delay_holder: dict[str, float] = {"delay": 0.0}
 
@@ -508,7 +561,6 @@ async def _run_with_retry(
         delay_holder["delay"] = delay
         return delay
 
-    last_error_type: str | None = None
     try:
         async for attempt in tenacity.AsyncRetrying(
             stop=tenacity.stop_after_attempt(policy.max_attempts),
@@ -518,22 +570,38 @@ async def _run_with_retry(
         ):
             with attempt:
                 attempt_number = attempt.retry_state.attempt_number
-                _emit_attempt_span(
-                    breaker_key=breaker.key,
-                    attempt_number=attempt_number,
-                    delay_before_attempt_s=delay_holder["delay"]
-                    if attempt_number > 1
-                    else 0.0,
-                    error_type=last_error_type if attempt_number > 1 else None,
-                )
+                this_attempt_error: str | None = None
                 try:
                     result = await fn(*args, **kwargs)
                 except Exception as exc:
                     # Note: NOT BaseException — KeyboardInterrupt /
                     # SystemExit / asyncio.CancelledError must propagate
                     # without being recorded as breaker failures.
-                    last_error_type = type(exc).__name__
+                    this_attempt_error = type(exc).__name__
+                    # Emit the per-attempt span BEFORE re-raising so the
+                    # span carries this attempt's outcome (error_type)
+                    # instead of being attributed to the next attempt's
+                    # entry — see observability spec scenario
+                    # "Successful retry emits one trace_tool_call plus
+                    # per-attempt spans".
+                    _emit_attempt_span(
+                        breaker_key=breaker.key,
+                        attempt_number=attempt_number,
+                        delay_before_attempt_s=(
+                            delay_holder["delay"] if attempt_number > 1 else 0.0
+                        ),
+                        error_type=this_attempt_error,
+                    )
                     raise
+                # Successful attempt — emit span with error_type=None.
+                _emit_attempt_span(
+                    breaker_key=breaker.key,
+                    attempt_number=attempt_number,
+                    delay_before_attempt_s=(
+                        delay_holder["delay"] if attempt_number > 1 else 0.0
+                    ),
+                    error_type=None,
+                )
         await breaker.record_success()
         return result
     except Exception as exc:

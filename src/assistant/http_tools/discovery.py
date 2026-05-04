@@ -111,20 +111,37 @@ async def _fetch_openapi(
             last_status = e.status_code
             continue
         except CircuitBreakerOpenError:
+            # Breaker is shared across both discovery paths; once open,
+            # the next path will be short-circuited too. Skip the source.
             logger.warning(
                 "discovery skipped for source %r: circuit breaker open",
                 source_name,
             )
             return None
+        except httpx.HTTPStatusError as exc:
+            # Retries on a 5xx (or other retryable status) were exhausted
+            # at this path. Try the next path before giving up on the
+            # source — preserves the P3 D4 fallback contract.
+            logger.warning(
+                "discovery exhausted retries for source %r at %s: HTTP %d",
+                source_name, path, exc.response.status_code,
+            )
+            last_status = exc.response.status_code
+            continue
         except httpx.TimeoutException:
-            logger.warning("discovery timeout for source %r", source_name)
-            return None
+            logger.warning(
+                "discovery timeout for source %r at %s",
+                source_name, path,
+            )
+            last_status = -1
+            continue
         except httpx.HTTPError as exc:
             logger.warning(
-                "discovery transport error for source %r: %s",
-                source_name, type(exc).__name__,
+                "discovery transport error for source %r at %s: %s",
+                source_name, path, type(exc).__name__,
             )
-            return None
+            last_status = -1
+            continue
         except json.JSONDecodeError as exc:
             # JSONDecodeError is a subclass of ValueError, so it MUST be
             # caught before the bare ValueError handler below.
@@ -139,10 +156,15 @@ async def _fetch_openapi(
                 source_name, exc,
             )
             return None
-    if last_status is not None:
+    if last_status is not None and last_status > 0:
         logger.warning(
             "discovery exhausted paths for source %r (last status %d)",
             source_name, last_status,
+        )
+    elif last_status is not None:
+        logger.warning(
+            "discovery exhausted paths for source %r (transport errors)",
+            source_name,
         )
     return None
 
