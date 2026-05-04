@@ -125,6 +125,42 @@ On each invocation the wrapper SHALL:
 - **THEN** the wrapper MUST raise the underlying `httpx.HTTPStatusError`
 - **AND** the raised exception MUST NOT be a `tenacity.RetryError`
 
+#### Scenario: Retries 429 Too Many Requests with backoff
+
+- **WHEN** a wrapped coroutine fails with HTTP 429 on attempt 1 and HTTP 200 on attempt 2
+- **THEN** the wrapper MUST return the attempt-2 response payload
+- **AND** the delay between attempts MUST be at least `(1 - jitter_factor) * base_delay_s` seconds
+- **AND** the breaker MUST be in state `"closed"` after the call
+
+#### Scenario: Async retry uses asyncio sleep, not blocking sleep
+
+- **WHEN** a wrapped coroutine fails on the first attempt and the wrapper schedules a retry delay
+- **THEN** during that delay, other `asyncio` tasks scheduled on the same event loop MUST be able to make progress (the delay MUST NOT block the event loop)
+
+### Requirement: Error Strings Are Sanitized And Truncated
+
+The system SHALL sanitize and truncate every error string before storing it on `CircuitBreaker.last_error`, `CircuitBreakerOpenError.last_error_summary`, or `HealthStatus.last_error`. Sanitization MUST be performed by routing the string through `assistant.telemetry.sanitize.sanitize` (the secret-redaction chain established by the `observability` capability). Truncation MUST cap the resulting string at 200 characters; truncated values MUST end with the literal three-character suffix `"..."`.
+
+This rule prevents upstream response bodies — which may contain authentication tokens, email addresses, or other sensitive content from misconfigured backends — from leaking into logs, telemetry attributes, or future agent prompts via the resilience module.
+
+#### Scenario: Long error string is truncated with ellipsis suffix
+
+- **WHEN** an error message of 500 characters is recorded via `breaker.record_failure(error)`
+- **THEN** `breaker.last_error` MUST have length 200
+- **AND** `breaker.last_error` MUST end with `"..."`
+
+#### Scenario: Error string is sanitized for secrets
+
+- **WHEN** an error message containing `"Authorization: Bearer sk-1234567890abcdef"` is recorded via `breaker.record_failure(error)`
+- **THEN** `breaker.last_error` MUST NOT contain the literal substring `"sk-1234567890abcdef"`
+- **AND** the redacted form produced by the sanitize chain MUST be present in its place
+
+#### Scenario: CircuitBreakerOpenError carries sanitized last_error_summary
+
+- **WHEN** the breaker is `open` after recording a failure with `"Authorization: Bearer sk-secret"` in the error string
+- **AND** a guarded call attempts to invoke the wrapped function
+- **THEN** the raised `CircuitBreakerOpenError.last_error_summary` MUST NOT contain the literal substring `"sk-secret"`
+
 ### Requirement: Health Status Type
 
 The system SHALL define a `HealthState` enum and a `HealthStatus` frozen dataclass at `src/assistant/core/resilience.py`. `HealthState` SHALL have exactly four members: `OK`, `DEGRADED`, `UNAVAILABLE`, `UNKNOWN`. `HealthStatus` SHALL carry: `state: HealthState`, `reason: str | None`, `last_error: str | None`, `checked_at: datetime`, `breaker_key: str | None`.

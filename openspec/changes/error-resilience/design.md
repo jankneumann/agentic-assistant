@@ -87,6 +87,22 @@ The new module lives at `core/` (not `http_tools/`) because it is a generic prim
 
 **Why**: P3's D4 (Source-level failure skipped with warning) is a public contract scenario in the existing http-tools spec. Breaking it would silently flip the bootstrap behavior of every persona that has ever configured a tool source. Resilience is additive: same outcome on terminal failure, just with retries before throwing in the towel.
 
+### D11 — Document the protocol break in `docs/gotchas.md` rather than a deprecation shim
+
+**Decision**: the `health_check() -> bool` to `health_check() -> HealthStatus` change ships as a hard protocol break, with the migration recipe added to `docs/gotchas.md` (alongside G8 mypy-scope and other compounded-pain entries). No `bool`-compatible deprecation period.
+
+**Why**: a deprecation shim would carry three problems. (1) Two valid return types in the protocol means mypy stops catching mistakes at the boundary. (2) Every internal stub already gets updated in this same change, so no internal caller benefits from a transitional period. (3) Out-of-tree extensions (private persona submodules) need a clear, mechanical fix — `return default_health_status_for_unimplemented(self.name)` — which is one line. Hiding that behind a deprecation makes adopters delay; a doc note makes them act.
+
+**Trade-off accepted**: any out-of-tree extension we have not seen will surface as one mypy error pointing at the protocol after `uv sync`. The fix takes seconds. Compared to dragging a dual-return-type protocol forward indefinitely, the doc-note path is cleaner for everyone reading the codebase a year from now.
+
+### D12 — Sanitize and truncate error strings stored on breaker state
+
+**Decision**: any error string flowing into `CircuitBreaker.last_error`, `CircuitBreakerOpenError.last_error_summary`, or `HealthStatus.last_error` MUST first pass through `assistant.telemetry.sanitize.sanitize` and MUST be truncated to ≤ 200 characters. The truncation MUST be lossy with a `"..."` suffix when the original string is longer.
+
+**Why**: upstream HTTP errors stringify the response body for HTTPStatusError instances. That body can include auth tokens (in error messages from misconfigured backends), email addresses, or other user data. P4's existing observability sanitize chain at `src/assistant/telemetry/sanitize.py` solves this for span attributes — but the resilience module surfaces error strings via `CircuitBreakerOpenError.last_error_summary` (an exception attribute that gets stringified into logs via `repr()`) and `HealthStatus.last_error` (a value that may end up in a future agent prompt). Without explicit sanitization at the resilience layer, those paths bypass the existing protection. Truncation prevents disk-fill and log-injection from a verbose backend.
+
+**Trade-off accepted**: a small import dependency from `core/resilience.py` to `telemetry/sanitize.py` (existing module). Not a circular import — `telemetry/` does not depend on `core/resilience.py`.
+
 ## Risks not in proposal.md
 
 ### Risk: long-running process memory growth via breaker registry

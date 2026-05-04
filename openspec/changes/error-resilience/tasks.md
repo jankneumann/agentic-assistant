@@ -4,13 +4,13 @@ Tasks are ordered TDD-style: tests precede their implementation within each phas
 
 ## Phase 1 — Core resilience module
 
-- [ ] 1.1 Write `tests/core/test_resilience.py` covering `RetryPolicy` defaults / immutability, `CircuitBreaker` state-machine transitions (closed→open→half_open→closed and ←open paths), `CircuitBreakerRegistry` singleton semantics, and `CircuitBreakerOpenError` payload fields
-  **Spec scenarios**: error-resilience.RetryPolicyDataType.{1,2}, error-resilience.CircuitBreakerStateMachine.{1,2,3,4}, error-resilience.CircuitBreakerRegistry.{1,2}
-  **Design decisions**: D1, D2, D3, D5
+- [ ] 1.1 Write `tests/core/test_resilience.py` covering `RetryPolicy` defaults / immutability, `CircuitBreaker` state-machine transitions (closed→open→half_open→closed and ←open paths), `CircuitBreakerRegistry` singleton semantics, `CircuitBreakerOpenError` payload fields, and the sanitization + 200-char truncation contract for error strings stored on the breaker
+  **Spec scenarios**: error-resilience.RetryPolicyDataType.{1,2}, error-resilience.CircuitBreakerStateMachine.{1,2,3,4}, error-resilience.CircuitBreakerRegistry.{1,2}, error-resilience.ErrorStringsAreSanitizedAndTruncated.{1,2,3}
+  **Design decisions**: D1, D2, D3, D5, D12
   **Dependencies**: None
 
-- [ ] 1.2 Write `tests/core/test_resilience_decorator.py` covering `@resilient_http` retry-then-success, retry-then-fail with original exception preserved, breaker short-circuit, half-open recovery, jitter range bounds
-  **Spec scenarios**: error-resilience.ResilientDecorator.{1,2,3,4}
+- [ ] 1.2 Write `tests/core/test_resilience_decorator.py` covering `@resilient_http` retry-then-success, retry-then-fail with original exception preserved, breaker short-circuit, half-open recovery, jitter range bounds, 429 retry-with-backoff, and asyncio-non-blocking retry delay
+  **Spec scenarios**: error-resilience.ResilientDecorator.{1,2,3,4,5,6}
   **Design decisions**: D4, D5, D6
   **Dependencies**: 1.1
 
@@ -18,9 +18,9 @@ Tasks are ordered TDD-style: tests precede their implementation within each phas
   **Design decisions**: D4
   **Dependencies**: None
 
-- [ ] 1.4 Implement `src/assistant/core/resilience.py`: `RetryPolicy` (frozen dataclass), `DEFAULT_HTTP_RETRY_POLICY`, `CircuitBreaker` with `asyncio.Lock`, `CircuitBreakerRegistry` singleton, `CircuitBreakerOpenError`, `resilient_http(*, source, policy=None)` decorator with `tenacity.retry(reraise=True, ...)`, `HealthState` enum, `HealthStatus` dataclass, `health_status_from_breaker(...)`, `default_health_status_for_unimplemented(...)`
+- [ ] 1.4 Implement `src/assistant/core/resilience.py`: `RetryPolicy` (frozen dataclass), `DEFAULT_HTTP_RETRY_POLICY`, `CircuitBreaker` with `asyncio.Lock` and the sanitize+truncate path for `last_error`, `CircuitBreakerRegistry` singleton, `CircuitBreakerOpenError` (with sanitized `last_error_summary`), `resilient_http(*, source, policy=None)` decorator with `tenacity.retry(reraise=True, ...)`, `HealthState` enum, `HealthStatus` dataclass (with sanitized `last_error`), `health_status_from_breaker(...)`, `default_health_status_for_unimplemented(...)`
   **Spec scenarios**: all of error-resilience.*
-  **Design decisions**: D1, D2, D5, D6, D7, D8
+  **Design decisions**: D1, D2, D5, D6, D7, D8, D12
   **Dependencies**: 1.1, 1.2, 1.3
 
 - [ ] 1.5 Run `uv run pytest tests/core/test_resilience.py tests/core/test_resilience_decorator.py` — all pass
@@ -91,5 +91,5 @@ Tasks are ordered TDD-style: tests precede their implementation within each phas
   **Dependencies**: None (pre-PR doc update)
 
 - [ ] 4.6 Update `docs/gotchas.md` with a migration note for any out-of-tree extension adopters: `health_check() -> bool` is now `-> HealthStatus`; one-line fix is `return default_health_status_for_unimplemented(self.name)`
-  **Design decisions**: D11 (gotchas-table addition)
+  **Design decisions**: D11 (hard protocol break + doc-note migration recipe instead of deprecation shim)
   **Dependencies**: 3.3
