@@ -3,49 +3,124 @@ change_id: ms-graph-extension
 
 defaults:
   auto_loop:
-    # P5 ships a foundation layer (cloud_client + msal_auth +
-    # graph_client + MockGraphClient + extended factory contract +
-    # trace_graph_call observability hook) plus four real
-    # extensions plus the MSAF harness implementation (with minimal
-    # MemoryPolicy injection). Estimate grew after the
-    # parallel-review-plan multi-vendor review surfaced 8 HIGH
-    # findings and a dozen mediums; remediation tasks landed in
-    # tasks.md section 8 and folded into the appropriate packages.
-    # Integration package is exempted from max_packages (per
-    # complexity_gate._count_impl_packages — see
+    # P5 ships a foundation layer split into two packages:
+    # protocols (cloud_client Protocol + factory contract +
+    # ObservabilityProvider Protocol modification + MockGraphClient
+    # — pure interfaces, ~600 LOC) and impls (msal_auth +
+    # graph_client + observability provider impls + pyproject —
+    # concrete code, ~2400 LOC). The split (PLAN_ITERATE iteration 3)
+    # lets the four MS extension packages depend only on protocols
+    # and run in parallel with impls, cutting the critical path
+    # before extensions can start by ~5x. Plus the MSAF harness
+    # implementation (with minimal MemoryPolicy injection per D27)
+    # and integration. Integration package is exempted from
+    # max_packages (per complexity_gate._count_impl_packages — see
     # http-tools-layer's comment).
-    max_loc: 4200
-    max_packages: 6
+    max_loc: 5000
+    max_packages: 7
     max_external_deps: 3
 
 packages:
   # ──────────────────────────────────────────────────────────
-  # wp-foundation — cloud_client Protocol + MSAL + GraphClient
-  # Runs first. All extension packages and the harness depend on it.
+  # wp-foundation-protocols — pure interfaces
+  # Runs first. All other packages depend on this one.
+  # Split out from monolithic wp-foundation in PLAN_ITERATE
+  # iteration 3 to unblock extension packages from waiting on the
+  # heavy impls work.
   # ──────────────────────────────────────────────────────────
-  - id: wp-foundation
-    name: "Foundation: CloudGraphClient Protocol + MSAL strategies + GraphClient"
+  - id: wp-foundation-protocols
+    name: "Foundation/Protocols: CloudGraphClient Protocol + factory contract + ObservabilityProvider extension + MockGraphClient"
     description: >
-      Implements the layered foundation per design.md D1–D4 (and
-      post-review additions D13–D22, D26): the `CloudGraphClient`
-      Protocol with five methods (core/cloud_client.py), two MSAL
-      strategy classes with serializable token cache discipline +
-      asyncio.to_thread wrapping + atomic 0o600 tmp creation +
-      gitignore verification (core/msal_auth.py), the custom
-      httpx-based `GraphClient` with Retry-After honoring,
-      configured timeouts, transport-level trace_graph_call
-      observability, empty-body 202/204 handling, GraphAPIError
-      subclassing httpx.HTTPStatusError, retry_safe parameter, and
-      get_bytes streaming download (core/graph_client.py). Also
-      lands the typed `MockGraphClient`, the extended factory
-      contract (`create_extension(config, *, persona=None)`) wired
-      through PersonaRegistry, and a new
-      `trace_graph_call` method on the P4 observability provider.
-      Adds `msal>=1.28` and `respx>=0.21` to pyproject.toml. Covers
-      tasks.md sections 1.1–1.16 and 8.1.x and 8.4.x.
+      Pure-interface foundation per design.md D3 (CloudGraphClient
+      Protocol with 5 transport methods + 3 lifecycle methods),
+      D26 (extended `create_extension(config, *, persona=None)`
+      factory contract through PersonaRegistry), and D15 (adds the
+      `trace_graph_call` method to the existing P4
+      ObservabilityProvider Protocol). Also lands the typed
+      `MockGraphClient` test fixture so extension tests can
+      satisfy CloudGraphClient without depending on the
+      httpx-based GraphClient impl. NO concrete httpx, NO MSAL,
+      NO Langfuse code lives here. Covers tasks 1.1, 1.2, 8.4.1,
+      8.4.2, 8.4.3, 9.1.1 (Protocol-shape part), 9.1.2 (Protocol
+      method addition), 9.2.1 (factory persona=None test),
+      9.2.2 (factory persona=None impl).
     tasks:
       - "1.1"
       - "1.2"
+      - "1.15"
+      - "8.4.1"
+      - "8.4.2"
+      - "8.4.3"
+      - "9.1.1"
+      - "9.1.2"
+      - "9.2.1"
+      - "9.2.2"
+    priority: 1
+    dependencies: []
+    scope:
+      write_allow:
+        - "src/assistant/core/cloud_client.py"
+        - "src/assistant/core/persona.py"
+        - "src/assistant/telemetry/providers/base.py"
+        - "tests/mocks/__init__.py"
+        - "tests/mocks/graph_client.py"
+        - "tests/test_cloud_client.py"
+        - "tests/test_persona_registry_factory_contract.py"
+        - "tests/test_observability_trace_graph_call_protocol.py"
+      read_allow:
+        - "**"
+    locks:
+      files:
+        - "src/assistant/core/cloud_client.py"
+        - "src/assistant/core/persona.py"
+        - "src/assistant/telemetry/providers/base.py"
+      keys:
+        - "core:cloud_client:protocol"
+        - "core:persona:factory_contract"
+        - "telemetry:providers:protocol"
+      ttl_minutes: 60
+      reason: >
+        Establishes the pure-interface contract that the four
+        extension packages, the MSAF harness, and
+        wp-foundation-impls all depend on. Lock window is short (60
+        min) because no httpx/MSAL/Langfuse code is touched here —
+        only Protocol declarations, dataclasses, and the test
+        fixture MockGraphClient.
+    verification: tier_b
+    metadata:
+      loc_estimate: 600
+      external_deps: []
+
+  # ──────────────────────────────────────────────────────────
+  # wp-foundation-impls — concrete httpx + MSAL + telemetry impls
+  # Depends on wp-foundation-protocols.
+  # Runs in PARALLEL with the four extension packages (they only
+  # need protocols). The MSAF harness depends on this package
+  # because of the agent-framework dep in pyproject.toml.
+  # ──────────────────────────────────────────────────────────
+  - id: wp-foundation-impls
+    name: "Foundation/Impls: MSAL strategies + GraphClient + observability provider impls + pyproject"
+    description: >
+      Concrete implementation of the protocols declared in
+      wp-foundation-protocols. Lands per design.md D1, D2, D4 (and
+      post-review additions D13–D22, D27): two MSAL strategy
+      classes with serializable token cache discipline +
+      asyncio.to_thread wrapping + atomic 0o600 tmp creation +
+      gitignore verification + concurrent-refresh tmp-file
+      collision handling (core/msal_auth.py); the custom
+      httpx-based `GraphClient` with Retry-After honoring,
+      configured timeouts, transport-level trace_graph_call
+      observability, empty-body 202/204 handling, GraphAPIError
+      subclassing httpx.HTTPStatusError, retry_safe parameter,
+      get_bytes streaming download, async context-manager
+      lifecycle, and cross-domain redirect rejection
+      (core/graph_client.py); and the noop/langfuse impls of the
+      new trace_graph_call method on the ObservabilityProvider
+      Protocol. Adds `msal>=1.28`, `respx>=0.21`, and the pinned
+      `agent-framework>=1.0.0,<2.0.0` (per D5 PLAN_ITERATE pin
+      decision) to pyproject.toml. Covers tasks 1.3-1.14, 1.16,
+      8.1.x, 9.1.3-9.1.9, 9.4.1.
+    tasks:
       - "1.3"
       - "1.4"
       - "1.5"
@@ -58,7 +133,6 @@ packages:
       - "1.12"
       - "1.13"
       - "1.14"
-      - "1.15"
       - "1.16"
       - "8.1.1"
       - "8.1.2"
@@ -83,11 +157,6 @@ packages:
       - "8.1.21"
       - "8.1.22"
       - "8.1.23"
-      - "8.4.1"
-      - "8.4.2"
-      - "8.4.3"
-      - "9.1.1"
-      - "9.1.2"
       - "9.1.3"
       - "9.1.4"
       - "9.1.5"
@@ -95,30 +164,22 @@ packages:
       - "9.1.7"
       - "9.1.8"
       - "9.1.9"
-      - "9.2.1"
-      - "9.2.2"
       - "9.4.1"
     priority: 1
-    dependencies: []
+    dependencies:
+      - wp-foundation-protocols
     scope:
       write_allow:
-        - "src/assistant/core/cloud_client.py"
         - "src/assistant/core/msal_auth.py"
         - "src/assistant/core/graph_client.py"
-        - "src/assistant/core/persona.py"
-        - "src/assistant/telemetry/providers/base.py"
         - "src/assistant/telemetry/providers/noop.py"
         - "src/assistant/telemetry/providers/langfuse.py"
         - "src/assistant/extensions/_stub.py"
         - "src/assistant/extensions/gmail.py"
         - "src/assistant/extensions/gcal.py"
         - "src/assistant/extensions/gdrive.py"
-        - "tests/mocks/__init__.py"
-        - "tests/mocks/graph_client.py"
-        - "tests/test_cloud_client.py"
         - "tests/test_msal_auth.py"
         - "tests/test_graph_client.py"
-        - "tests/test_persona_registry_factory_contract.py"
         - "tests/test_observability_trace_graph_call.py"
         - "pyproject.toml"
         - "uv.lock"
@@ -126,41 +187,34 @@ packages:
         - "**"
     locks:
       files:
-        - "src/assistant/core/cloud_client.py"
         - "src/assistant/core/msal_auth.py"
         - "src/assistant/core/graph_client.py"
-        - "src/assistant/core/persona.py"
-        - "src/assistant/telemetry/providers/base.py"
         - "src/assistant/telemetry/providers/noop.py"
         - "src/assistant/telemetry/providers/langfuse.py"
         - "pyproject.toml"
         - "uv.lock"
       keys:
-        - "core:cloud_client:protocol"
         - "core:msal_auth:strategies"
         - "core:graph_client:impl"
-        - "core:persona:factory_contract"
-        - "telemetry:providers:trace_graph_call"
+        - "telemetry:providers:impls"
         - "deps:pyproject"
-      ttl_minutes: 180
+      ttl_minutes: 150
       reason: >
-        Establishes the Protocol shape and concrete httpx GraphClient
-        that all four extensions and the MSAF harness import. Locks
-        also cover the extended factory contract in core/persona.py
-        and the new trace_graph_call method on the P4 observability
-        provider (telemetry/providers/{base,noop,langfuse}.py).
-        Locking these together prevents conflicting edits to interface
-        or dep set during the parallel fan-out that follows. The
-        deps:pyproject lock window does not overlap wp-msaf-harness's
-        pyproject edit because wp-msaf-harness depends on
-        wp-foundation; the dep edge guarantees lock acquisition is
-        serialized regardless of TTL.
+        Establishes the concrete httpx GraphClient and MSAL
+        strategy classes that the four extensions construct at
+        factory time, plus the noop/langfuse trace_graph_call
+        impls that the harness consumes. The deps:pyproject lock
+        window does not overlap wp-msaf-harness's pyproject edit
+        because wp-msaf-harness depends on this package; the dep
+        edge guarantees lock acquisition is serialized regardless
+        of TTL.
     verification: tier_b
     metadata:
-      loc_estimate: 3000
+      loc_estimate: 2400
       external_deps:
         - msal
         - respx
+        - agent-framework
 
   # ──────────────────────────────────────────────────────────
   # wp-ms-graph — real ms_graph extension
@@ -194,7 +248,7 @@ packages:
       - "8.2.6"
     priority: 2
     dependencies:
-      - wp-foundation
+      - wp-foundation-protocols
     scope:
       write_allow:
         - "src/assistant/extensions/ms_graph.py"
@@ -250,7 +304,7 @@ packages:
       - "8.2.7"
     priority: 2
     dependencies:
-      - wp-foundation
+      - wp-foundation-protocols
     scope:
       write_allow:
         - "src/assistant/extensions/outlook.py"
@@ -306,7 +360,7 @@ packages:
       - "8.2.8"
     priority: 2
     dependencies:
-      - wp-foundation
+      - wp-foundation-protocols
     scope:
       write_allow:
         - "src/assistant/extensions/teams.py"
@@ -361,7 +415,7 @@ packages:
       - "8.2.9"
     priority: 2
     dependencies:
-      - wp-foundation
+      - wp-foundation-protocols
     scope:
       write_allow:
         - "src/assistant/extensions/sharepoint.py"
@@ -419,13 +473,12 @@ packages:
       - "8.3.2"
     priority: 2
     dependencies:
-      - wp-foundation
+      - wp-foundation-protocols
+      - wp-foundation-impls
     scope:
       write_allow:
         - "src/assistant/harnesses/sdk/ms_agent_fw.py"
         - "tests/test_harness_ms_agent_fw.py"
-        - "pyproject.toml"
-        - "uv.lock"
       read_allow:
         - "**"
       deny:
@@ -433,26 +486,27 @@ packages:
         - "src/assistant/extensions/outlook.py"
         - "src/assistant/extensions/teams.py"
         - "src/assistant/extensions/sharepoint.py"
+        - "pyproject.toml"
+        - "uv.lock"
     locks:
       files:
         - "src/assistant/harnesses/sdk/ms_agent_fw.py"
-        - "pyproject.toml"
-        - "uv.lock"
       keys:
         - "harness:ms_agent_framework:impl"
-        - "deps:pyproject"
       ttl_minutes: 150
       reason: >
         Replaces the entire MSAF harness module from a stub into a
-        full implementation, and adds the agent-framework runtime
-        dep. Pyproject.toml lock prevents concurrent edits with
-        wp-foundation's pyproject changes — wp-msaf-harness merges
-        AFTER wp-foundation per the dependency edge, so the lock
-        order is naturally serialized.
+        full implementation. Imports `agent-framework` from the dep
+        added by wp-foundation-impls; this package does NOT touch
+        pyproject.toml itself (the pin is wp-foundation-impls's
+        responsibility per design D5). The dep edge to
+        wp-foundation-impls guarantees agent-framework is installed
+        before harness implementation begins.
     verification: tier_b
     metadata:
       loc_estimate: 580
-      external_deps:
+      external_deps: []
+      consumes_external_deps:
         - agent-framework
 
   # ──────────────────────────────────────────────────────────
