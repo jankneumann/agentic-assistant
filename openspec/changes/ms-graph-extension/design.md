@@ -205,10 +205,14 @@ implementation of `CloudGraphClient`. Key properties:
   Breaker keys are namespaced per extension so one extension's
   unavailability doesn't trip another's calls. The `extension_name` is
   passed at `GraphClient` construction.
-- **`paginate()` semantics**: yields each page's `value` array as a
-  whole list, not individual records. Caller decides whether to
-  flatten. Hard ceiling at 100 pages (configurable via constructor
-  arg) to prevent runaway loops.
+- **`paginate()` semantics**: yields each full page response (a dict
+  with `value`, `@odata.nextLink`, and other top-level keys), not
+  individual records or just the `value` array. Caller decides
+  whether to flatten. Hard ceiling at 100 pages (configurable via
+  constructor arg) — when reached, paginate raises `GraphAPIError
+  (error_code="page_ceiling_exceeded")` rather than truncating
+  silently, so callers cannot mistake a truncated result for a
+  complete one.
 - **Error sanitization**: on any non-2xx, raises a custom
   `GraphAPIError` whose `__str__` is run through `_sanitize_error_string`
   (P9) so logged errors never contain access tokens.
@@ -557,6 +561,175 @@ plan reduces to:
 somehow, `git revert` the merge commit. Because no persona consumes
 the new code at the time of merge, rollback has zero data impact —
 only code regression.
+
+## Decisions added after parallel-review-plan (2026-05-05)
+
+A multi-vendor plan review (claude + codex + gemini) surfaced gaps
+in the initial design that are addressed by the following additional
+decisions. Each decision corresponds to one or more new spec
+requirements.
+
+### D13 — Retry-After honoring on 429/503
+
+Microsoft Graph throttles via HTTP 429 with a `Retry-After` header.
+Generic exponential backoff would violate Graph throttling guidance
+and amplify rate-limit failures. `GraphClient` parses both
+delta-seconds and HTTP-date forms of `Retry-After` and waits at
+least that long before allowing P9 backoff to compute additional
+delay. (graph-client spec: "Retry-After Honoring on 429 and 503".)
+
+### D14 — Per-request httpx timeouts
+
+Without explicit timeouts a hung TCP connection can block an
+extension tool indefinitely. `GraphClient` constructs `httpx.Timeout`
+with `connect=10s, read=30s, write=30s, pool=5s` by default, all
+overridable. Read timeout exceeded raises `GraphAPIError` with
+`status_code=None`. (graph-client spec: "Per-Request Timeout
+Configuration".)
+
+### D15 — Transport-level observability via trace_graph_call
+
+The four extensions and the MSAF harness already emit observability
+spans, but the new HTTP transport tier in `core/graph_client.py` had
+no visibility. A new `trace_graph_call(...)` method on the P4
+observability provider receives one span per outbound HTTP request
+with `extension_name`, `method`, normalized `path` (with sensitive
+ID values redacted to placeholders), `status_code`, `duration_ms`,
+the Microsoft Graph `request-id` response header (key for
+correlating with Entra ID and Graph audit logs), retry attempt
+count, and `breaker_key`. (graph-client spec: "Transport-Level
+Observability Span per Request".)
+
+### D16 — Empty-body 202/204 handling
+
+Microsoft Graph returns HTTP 202 with empty body on most successful
+write endpoints (`/me/sendMail`, `/chats/{id}/messages` for some
+channel types). The original spec mandated parsed JSON return for
+all GET/POST. The revised contract: empty 202 / 204 / empty
+JSON-Content-Type 200 responses return `{}` rather than raising. The
+write-tool tests (e.g., `outlook.send_email` returning successfully)
+depend on this. (graph-client spec: "Empty-Body Handling for 202
+and 204 Responses".)
+
+### D17 — GraphAPIError subclasses httpx.HTTPStatusError
+
+P9's `@resilient_http` retry classifier matches on
+`httpx.HTTPStatusError` and status-coded httpx failures. A custom
+exception class outside that hierarchy would never trigger retry.
+`GraphAPIError(httpx.HTTPStatusError)` preserves our typed error
+surface while ensuring P9 classifies 429/5xx as retriable. (graph-
+client spec: "GraphAPIError Subclasses httpx.HTTPStatusError".)
+
+### D18 — Per-method retry safety control
+
+Microsoft Graph has no idempotency-key protocol. Auto-retrying
+non-idempotent POSTs (`outlook.send_email`,
+`teams.post_chat_message`) on transient 5xx would risk **duplicate
+emails and duplicate Teams messages**. `GraphClient.post()` accepts
+a `retry_safe: bool = True` parameter; the two write tools above
+pass `retry_safe=False`, which routes the call through a
+non-retrying implementation path while still recording breaker
+state on failure. Idempotent operations rely on the default. (graph-
+client spec: "Per-Method Retry Safety Control".)
+
+### D19 — Binary download via get_bytes
+
+`sharepoint.download_document` retrieves binary content
+(application/pdf, application/octet-stream, etc.) which cannot fit
+the original Protocol contract `dict[str, Any]`. Adding a fifth
+async method `get_bytes(path, *, max_bytes=52428800)` to
+`CloudGraphClient` solves this without leaking SharePoint specifics.
+The method streams the response to a tempfile and returns a
+metadata dict (`path`, `size_bytes`, `content_type`, `request_id`)
+so LLM tool serialization stays bounded; raw bytes never enter agent
+context. (graph-client spec: "Binary Download via get_bytes".)
+
+### D20 — MSAL synchronous calls run via asyncio.to_thread
+
+The MSAL Python SDK is synchronous. Wrapping `acquire_token_*` calls
+with `asyncio.to_thread()` prevents MSAL from blocking the event
+loop during token acquisition; concurrent Graph calls from sibling
+extensions proceed in parallel rather than serializing behind a
+single MSAL operation. (msal-auth spec: "Synchronous MSAL Calls
+Run Off the Event Loop".)
+
+### D21 — Atomic tmp-file creation with mode 0o600
+
+The previous design used write-then-chmod for the cache tmp file,
+which under a permissive umask creates a brief window where the tmp
+file is group/world-readable before the chmod takes effect. Switched
+to `os.open(path, O_CREAT|O_WRONLY|O_EXCL, 0o600)` so the file is
+0o600 from the moment of creation. `O_EXCL` also catches stale tmp
+files cleanly. (msal-auth spec: scenario "Tmp file is created with
+mode 0o600 atomically".)
+
+### D22 — Persona repo gitignore verification before token write
+
+The original plan amended `personas/_template/.gitignore` to
+exclude `.cache/`, but this only helps NEW personas. Existing
+persona submodules created before the template change would not
+pick up the rule, and accidental commits would leak refresh
+tokens. The strategy now performs a startup gitignore check and
+refuses to write tokens unless `.cache/` (or an equivalent pattern)
+is declared in the persona repo's `.gitignore` chain. (msal-auth
+spec: "Persona Repo Gitignore Verification".)
+
+### D23 — Tool input URL-encoding and validation
+
+Tool inputs (`message_id`, `chat_id`, search strings) are
+interpolated into Graph paths. URL-encode all path segments via
+`urllib.parse.quote(value, safe="")`; reject inputs containing path
+separators (`/`), control characters, or backslashes with
+`ValueError` before any HTTP call. Search strings always pass via
+`params=`, never embedded in path. (ms-extensions spec: "Tool Input
+URL-Encoding and Validation".)
+
+### D24 — Scope override semantics: REPLACE
+
+When persona configures `extensions.<name>.config.scopes`, the
+list entirely supersedes module defaults. Empty list or absent key
+falls back to defaults. There is no merge or add-to mode. This
+disambiguates "Default scopes include..." language and prevents
+implementations from drifting on this question. (ms-extensions spec:
+"Scope Override Semantics".)
+
+### D25 — Structured GraphAPIError on OPEN-breaker tool invocation
+
+When the per-extension breaker is OPEN, tool invocation raises
+`GraphAPIError(status_code=None, error_code="breaker_open")` with
+the extension name in the message. This surfaces unavailability to
+the agent in a structured way rather than as a generic
+`BreakerOpen` exception. (ms-extensions spec: "Tool Invocation
+Error When Breaker is OPEN".)
+
+### D26 — Factory contract accepts optional persona keyword
+
+The original plan specified
+`create_extension(config, client=mock_client)` for tests but the
+production load path
+(`PersonaRegistry.load_extensions`) calls `mod.create_extension(
+config)`. The two contracts disagreed; real extensions would have
+been unconstructable in production. The factory signature is now
+`create_extension(config: dict, *, persona: PersonaConfig | None
+= None)`. Stubs ignore `persona`; real factories use it to
+construct their own MSAL strategy + GraphClient internally. The
+load path passes `persona=<the persona>` to every factory call.
+(extension-registry spec: "Extension Factory Contract Accepts
+Optional Persona".)
+
+### D27 — Minimal MemoryPolicy injection in MSAF harness
+
+The original plan deferred `MemoryPolicy` from the MSAF harness,
+creating asymmetry where DeepAgents agents on the personal persona
+have memory continuity but MSAF agents on the work persona do not.
+The work persona is precisely the one most likely to benefit from
+cross-session memory. Resolution: at `create_agent()` time, fetch
+the persona's recent N memory snippets via
+`MemoryPolicy.get_recent_snippets(persona, role, limit=10)` and
+prepend them under a `## Recent context` heading inside the
+`Agent`'s `instructions` parameter. ~50 LOC, no SDK contract
+change required. (ms-agent-framework-harness spec: "Memory Snippet
+Injection in create_agent".)
 
 ## Open Questions
 

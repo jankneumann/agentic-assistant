@@ -124,7 +124,12 @@ The system SHALL replace the `sharepoint` stub at
 `src/assistant/extensions/sharepoint.py` with a real implementation
 exposing SharePoint search and document read tools. SharePoint
 write-side tools (list-item create, document upload) are explicitly
-deferred to a P5b follow-up.
+deferred to a P5b follow-up. The `download_document` tool SHALL use
+the `CloudGraphClient.get_bytes()` method (50 MiB ceiling by default)
+to retrieve binary content; the tool MUST return the result dict
+structure `{"path", "size_bytes", "content_type", "request_id"}`
+specified in the `graph-client` capability and MUST NOT return raw
+bytes in memory.
 
 #### Scenario: Tool list contains only read tools
 
@@ -140,6 +145,16 @@ deferred to a P5b follow-up.
 - **WHEN** `await ext._search_sites(query="finance")` is awaited
 - **THEN** the GET request MUST be to `/sites` with
   `$search="finance"` in params
+
+#### Scenario: download_document delegates to get_bytes and returns metadata dict
+
+- **WHEN** `await ext._download_document(item_id="abc")` is awaited
+- **THEN** the tool MUST call `client.get_bytes(...)` with the
+  endpoint `/me/drive/items/abc/content` (or equivalent SharePoint
+  variant)
+- **AND** the tool MUST return a dict with keys `path`, `size_bytes`,
+  `content_type`, `request_id`
+- **AND** the tool MUST NOT return raw `bytes` in its return value
 
 #### Scenario: Default scopes include Sites.Read.All and Files.Read.All
 
@@ -196,6 +211,100 @@ the tool surface a role can call.
 - **AND** the MSAF list is collected from the same extension instance
 - **THEN** the MSAF list's element at index `i` MUST have an
   `@ai_function`-recorded name equal to `"outlook.list_messages"`
+
+### Requirement: Tool Input URL-Encoding and Validation
+
+The system SHALL ensure that any user-supplied identifier
+interpolated into a Graph API path segment (`message_id`, `chat_id`,
+`item_id`, `site_id`, `user_id`, etc.) is URL-encoded as a path
+segment via `urllib.parse.quote(value, safe="")` before being
+embedded in the request path. Identifiers that contain path
+separators (`/`), control characters (`\x00-\x1f`), or backslashes
+SHALL be rejected with `ValueError` raised from the tool wrapper
+before any HTTP call. Search strings and other free-text query
+values SHALL be passed via the `params=` argument to GraphClient
+(never embedded in the path) so that httpx applies query-string
+encoding correctly.
+
+#### Scenario: Path segment with slash is rejected before HTTP call
+
+- **WHEN** an extension tool receives an `item_id` argument
+  containing the substring `"a/b"`
+- **THEN** the tool wrapper MUST raise `ValueError` with a message
+  identifying the offending parameter
+- **AND** no GET or POST MUST be issued to GraphClient
+
+#### Scenario: Path segment with control character is rejected
+
+- **WHEN** an extension tool receives a `message_id` argument
+  containing `"\x00"` or `"\x1f"`
+- **THEN** the tool wrapper MUST raise `ValueError`
+- **AND** no GET or POST MUST be issued
+
+#### Scenario: Search string is passed via params, not path
+
+- **WHEN** an extension tool receives a `query="finance & metrics"`
+  argument
+- **THEN** the call to GraphClient MUST pass the value via
+  `params={"$search": "finance & metrics"}`
+- **AND** the value MUST NOT appear in the request path string
+
+### Requirement: Scope Override Semantics
+
+The system SHALL define scope-merge semantics as **REPLACE** when a
+persona configures `extensions.<name>.config.scopes`: the
+persona-provided list entirely supersedes the module-level default
+scope constants. When the persona's `scopes` is the empty list `[]`
+or absent, the default scope constants apply. There is no
+merge-mode or add-to-defaults mode — a persona that wants to extend
+defaults must explicitly write the full desired scope list.
+
+This requirement disambiguates `ms-extensions` requirement language
+"Default scopes include X, Y, Z" — the defaults apply only when
+persona override is absent or empty.
+
+#### Scenario: Persona scopes replace defaults entirely
+
+- **WHEN** `persona.extensions["outlook"]["config"]["scopes"]
+  == ["Mail.Read"]` (only one scope, missing Mail.Send and
+  Calendars.Read which are defaults)
+- **AND** the extension is constructed
+- **THEN** the resulting extension's `.scopes` MUST equal exactly
+  `["Mail.Read"]`
+- **AND** the default scopes MUST NOT be merged in
+
+#### Scenario: Empty persona scopes uses defaults
+
+- **WHEN** `persona.extensions["outlook"]["config"]["scopes"] == []`
+- **AND** the extension is constructed
+- **THEN** the resulting extension's `.scopes` MUST equal the
+  module-level default constants
+
+#### Scenario: Missing persona scopes key uses defaults
+
+- **WHEN** `persona.extensions["outlook"]["config"]` does not
+  contain the `scopes` key at all
+- **THEN** the resulting extension's `.scopes` MUST equal the
+  module-level default constants
+
+### Requirement: Tool Invocation Error When Breaker is OPEN
+
+The system SHALL ensure that when an extension's circuit breaker is
+in OPEN state and a tool is invoked, the tool raises a
+`GraphAPIError` with `status_code=None` and
+`error_code="breaker_open"`, surfacing the unavailability to the
+agent in a structured way rather than as a generic Python exception.
+The error message SHALL identify the extension by name and the
+reason ("breaker open due to recent consecutive failures").
+
+#### Scenario: Tool invocation with OPEN breaker raises structured error
+
+- **WHEN** the breaker `extension:outlook` is OPEN
+- **AND** the tool `outlook.list_messages` is invoked
+- **THEN** `GraphAPIError` MUST be raised
+- **AND** `error.status_code` MUST be `None`
+- **AND** `error.error_code` MUST equal `"breaker_open"`
+- **AND** `error.message` MUST contain the extension name `"outlook"`
 
 ### Requirement: Extension Tool Wrapping Preserves Existing Observability
 
