@@ -230,8 +230,9 @@ the four extensions and the MSAF harness afterward.
   opted out)
 
 **Affected specs:** `extension-registry` (deltas), `harness-adapter`
-(deltas), four new spec files under `specs/` (msal-auth,
-graph-client, ms-extensions, ms-agent-framework-harness).
+(deltas), `observability` (delta — adds `trace_graph_call` to the
+`ObservabilityProvider` Protocol), four new spec files under `specs/`
+(msal-auth, graph-client, ms-extensions, ms-agent-framework-harness).
 
 **Documentation:**
 - `docs/gotchas.md` — add G10 entry on MSAL token cache file path

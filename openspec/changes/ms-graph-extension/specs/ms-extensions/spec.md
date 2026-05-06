@@ -325,3 +325,56 @@ level.
 - **THEN** `trace_tool_call` MUST be called exactly once
 - **AND** the emitted call's kwargs MUST include
   `tool_name="outlook.list_messages"` and `tool_kind="extension"`
+
+### Requirement: Pagination Discipline in List Tools
+
+The system SHALL prohibit per-item Graph fetches inside tool
+implementations that loop over a `paginate()` result. Specifically,
+list-tools (e.g., `outlook.list_messages`, `teams.list_chats`,
+`sharepoint.list_documents`, `ms_graph.search_messages`) SHALL NOT
+issue additional `GraphClient.get/post` calls for each yielded item
+within the tool. When per-item enrichment is required (e.g.,
+attachment metadata, read-state, sender presence), the list-tool
+SHALL prefer Graph's native `$expand`/`$select` query parameters or
+return a flat list and require the agent to issue an explicit
+follow-up tool call. Each list-tool's docstring SHALL state the
+expected upper bound on Graph API calls per invocation (e.g.,
+`"<= ceil(items / page_size) Graph calls"`).
+
+This requirement exists because Graph throttling is per-tenant and
+N+1 patterns trip the `429 Retry-After` path predictably on busy
+mailboxes; the cost is paid by every concurrent persona on the
+tenant.
+
+#### Scenario: list_messages does not call Graph per item
+
+- **WHEN** `outlook.list_messages(top=50)` is invoked against a
+  mocked `GraphClient` that records every `get`/`post` call
+- **AND** the mocked endpoint returns 50 messages with attachments
+- **THEN** the recorded `get`/`post` call count MUST be at most
+  `ceil(50 / page_size) + 1` (one per page; the `+1` covers an
+  optional `$expand` resolution)
+- **AND** the call count MUST NOT scale linearly with the number of
+  messages
+
+### Requirement: Per-Tool Page Ceiling Configuration
+
+The system SHALL allow each list-tool implementation to override the
+default `GraphClient.page_ceiling=100` by passing an explicit
+`page_ceiling` to `paginate()` at call sites where larger result
+sets are expected (e.g., `outlook.list_messages` over a year-long
+mailbox). The tool SHALL document its effective ceiling in the
+LangChain `description` field of the `StructuredTool` so agents
+know when results may be truncated. When a tool does not override
+the default, its `description` SHALL state that results larger than
+100 pages will raise `GraphAPIError(error_code="page_ceiling_exceeded")`
+and recommend narrowing the query.
+
+#### Scenario: list_messages declares its page_ceiling in tool description
+
+- **WHEN** `outlook.list_messages` is exposed as a LangChain
+  `StructuredTool`
+- **THEN** the tool's `description` MUST contain the substring
+  `"page_ceiling"` followed by the effective integer value
+- **AND** if the value differs from the GraphClient default (100),
+  the difference MUST be visible in the description text

@@ -162,6 +162,19 @@ consumes `MemoryPolicy`) by ensuring MSAF agents on the work persona
 have access to the same recent-context snippets without requiring
 any change to the `agent-framework` SDK contract.
 
+**Follow-up scope** — P5 deliberately ships the *minimum* viable
+memory injection: a string prepend at `create_agent` time. A
+higher-fidelity integration (live retrieval mid-turn, structured
+memory items rather than concatenated text, write-back of agent
+observations to memory) requires a structured memory hook on the
+`agent-framework` SDK that does not exist in the SDK version pinned
+by P5. Revisiting this is a P5b candidate when (a) the
+`agent-framework` SDK exposes a memory injection point with a stable
+contract, OR (b) usage data shows the prepend approach is
+insufficient for the work persona. Until then, the asymmetry with
+DeepAgents is a documented trade-off (DeepAgents has full
+`MemoryPolicy` consumption; MSAF has prepend-only).
+
 #### Scenario: Memory snippets prepended to instructions
 
 - **WHEN** `MemoryPolicy.get_recent_snippets(persona, role,

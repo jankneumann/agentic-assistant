@@ -266,10 +266,16 @@ behind a single MSAL token-acquisition operation.
   shared `MSALStrategy` instance
 - **AND** the strategy must acquire a fresh token (silent
   acquisition path)
-- **THEN** the two extension calls MUST proceed concurrently after
-  the single token acquisition completes
-- **AND** the event loop MUST remain responsive during MSAL
-  invocation
+- **AND** the underlying `msal.PublicClientApplication.acquire_token_silent`
+  is mocked to block for 100ms
+- **THEN** the two extension calls MUST both complete within 250ms
+  total wall-clock time when awaited via `asyncio.gather` (proving
+  the event loop is not blocked end-to-end by serialization of MSAL
+  calls); strict serialization would require >=200ms regardless of
+  parallelism
+- **AND** during the 100ms MSAL block, an unrelated `asyncio.sleep(0)`
+  scheduled on the same event loop MUST yield within 10ms
+  (verifiable via `asyncio.wait_for(asyncio.sleep(0), timeout=0.01)`)
 
 ### Requirement: Authentication Errors Do Not Retry
 
