@@ -48,6 +48,22 @@ extension name and the migration recipe.
 - **THEN** the returned object MUST be a `StubExtension` instance
 - **AND** no MSAL strategy or GraphClient MUST be constructed
 
+#### Scenario: Real factory called with persona=None raises actionable TypeError
+
+- **WHEN** any of the four real factories
+  (`ms_graph`, `outlook`, `teams`, `sharepoint`) is called as
+  `create_extension({}, persona=None)` (or with `persona` omitted,
+  which defaults to `None` per the Protocol signature)
+- **THEN** a `TypeError` MUST be raised before any MSAL strategy or
+  GraphClient construction is attempted
+- **AND** the error message MUST identify the offending extension
+  name and explicitly state that real Microsoft 365 extensions
+  require a non-None `persona` argument carrying `auth.ms`
+  configuration
+- **AND** the error message MUST cite the persona YAML key path
+  (`extensions.<name>` and `auth.ms`) so the operator can fix the
+  persona config or the test harness
+
 #### Scenario: Legacy factory signature raises actionable TypeError
 
 - **WHEN** `PersonaRegistry.load_extensions` calls a third-party

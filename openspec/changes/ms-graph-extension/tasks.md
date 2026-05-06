@@ -17,14 +17,15 @@ and any design decision IDs (D1–D12 in `design.md`) it verifies.
 ## 1. wp-foundation — Cloud client Protocol + MSAL + GraphClient
 
 - [ ] 1.1 Write tests for `CloudGraphClient` Protocol shape
-  **Spec scenarios**: graph-client / "Protocol declares four required
+  **Spec scenarios**: graph-client / "Protocol declares five required
   methods", "Custom GraphClient satisfies Protocol", "MockGraphClient
   satisfies Protocol"
-  **Design decisions**: D3 (CloudGraphClient Protocol shape)
+  **Design decisions**: D3 (CloudGraphClient Protocol shape), D19
+  (`get_bytes` streaming download)
   **Dependencies**: None
 - [ ] 1.2 Create `src/assistant/core/cloud_client.py` —
   `CloudGraphClient` Protocol with `get`, `post`, `paginate`,
-  `health_check`
+  `get_bytes`, `health_check`
   **Dependencies**: 1.1
 
 - [ ] 1.3 Write tests for `MSALStrategy` Protocol +
@@ -676,3 +677,160 @@ package work.
   prepend-to-instructions form; full MemoryPolicy hook awaits
   agent-framework SDK support
   **Dependencies**: 8.3.2
+
+## 9. PLAN_ITERATE remediation tasks
+
+This section captures work uncovered during the autopilot
+PLAN_ITERATE pass after round-1 PLAN_REVIEW remediation: D19's
+fifth Protocol method exposed downstream stale references; the
+post-remediation plan was missing security-critical lifecycle and
+redirect-rejection requirements; the trace_graph_call observability
+contract was specified in graph-client/spec.md but missing from the
+ObservabilityProvider Protocol itself; the work-packages.yaml had a
+stale path to the observability provider module. Each task here
+folds into one of the existing work packages.
+
+### 9.1 wp-foundation additions (observability + redirect + lifecycle)
+
+- [ ] 9.1.1 Write tests for `ObservabilityProvider.trace_graph_call`
+  Protocol method on `NoopProvider` and `LangfuseProvider`
+  (NoopProvider returns None silently; LangfuseProvider emits one
+  Langfuse span with all kwargs as attributes; resilience composition
+  emits one trace_graph_call per HTTP attempt; OPEN breaker emits no
+  trace_graph_call but does emit `start_span("resilience.short_circuit")`)
+  **Spec scenarios**: observability / "NoopProvider implements
+  trace_graph_call", "LangfuseProvider implements trace_graph_call",
+  "trace_graph_call records error class on failure", "Successful
+  retry emits one trace_graph_call per attempt", "Open breaker emits
+  no trace_graph_call"
+  **Design decisions**: D15
+  **Dependencies**: 1.14
+  Belongs in wp-foundation: writes to
+  `tests/test_observability_trace_graph_call.py`
+
+- [ ] 9.1.2 Add `trace_graph_call(...)` to `ObservabilityProvider`
+  Protocol in `src/assistant/telemetry/providers/base.py`; implement
+  noop in `src/assistant/telemetry/providers/noop.py`; implement
+  langfuse in `src/assistant/telemetry/providers/langfuse.py`. This
+  supersedes the prior task 8.1.6 which referenced a non-existent
+  `core/observability.py` path.
+  **Dependencies**: 9.1.1
+  Belongs in wp-foundation.
+
+- [ ] 9.1.3 Write tests for `GraphClient` async context-manager and
+  explicit `aclose()` (entry/exit semantics, idempotent close,
+  closed client raises on use)
+  **Spec scenarios**: graph-client / "Async context-manager closes
+  the underlying httpx client", "Explicit aclose closes the
+  underlying httpx client"
+  **Design decisions**: D4
+  **Dependencies**: 1.13
+
+- [ ] 9.1.4 Implement `__aenter__`/`__aexit__`/`aclose` on
+  `GraphClient`; ensure all PersonaRegistry construction sites use
+  `async with` or arrange explicit `aclose()` before process exit
+  **Dependencies**: 9.1.3
+
+- [ ] 9.1.5 Write tests for cross-domain redirect rejection
+  (trusted host follow, untrusted-host nextLink rejected before
+  bearer attached, 3xx not auto-followed)
+  **Spec scenarios**: graph-client / "Pagination nextLink to
+  graph.microsoft.com is followed", "Pagination nextLink to
+  non-trusted host is rejected", "HTTP 3xx response is not
+  auto-followed"
+  **Design decisions**: D4
+  **Dependencies**: 1.10
+
+- [ ] 9.1.6 Implement trusted-host validation in `GraphClient`
+  (`trusted_hosts: list[str] | None = None` constructor arg with
+  default; `httpx.AsyncClient(follow_redirects=False)`; validation
+  in `paginate()` before issuing redirected request); raise
+  `GraphAPIError(error_code="invalid_redirect")` on rejection
+  **Dependencies**: 9.1.5
+
+- [ ] 9.1.7 Write tests for past/malformed Retry-After header
+  (past HTTP-date falls through; malformed value logs warning and
+  falls through; neither raises)
+  **Spec scenarios**: graph-client / "Past HTTP-date Retry-After
+  falls through to default backoff", "Malformed Retry-After is
+  logged and ignored"
+  **Design decisions**: D13
+  **Dependencies**: 8.1.1
+
+- [ ] 9.1.8 Extend Retry-After parsing in `GraphClient` to detect
+  past HTTP-dates and malformed values; emit a structured warning
+  with sanitized header value
+  **Dependencies**: 9.1.7
+
+- [ ] 9.1.9 Write test for the measurable msal concurrency
+  scenario (mocked `acquire_token_silent` blocks 100ms; two
+  concurrent extension calls complete within 250ms; an unrelated
+  `asyncio.sleep(0)` yields within 10ms during the MSAL block)
+  **Spec scenarios**: msal-auth / "Concurrent Graph calls are not
+  serialized by MSAL"
+  **Design decisions**: D20
+  **Dependencies**: 1.5
+
+### 9.2 wp-foundation additions (extension factory)
+
+- [ ] 9.2.1 Write test for real factory called with `persona=None`
+  raising actionable `TypeError` (each of `ms_graph`, `outlook`,
+  `teams`, `sharepoint` factory; assertion on error message
+  containing extension name + `extensions.<name>` + `auth.ms`)
+  **Spec scenarios**: extension-registry / "Real factory called
+  with persona=None raises actionable TypeError"
+  **Design decisions**: D26
+  **Dependencies**: 8.4.2
+
+- [ ] 9.2.2 Implement the `persona is None` short-circuit at the
+  top of each real extension's `create_extension` factory; raise
+  `TypeError` with the contract-specified message before any
+  MSALStrategy or GraphClient construction
+  **Dependencies**: 9.2.1
+
+### 9.3 wp-extensions additions (pagination discipline)
+
+- [ ] 9.3.1 Write tests asserting list-tool pagination discipline
+  (each list-tool's `get`/`post` call count is bounded by
+  `ceil(items / page_size) + 1`, independent of item count;
+  verified by mocking GraphClient and asserting call ledger)
+  **Spec scenarios**: ms-extensions / "list_messages does not call
+  Graph per item"
+  **Dependencies**: 2.4, 3.5, 4.5, 5.4
+
+- [ ] 9.3.2 Audit each list-tool implementation
+  (`outlook.list_messages`, `teams.list_chats`,
+  `sharepoint.list_documents`, `ms_graph.search_messages`) and
+  remove any per-item Graph fetches; replace with `$expand` /
+  `$select` where enrichment is required; document upper-bound on
+  Graph API calls in each tool's docstring
+  **Dependencies**: 9.3.1
+
+- [ ] 9.3.3 Write tests for per-tool page_ceiling description
+  presence (each list-tool's StructuredTool description contains
+  `"page_ceiling"` followed by an integer; mismatch from
+  GraphClient default visible)
+  **Spec scenarios**: ms-extensions / "list_messages declares its
+  page_ceiling in tool description"
+  **Dependencies**: 2.4, 3.5, 4.5, 5.4
+
+- [ ] 9.3.4 Update each list-tool's StructuredTool description to
+  include effective `page_ceiling` and a note about
+  truncation-via-error if results would exceed it
+  **Dependencies**: 9.3.3
+
+### 9.4 Cross-cutting plan-hygiene
+
+- [ ] 9.4.1 Validate the pinned `agent-framework` version
+  (`>=1.0.0,<2.0.0` per design D5) at implementation start. If
+  Context7 reports an incompatible version at impl time, update
+  the pin in `pyproject.toml` (task 1.16) and re-run uv lock as
+  a single foundation-touching commit before merging.
+  **Dependencies**: 1.16
+
+- [ ] 9.4.2 Update task 8.1.5/8.1.6 cross-references: 8.1.5 is the
+  GraphClient-side trace_graph_call test (graph-client spec); 9.1.1
+  is the provider-side test (observability spec). Both test families
+  must pass before wp-foundation merges. (Documentation only — no
+  code change in this task.)
+  **Dependencies**: 8.1.5, 9.1.1

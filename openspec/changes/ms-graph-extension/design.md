@@ -169,6 +169,15 @@ class CloudGraphClient(Protocol):
         params: dict[str, Any] | None = None,
     ) -> AsyncIterator[dict[str, Any]]: ...
 
+    async def get_bytes(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        max_bytes: int = 50 * 1024 * 1024,
+    ) -> bytes: ...
+
     async def health_check(self) -> HealthStatus: ...
 ```
 
@@ -176,8 +185,9 @@ class CloudGraphClient(Protocol):
 the same Protocol can chase `nextPageToken` in its concrete
 implementation — neither convention bleeds through the Protocol.
 
-**Why exactly these four methods:** They cover 100% of the call shapes
+**Why exactly these five methods:** They cover 100% of the call shapes
 the four MS extensions need: list (`get` + `paginate`), read (`get`),
+binary download for documents/attachments (`get_bytes`, see D19),
 write (`post`), and report-self-health (`health_check`). PUT/PATCH/DELETE
 are deferred to P5b.
 
@@ -227,8 +237,20 @@ without cascading.
 
 Per Context7 confirmation: `agent-framework` (PyPI: `agent-framework`,
 repo: `github.com/microsoft/agent-framework`) is the canonical
-"Microsoft Agent Framework" Python package. The `MSAgentFrameworkHarness`
-will use:
+"Microsoft Agent Framework" Python package.
+
+**Pinned version (resolved 2026-05-05 via Context7):**
+`agent-framework>=1.0.0,<2.0.0`. The plan pins this version range
+*now*, at PLAN_ITERATE time, rather than re-resolving via Context7
+during implementation. This eliminates a parallel-execution race
+where wp-msaf-harness could otherwise start before the version is
+agreed, and keeps the foundation/harness merge train deterministic.
+If the resolved version turns out to be incompatible at
+implementation time, the implementer SHALL re-run Context7 lookup
+and update the pin in a single foundation-touching commit before
+proceeding (rather than negotiating versions across packages).
+
+The `MSAgentFrameworkHarness` will use:
 
 - `from agent_framework import Agent, ai_function`
 - `from agent_framework.openai import OpenAIChatClient` (when persona

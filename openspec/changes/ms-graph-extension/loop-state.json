@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "change_id": "ms-graph-extension",
+  "current_phase": "PLAN_ITERATE",
+  "iteration": 0,
+  "total_iterations": 0,
+  "max_phase_iterations": 3,
+  "findings_trend": [],
+  "blocking_findings": [],
+  "vendor_availability": {
+    "claude_code": true,
+    "codex": true,
+    "gemini": true
+  },
+  "packages_status": {},
+  "package_authors": {},
+  "implementation_strategy": {},
+  "memory_ids": [],
+  "handoff_ids": [],
+  "started_at": "2026-05-05T00:00:00Z",
+  "phase_started_at": "2026-05-05T00:00:00Z",
+  "previous_phase": "PLAN",
+  "escalation_reason": null,
+  "val_review_enabled": false,
+  "cli_review_enabled": true,
+  "error": null
+}

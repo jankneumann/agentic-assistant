@@ -117,3 +117,53 @@ Quorum 2 of 2 received. Both vendor dispatches succeeded (codex 161s, gemini 54s
 
 - The consensus_synthesizer reported 0 confirmed findings. Inspection showed this is a tooling false negative: its description-text similarity matcher does not cluster claude+codex+gemini findings that describe the same gap with different prose (for example "missing 429 Retry-After" vs "honor Retry-After" vs "respect Retry-After header"). Manual topical synthesis was performed in the orchestrator response. Worth filing an upstream issue against the synthesizer for fuzzy or topical matching.
 - Three vendors all spent meaningfully different time on the review (claude self-review during authoring, codex 161s, gemini 54s). Codex produced the most thorough review with vendor-specific MS Graph wire knowledge that the orchestrator (claude) lacked. This validates the parallel-review-plan design intent: orchestrator blind spots get caught by independent reviewers.
+
+---
+
+## Phase: Plan Iteration 1 (2026-05-05)
+
+**Agent**: claude_code Opus 4.7 1M | **Session**: autopilot P5 PLAN_ITERATE phase
+
+### Decisions
+
+1. **Five parallel Explore agents synthesized 33 raw findings; net 14 actionable after dedup and quality filter.** Across completeness, clarity-consistency, feasibility-parallelizability, testability, security-performance dimensions. Threshold medium. Five findings rejected as questionable (Python string zero-out via os.urandom, exact string equality for memory snippet format, regex JWT pattern for token validity, retry_safe linting tooling, docs-must-be-in-spec).
+
+2. **D19 cleanup as one logical group.** Round-1 remediation expanded the CloudGraphClient Protocol to five methods (added get_bytes via D19) but left three downstream stale references: design.md D3 code example showed only four methods, tasks.md task 1.1 cited the obsolete scenario name "Protocol declares four required methods", task 1.2 listed only four method names. All three resolved in this iteration.
+
+3. **Rejected the feasibility agent's critical pyproject.toml dual-ownership finding.** wp-msaf-harness explicitly depends on wp-foundation, so the dep edge already serializes pyproject lock acquisition. The four extension packages that DO run parallel with harness do not edit pyproject.toml. Strengthened the existing lock comment to make this serialization explicit, and addressed the underlying Context7 race risk by pre-pinning agent-framework version range now in design D5.
+
+4. **New observability spec delta added.** trace_graph_call was specified in graph-client/spec.md as "a new method on the observability provider, registered in this change" but never actually MODIFIED the ObservabilityProvider Protocol anywhere. New specs/observability/spec.md delta adds the method to the Protocol with NoopProvider, LangfuseProvider, and resilience-composition scenarios. proposal.md Impact updated to list observability as affected.
+
+5. **Path bug fix in work-packages.yaml.** wp-foundation listed src/assistant/core/observability.py in write_allow plus locks but that path does not exist. The actual provider modules live at src/assistant/telemetry/providers/{base,noop,langfuse}.py. Fixed all three occurrences plus the lock key plus the lock reason text. This was missed by all five Explore agents and would have blocked implementation.
+
+6. **Security hardening: HTTP client lifecycle plus cross-domain redirect rejection.** Two new graph-client spec requirements. async-with semantics on GraphClient ensure deterministic httpx.AsyncClient closure pre-P10. follow_redirects=False plus trusted_hosts validation on @odata.nextLink prevents bearer-token leak via attacker-controlled redirect.
+
+7. **Resilience-edge tightening.** 429 Retry-After spec gained two scenarios for past HTTP-date and malformed values. Both fall through to default backoff with sanitized warning rather than raising or hanging.
+
+8. **Pagination discipline as a normative requirement.** N+1 patterns on Graph trip throttling for the entire tenant, not just the calling persona. New ms-extensions requirement prohibits per-item Graph fetches inside list-tools, mandates expand or select for enrichment, requires bounded API call count documented in tool docstrings. Per-tool page_ceiling override is now spec'd.
+
+9. **Testability: vague event-loop-responsive criterion replaced with measurable timeouts.** msal-auth concurrent-calls scenario now specifies 100 ms mocked MSAL block plus 250 ms total wall-clock bound for two concurrent calls plus 10 ms yield bound on unrelated asyncio.sleep zero, all verifiable via asyncio.wait_for.
+
+10. **MSAF MemoryPolicy follow-up scope explicitly documented.** The minimal-prepend approach is acknowledged as a deliberate trade-off pending an agent-framework SDK memory hook, with revisit criteria stated.
+
+11. **wp-foundation loc_estimate bumped from 1900 to 3000.** The round-1 remediation added 38 section-8 tasks expanding foundation scope by ~1100 LOC; the existing comment noted growth but the number was stale. PLAN_ITERATE iteration 1 added another section-9 with about 15 tasks adding maybe 200 more LOC. New loc_estimate reflects post-round-1 reality with a small headroom for iteration-1 additions.
+
+### Alternatives Considered
+
+- **Consolidate all pyproject deps into wp-foundation per the feasibility agent's option A**: rejected because agent-framework is semantically a harness concern not a foundation concern, and the dep edge already prevents lock contention. Pre-pinning the version range in design D5 addresses the underlying risk without breaking package boundaries.
+- **Add an observability rate-limiter or scope-coverage validator as new design elements**: deferred to P5b follow-up issues. Both raised by the security agent but introduce new design surface that should not be sneaked in via PLAN_ITERATE. They will be filed as GitHub issues at SUBMIT_PR time.
+- **Decompose wp-foundation into wp-foundation-base and wp-foundation-remediation**: rejected. The 38 section-8 tasks are all foundation-scoped (cloud_client, msal_auth, graph_client, persona, telemetry providers); decomposition would force a synthetic boundary for no parallelism gain since they all touch foundation files. loc_estimate bump captures the reality.
+
+### Trade-offs
+
+- Accepted writing more spec scenarios (about 18 new scenarios across 5 spec files) over deferring to test-implementation discovery. Specs are the contract; missing scenarios mean implementers guess.
+- Accepted an additional new spec delta (observability) over inlining trace_graph_call into graph-client. Adding to graph-client would have hidden a Protocol modification that future readers would expect to find in observability.
+
+### Open Questions
+
+- [ ] Whether the trusted-host list for cross-domain redirect rejection should be runtime-extensible via persona config (for sovereign-cloud customers): deferred. Default list covers public Graph plus three documented sovereign endpoints. Persona override is in the constructor signature already.
+- [ ] Whether the "remain responsive" measurable timing thresholds (100 ms / 250 ms / 10 ms) are robust on slow CI runners: medium concern. If flake observed at impl time, scale via constants (MSAL_MOCK_BLOCK_MS, ASYNC_SLEEP_TOLERANCE_MS) parameterized in the test fixture rather than tightening the spec.
+
+### Context
+
+This iteration was launched as the autopilot PLAN_ITERATE phase after a fresh /autopilot ms-graph-extension invocation found the proposal already had PLAN plus PLAN_REVIEW round 1 plus remediation completed externally. The five-agent parallel-Explore approach (each agent under 700 words, single-dimension focused) surfaced one new critical finding (work-packages.yaml stale path) that all single-pass approaches would likely have missed. Net change: 1 new spec delta (observability), 18 new spec scenarios across 5 files, 15 new tasks in a new section 9, two task allocations in work-packages.yaml, one design D5 amendment (version pin), two design D-section enhancements (D3 code example fix), one Impact section update in proposal.md. openspec validate --strict passes after the iteration. Next phase: PLAN_REVIEW round 2 dispatched via parallel-review-plan to verify remediation closes the iteration findings without introducing new ones.

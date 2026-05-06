@@ -252,6 +252,26 @@ backoff for these specific status codes when the header is present.
 - **THEN** the client MUST use the default P9 exponential backoff
   policy unchanged
 
+#### Scenario: Past HTTP-date Retry-After falls through to default backoff
+
+- **WHEN** the Graph API returns HTTP 503 with header
+  `Retry-After: Wed, 21 Oct 2020 07:28:00 GMT` (a date strictly in
+  the past relative to the current clock)
+- **THEN** the client MUST NOT block waiting for the past time
+- **AND** the client MUST fall through to the default P9 exponential
+  backoff policy unchanged
+
+#### Scenario: Malformed Retry-After is logged and ignored
+
+- **WHEN** the Graph API returns HTTP 429 with header
+  `Retry-After: not-a-number-or-date`
+- **THEN** the client MUST log a structured warning identifying the
+  malformed header value (with the value sanitized to a bounded
+  length to prevent log injection)
+- **AND** the client MUST fall through to the default P9 exponential
+  backoff policy unchanged
+- **AND** the client MUST NOT raise on the malformed header alone
+
 ### Requirement: Per-Request Timeout Configuration
 
 The system SHALL configure the underlying `httpx.AsyncClient` with
@@ -491,3 +511,79 @@ termination with warning" scenario semantics.
   pages
 - **THEN** iteration MUST yield 500 pages and raise on the 501st
   request
+
+### Requirement: HTTP Client Lifecycle and Resource Cleanup
+
+The system SHALL ensure that the underlying `httpx.AsyncClient` owned
+by `GraphClient` is deterministically closed. `GraphClient` SHALL
+implement async context-manager methods `__aenter__` and `__aexit__`
+that, on exit, await the underlying `AsyncClient.aclose()`. Until the
+P10 extension lifecycle hooks land, every construction site
+(`PersonaRegistry.load_extensions` and tests) MUST construct
+`GraphClient` inside an `async with` block or otherwise guarantee
+that `aclose()` is awaited before process exit. `GraphClient` SHALL
+also expose an explicit `async def aclose(self) -> None` method for
+callers that cannot use context managers (e.g., factory-style
+construction in P5; superseded by P10).
+
+#### Scenario: Async context-manager closes the underlying httpx client
+
+- **WHEN** `async with GraphClient(extension_name="outlook",
+  strategy=mock) as client: pass` is executed
+- **THEN** at exit, `httpx.AsyncClient.aclose` MUST have been awaited
+  exactly once
+- **AND** subsequent calls on the closed `client` MUST raise (httpx
+  raises `RuntimeError`-derived errors on closed clients)
+
+#### Scenario: Explicit aclose closes the underlying httpx client
+
+- **WHEN** `client = GraphClient(...)` is constructed and
+  `await client.aclose()` is awaited
+- **THEN** `httpx.AsyncClient.aclose` MUST have been awaited exactly
+  once
+
+### Requirement: Cross-Domain Redirect Rejection
+
+The system SHALL reject any pagination `@odata.nextLink` URL or HTTP
+3xx redirect target whose host is not within the trusted Graph API
+domain (`https://graph.microsoft.com/` and its national-cloud
+variants `graph.microsoft.us`, `graph.microsoft.de`,
+`microsoftgraph.chinacloudapi.cn` per Microsoft's documented sovereign
+cloud endpoints). Rejection MUST occur **before** the bearer token is
+attached to the redirected request, so a malicious or
+misconfigured redirect cannot capture the access token. The trusted
+host set SHALL be a configurable list passed at `GraphClient`
+construction (`trusted_hosts: list[str] | None = None`); the default
+SHALL be the four documented Graph hosts above.
+
+The underlying `httpx.AsyncClient` SHALL be configured with
+`follow_redirects=False`. When pagination `@odata.nextLink` carries a
+non-trusted host, `paginate()` MUST raise `GraphAPIError` with
+`error_code="invalid_redirect"` and message identifying the rejected
+host without echoing query parameters.
+
+#### Scenario: Pagination nextLink to graph.microsoft.com is followed
+
+- **WHEN** the Graph API returns a page with
+  `@odata.nextLink: "https://graph.microsoft.com/v1.0/me/messages?$skip=10"`
+- **THEN** `paginate()` MUST follow the link and yield the next page
+
+#### Scenario: Pagination nextLink to non-trusted host is rejected
+
+- **WHEN** the Graph API returns a page with
+  `@odata.nextLink: "https://attacker.example.com/exfiltrate?token=..."`
+- **THEN** `paginate()` MUST NOT issue the redirected request
+- **AND** `GraphAPIError` MUST be raised with
+  `error_code="invalid_redirect"`
+- **AND** the bearer token MUST NOT have been transmitted to
+  `attacker.example.com`
+
+#### Scenario: HTTP 3xx response is not auto-followed
+
+- **WHEN** the Graph API returns a 302 response with
+  `Location: https://attacker.example.com/`
+- **THEN** the client MUST NOT follow the redirect
+- **AND** the response MUST surface as the original 302 (not as a
+  follow-up GET to the redirect target)
+- **AND** the bearer token MUST NOT have been transmitted to the
+  redirect target
