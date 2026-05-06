@@ -1,0 +1,415 @@
+schema_version: 1
+change_id: ms-graph-extension
+
+defaults:
+  auto_loop:
+    # P5 ships a foundation layer (cloud_client + msal_auth +
+    # graph_client + MockGraphClient) plus four real extensions
+    # plus the MSAF harness implementation. The four extension
+    # packages run in parallel after the foundation lands;
+    # wp-integration runs serially at the end. Integration package
+    # is exempted from max_packages (per
+    # complexity_gate._count_impl_packages — see
+    # http-tools-layer's comment).
+    max_loc: 3000
+    max_packages: 6
+    max_external_deps: 3
+
+packages:
+  # ──────────────────────────────────────────────────────────
+  # wp-foundation — cloud_client Protocol + MSAL + GraphClient
+  # Runs first. All extension packages and the harness depend on it.
+  # ──────────────────────────────────────────────────────────
+  - id: wp-foundation
+    name: "Foundation: CloudGraphClient Protocol + MSAL strategies + GraphClient"
+    description: >
+      Implements the layered foundation per design.md D1–D4: the
+      `CloudGraphClient` Protocol (core/cloud_client.py), two MSAL
+      strategy classes with serializable token cache discipline
+      (core/msal_auth.py), and the custom httpx-based `GraphClient`
+      that satisfies the Protocol with P9 resilience integration
+      (core/graph_client.py). Also lands the typed `MockGraphClient`
+      under tests/mocks/ that downstream extension tests substitute.
+      Adds `msal>=1.28` and `respx>=0.21` (test-only) to pyproject.toml
+      and locks uv.lock. Covers tasks.md sections 1.1–1.16.
+    tasks:
+      - "1.1"
+      - "1.2"
+      - "1.3"
+      - "1.4"
+      - "1.5"
+      - "1.6"
+      - "1.7"
+      - "1.8"
+      - "1.9"
+      - "1.10"
+      - "1.11"
+      - "1.12"
+      - "1.13"
+      - "1.14"
+      - "1.15"
+      - "1.16"
+    priority: 1
+    dependencies: []
+    scope:
+      write_allow:
+        - "src/assistant/core/cloud_client.py"
+        - "src/assistant/core/msal_auth.py"
+        - "src/assistant/core/graph_client.py"
+        - "tests/mocks/__init__.py"
+        - "tests/mocks/graph_client.py"
+        - "tests/test_cloud_client.py"
+        - "tests/test_msal_auth.py"
+        - "tests/test_graph_client.py"
+        - "pyproject.toml"
+        - "uv.lock"
+      read_allow:
+        - "**"
+    locks:
+      files:
+        - "src/assistant/core/cloud_client.py"
+        - "src/assistant/core/msal_auth.py"
+        - "src/assistant/core/graph_client.py"
+        - "pyproject.toml"
+        - "uv.lock"
+      keys:
+        - "core:cloud_client:protocol"
+        - "core:msal_auth:strategies"
+        - "core:graph_client:impl"
+        - "deps:pyproject"
+      ttl_minutes: 180
+      reason: >
+        Establishes the Protocol shape and concrete httpx GraphClient
+        that all four extensions and the MSAF harness import. Locking
+        the three core modules + pyproject.toml prevents conflicting
+        edits to interface or dep set during the parallel fan-out
+        that follows.
+    verification: tier_b
+    metadata:
+      loc_estimate: 1100
+      external_deps:
+        - msal
+        - respx
+
+  # ──────────────────────────────────────────────────────────
+  # wp-ms-graph — real ms_graph extension
+  # Parallel with the other three extension packages and the harness.
+  # ──────────────────────────────────────────────────────────
+  - id: wp-ms-graph
+    name: "ms_graph extension — real implementation"
+    description: >
+      Replaces the 11-line `StubExtension`-returning shim at
+      src/assistant/extensions/ms_graph.py with a real
+      `MsGraphExtension` exposing search_people, get_my_profile,
+      and search_messages. Default scopes include People.Read +
+      User.Read. Tools are dual-wrapped (LangChain StructuredTool +
+      MSAF @ai_function) per design D6, D11. Covers tasks 2.1–2.5.
+    tasks:
+      - "2.1"
+      - "2.2"
+      - "2.3"
+      - "2.4"
+      - "2.5"
+    priority: 2
+    dependencies:
+      - wp-foundation
+    scope:
+      write_allow:
+        - "src/assistant/extensions/ms_graph.py"
+        - "tests/test_extensions_ms_graph.py"
+        - "tests/fixtures/graph_responses/ms_graph/**"
+      read_allow:
+        - "**"
+      deny:
+        - "src/assistant/extensions/outlook.py"
+        - "src/assistant/extensions/teams.py"
+        - "src/assistant/extensions/sharepoint.py"
+        - "src/assistant/harnesses/sdk/ms_agent_fw.py"
+    locks:
+      files:
+        - "src/assistant/extensions/ms_graph.py"
+      keys:
+        - "extension:ms_graph:impl"
+      ttl_minutes: 120
+      reason: >
+        ms_graph extension owns its own breaker key
+        ("graph:ms_graph") and tool surface; locking the file plus
+        the breaker namespace keeps the implementation isolated from
+        sibling extensions running in parallel.
+    verification: tier_b
+    metadata:
+      loc_estimate: 350
+      external_deps: []
+
+  # ──────────────────────────────────────────────────────────
+  # wp-outlook — real outlook extension
+  # ──────────────────────────────────────────────────────────
+  - id: wp-outlook
+    name: "outlook extension — real implementation (read + send_email)"
+    description: >
+      Replaces the outlook stub with a real `OutlookExtension`
+      exposing list_messages, read_message, search_messages,
+      send_email, list_calendar_events, find_free_times. Default
+      scopes include Mail.Read, Mail.Send, Calendars.Read. Tools
+      are dual-wrapped per design D6, D11. Covers tasks 3.1–3.6.
+    tasks:
+      - "3.1"
+      - "3.2"
+      - "3.3"
+      - "3.4"
+      - "3.5"
+      - "3.6"
+    priority: 2
+    dependencies:
+      - wp-foundation
+    scope:
+      write_allow:
+        - "src/assistant/extensions/outlook.py"
+        - "tests/test_extensions_outlook.py"
+        - "tests/fixtures/graph_responses/outlook/**"
+      read_allow:
+        - "**"
+      deny:
+        - "src/assistant/extensions/ms_graph.py"
+        - "src/assistant/extensions/teams.py"
+        - "src/assistant/extensions/sharepoint.py"
+        - "src/assistant/harnesses/sdk/ms_agent_fw.py"
+    locks:
+      files:
+        - "src/assistant/extensions/outlook.py"
+      keys:
+        - "extension:outlook:impl"
+      ttl_minutes: 120
+      reason: >
+        outlook extension owns its own breaker key ("graph:outlook")
+        and tool surface (including the only write tool in P5,
+        send_email). Locking the file isolates this implementation
+        from sibling extensions in parallel.
+    verification: tier_b
+    metadata:
+      loc_estimate: 450
+      external_deps: []
+
+  # ──────────────────────────────────────────────────────────
+  # wp-teams — real teams extension
+  # ──────────────────────────────────────────────────────────
+  - id: wp-teams
+    name: "teams extension — real implementation (read + post_chat_message)"
+    description: >
+      Replaces the teams stub with a real `TeamsExtension` exposing
+      list_chats, list_channel_messages, read_message,
+      post_chat_message. Default scopes include Chat.Read,
+      Chat.ReadWrite, ChannelMessage.Read.All. Tools dual-wrapped per
+      design D6, D11. Covers tasks 4.1–4.6.
+    tasks:
+      - "4.1"
+      - "4.2"
+      - "4.3"
+      - "4.4"
+      - "4.5"
+      - "4.6"
+    priority: 2
+    dependencies:
+      - wp-foundation
+    scope:
+      write_allow:
+        - "src/assistant/extensions/teams.py"
+        - "tests/test_extensions_teams.py"
+        - "tests/fixtures/graph_responses/teams/**"
+      read_allow:
+        - "**"
+      deny:
+        - "src/assistant/extensions/ms_graph.py"
+        - "src/assistant/extensions/outlook.py"
+        - "src/assistant/extensions/sharepoint.py"
+        - "src/assistant/harnesses/sdk/ms_agent_fw.py"
+    locks:
+      files:
+        - "src/assistant/extensions/teams.py"
+      keys:
+        - "extension:teams:impl"
+      ttl_minutes: 120
+      reason: >
+        teams extension owns its own breaker key ("graph:teams")
+        and tool surface (including the post_chat_message write
+        tool). Locked to prevent parallel sibling drift.
+    verification: tier_b
+    metadata:
+      loc_estimate: 380
+      external_deps: []
+
+  # ──────────────────────────────────────────────────────────
+  # wp-sharepoint — real sharepoint extension (read-only)
+  # ──────────────────────────────────────────────────────────
+  - id: wp-sharepoint
+    name: "sharepoint extension — read-only implementation"
+    description: >
+      Replaces the sharepoint stub with a real `SharepointExtension`
+      exposing search_sites, list_documents, download_document.
+      Read-only — write-side (list-item create, doc upload) is
+      explicitly deferred to P5b. Default scopes include
+      Sites.Read.All, Files.Read.All. Tools dual-wrapped per design
+      D6, D11. Covers tasks 5.1–5.5.
+    tasks:
+      - "5.1"
+      - "5.2"
+      - "5.3"
+      - "5.4"
+      - "5.5"
+    priority: 2
+    dependencies:
+      - wp-foundation
+    scope:
+      write_allow:
+        - "src/assistant/extensions/sharepoint.py"
+        - "tests/test_extensions_sharepoint.py"
+        - "tests/fixtures/graph_responses/sharepoint/**"
+      read_allow:
+        - "**"
+      deny:
+        - "src/assistant/extensions/ms_graph.py"
+        - "src/assistant/extensions/outlook.py"
+        - "src/assistant/extensions/teams.py"
+        - "src/assistant/harnesses/sdk/ms_agent_fw.py"
+    locks:
+      files:
+        - "src/assistant/extensions/sharepoint.py"
+      keys:
+        - "extension:sharepoint:impl"
+      ttl_minutes: 120
+      reason: >
+        sharepoint extension owns its own breaker key
+        ("graph:sharepoint") and tool surface. Locked to prevent
+        parallel sibling drift.
+    verification: tier_b
+    metadata:
+      loc_estimate: 320
+      external_deps: []
+
+  # ──────────────────────────────────────────────────────────
+  # wp-msaf-harness — MS Agent Framework harness implementation
+  # Parallel with the four extension packages.
+  # ──────────────────────────────────────────────────────────
+  - id: wp-msaf-harness
+    name: "MS Agent Framework harness — full implementation"
+    description: >
+      Replaces the `NotImplementedError`-raising stub at
+      src/assistant/harnesses/sdk/ms_agent_fw.py with a full
+      `MSAgentFrameworkHarness` per design.md D5: builds
+      `agent_framework.Agent` with composed instructions + dual-format
+      tool union from extensions, awaits `agent.run()` in invoke(),
+      spawns sub-agents recursively, consumes ToolPolicy +
+      ContextProvider + GuardrailProvider via CapabilityResolver
+      (MemoryPolicy deferred to P5b). Adds the `agent-framework`
+      package to pyproject.toml; uses Context7 to confirm version at
+      implementation time. Covers tasks 6.1–6.8.
+    tasks:
+      - "6.1"
+      - "6.2"
+      - "6.3"
+      - "6.4"
+      - "6.5"
+      - "6.6"
+      - "6.7"
+      - "6.8"
+    priority: 2
+    dependencies:
+      - wp-foundation
+    scope:
+      write_allow:
+        - "src/assistant/harnesses/sdk/ms_agent_fw.py"
+        - "tests/test_harness_ms_agent_fw.py"
+        - "pyproject.toml"
+        - "uv.lock"
+      read_allow:
+        - "**"
+      deny:
+        - "src/assistant/extensions/ms_graph.py"
+        - "src/assistant/extensions/outlook.py"
+        - "src/assistant/extensions/teams.py"
+        - "src/assistant/extensions/sharepoint.py"
+    locks:
+      files:
+        - "src/assistant/harnesses/sdk/ms_agent_fw.py"
+        - "pyproject.toml"
+        - "uv.lock"
+      keys:
+        - "harness:ms_agent_framework:impl"
+        - "deps:pyproject"
+      ttl_minutes: 150
+      reason: >
+        Replaces the entire MSAF harness module from a stub into a
+        full implementation, and adds the agent-framework runtime
+        dep. Pyproject.toml lock prevents concurrent edits with
+        wp-foundation's pyproject changes — wp-msaf-harness merges
+        AFTER wp-foundation per the dependency edge, so the lock
+        order is naturally serialized.
+    verification: tier_b
+    metadata:
+      loc_estimate: 500
+      external_deps:
+        - agent-framework
+
+  # ──────────────────────────────────────────────────────────
+  # wp-integration — final cross-cutting validation + roadmap
+  # Depends on all priority-2 packages.
+  # ──────────────────────────────────────────────────────────
+  - id: wp-integration
+    task_type: integration
+    name: "Integration: existing-test updates, gitignore, roadmap, smoke test, follow-ups"
+    description: >
+      Updates the existing test files that asserted stub-state
+      behavior for the four MS extensions and the MSAF harness
+      stub, so they now assert real-implementation behavior.
+      Amends personas/_template/.gitignore to add `.cache/`. Flips
+      P5 to archived in roadmap.md and corrects P4's drifted
+      `pending` status (observability is archived as
+      2026-05-03-observability). Adds the parameterized dual-format
+      parity test, the opt-in integration smoke test, and runs the
+      full quality gate (pytest + ruff + mypy + openspec validate
+      --strict). Files P5b follow-up issues for deferred scope.
+    tasks:
+      - "7.1"
+      - "7.2"
+      - "7.3"
+      - "7.4"
+      - "7.5"
+      - "7.6"
+      - "7.7"
+      - "7.8"
+      - "7.9"
+    priority: 3
+    dependencies:
+      - wp-ms-graph
+      - wp-outlook
+      - wp-teams
+      - wp-sharepoint
+      - wp-msaf-harness
+    scope:
+      write_allow:
+        - "tests/test_extension_registry.py"
+        - "tests/test_extensions.py"
+        - "tests/test_harness_factory.py"
+        - "tests/test_extensions_dual_format.py"
+        - "tests/integration/__init__.py"
+        - "tests/integration/test_graph_smoke.py"
+        - "personas/_template/.gitignore"
+        - "openspec/roadmap.md"
+        - "CLAUDE.md"
+      read_allow:
+        - "**"
+    locks:
+      files:
+        - "openspec/roadmap.md"
+        - "personas/_template/.gitignore"
+      keys:
+        - "openspec:roadmap"
+      ttl_minutes: 60
+      reason: >
+        Roadmap status flips and persona-template gitignore are
+        cross-cutting; serialized at the end so all earlier work has
+        committed before status changes are recorded.
+    verification: tier_a
+    metadata:
+      loc_estimate: 250
+      external_deps: []
