@@ -5,24 +5,39 @@
 The system SHALL define a `CloudGraphClient` Protocol in
 `src/assistant/core/cloud_client.py` declaring the transport-level
 interface for any cloud-graph-shaped backend. The Protocol MUST
-expose exactly five async methods:
-`get(path, *, params, headers)`,
-`post(path, *, json, params, headers, retry_safe=True)`,
-`paginate(path, *, params)`,
-`get_bytes(path, *, params, headers, max_bytes)`,
-and `health_check()`. The Protocol MUST be `@runtime_checkable`.
-Future per-cloud implementations (Microsoft Graph in P5, Google APIs
-in P14, optionally `msgraph-sdk`-wrapped variants in any future
-phase) SHALL satisfy this Protocol.
+expose exactly five async transport methods plus three async
+lifecycle methods:
 
-#### Scenario: Protocol declares five required methods
+**Transport:**
+- `get(path, *, params, headers)`
+- `post(path, *, json, params, headers, retry_safe=True)`
+- `paginate(path, *, params)`
+- `get_bytes(path, *, params, headers, max_bytes)` — returns a
+  metadata `dict` (keys: `path`, `size_bytes`, `content_type`,
+  `request_id`) per the binary-download requirement, NOT raw bytes
+- `health_check()`
+
+**Lifecycle:**
+- `__aenter__()` — returns `self` typed as `CloudGraphClient`
+- `__aexit__(*exc)` — awaits `aclose()` and returns None
+- `aclose()` — explicit close for callers that cannot use the
+  context-manager form
+
+The Protocol MUST be `@runtime_checkable`. Future per-cloud
+implementations (Microsoft Graph in P5, Google APIs in P14,
+optionally `msgraph-sdk`-wrapped variants in any future phase)
+SHALL satisfy this full Protocol including the lifecycle methods.
+
+#### Scenario: Protocol declares five transport + three lifecycle methods
 
 - **WHEN** the `CloudGraphClient` Protocol is inspected via
   `typing.get_type_hints` / `inspect`
-- **THEN** the methods `get`, `post`, `paginate`, `get_bytes`,
-  `health_check` MUST all be declared
-- **AND** all five MUST be async (return `Awaitable` or
-  `AsyncIterator`)
+- **THEN** the transport methods `get`, `post`, `paginate`,
+  `get_bytes`, `health_check` MUST all be declared as async
+- **AND** the lifecycle methods `__aenter__`, `__aexit__`,
+  `aclose` MUST all be declared as async
+- **AND** the `get_bytes` return-type annotation MUST be
+  `dict[str, Any]` (or `dict`), NOT `bytes`
 
 #### Scenario: Custom GraphClient satisfies Protocol
 
@@ -194,6 +209,22 @@ redacted.
 - **AND** the JWT MUST be replaced with `[REDACTED]` per the
   `_sanitize_error_string` rules
 
+#### Scenario: Parent-class URL is sanitized in error string
+
+- **WHEN** `GraphAPIError` is constructed wrapping an
+  `httpx.HTTPStatusError` whose request URL was
+  `https://graph.microsoft.com/v1.0/users/alice@example.com/messages`
+  (a UPN that may be PII)
+- **AND** `str(GraphAPIError(...))` is computed
+- **THEN** the rendered string MUST run the *full parent-class
+  message* (including the URL component that `httpx.HTTPStatusError.__str__`
+  emits by default) through `_sanitize_error_string`
+- **AND** the UPN local-part `alice` MUST be redacted to a
+  placeholder (e.g., `<upn_local>`) before being included in any
+  logged or raised representation
+- **AND** the path's `messages` segment SHALL be preserved (it
+  is not PII)
+
 ### Requirement: Health Check Reports Breaker State
 
 The system SHALL implement `GraphClient.health_check()` to return a
@@ -320,17 +351,18 @@ contain PII.
 - **AND** the call kwargs MUST include `extension_name="outlook"`
   (or whichever was passed at construction), `method="GET"`,
   `path="/me/messages"`, `status_code=200`, `request_id="abc123"`,
-  and a non-negative `duration_ms`
+  `retry_attempt=0`, `error=None`, and a non-negative `duration_ms`
 
 #### Scenario: 401-then-success emits two spans (one per attempt)
 
 - **WHEN** the first GET returns 401 invalid_token, force_refresh
   acquires a new token, and the replay returns 200
 - **THEN** `trace_graph_call` MUST be called exactly twice
-- **AND** the first span's `status_code` MUST equal 401, the
-  second's `status_code` MUST equal 200
-- **AND** each span's `attempt` MUST reflect its position in the
-  sequence (1, 2)
+- **AND** the first call kwargs MUST include `status_code=401`,
+  `retry_attempt=0`, and `error="GraphAPIError"` (or the appropriate
+  auth-error class name)
+- **AND** the second call kwargs MUST include `status_code=200`,
+  `retry_attempt=1`, and `error=None`
 
 #### Scenario: Path normalization redacts message_id-shaped segments
 
@@ -545,22 +577,26 @@ construction in P5; superseded by P10).
 ### Requirement: Cross-Domain Redirect Rejection
 
 The system SHALL reject any pagination `@odata.nextLink` URL or HTTP
-3xx redirect target whose host is not within the trusted Graph API
-domain (`https://graph.microsoft.com/` and its national-cloud
-variants `graph.microsoft.us`, `graph.microsoft.de`,
-`microsoftgraph.chinacloudapi.cn` per Microsoft's documented sovereign
-cloud endpoints). Rejection MUST occur **before** the bearer token is
-attached to the redirected request, so a malicious or
-misconfigured redirect cannot capture the access token. The trusted
-host set SHALL be a configurable list passed at `GraphClient`
-construction (`trusted_hosts: list[str] | None = None`); the default
-SHALL be the four documented Graph hosts above.
+3xx redirect target whose **scheme** is not `https` OR whose **host**
+is not within the trusted Graph API domain (`graph.microsoft.com` and
+its active national-cloud variants `graph.microsoft.us` and
+`microsoftgraph.chinacloudapi.cn`). The trusted-host set SHALL be a
+configurable list passed at `GraphClient` construction
+(`trusted_hosts: list[str] | None = None`); the default SHALL be
+the three currently-active Graph hosts listed above.
+`graph.microsoft.de` (Microsoft Cloud Germany) is **not** in the
+default set because the service was sunset by Microsoft in 2021;
+operators of any non-default sovereign cloud SHALL provide
+`trusted_hosts` explicitly. Rejection MUST occur **before** the
+bearer token is attached to the redirected request, so a malicious
+or misconfigured redirect cannot capture the access token.
 
 The underlying `httpx.AsyncClient` SHALL be configured with
 `follow_redirects=False`. When pagination `@odata.nextLink` carries a
-non-trusted host, `paginate()` MUST raise `GraphAPIError` with
-`error_code="invalid_redirect"` and message identifying the rejected
-host without echoing query parameters.
+non-https scheme or a non-trusted host, `paginate()` MUST raise
+`GraphAPIError` with `error_code="invalid_redirect"` and message
+identifying the rejected scheme/host without echoing query parameters
+(which may carry skip-tokens or other state).
 
 #### Scenario: Pagination nextLink to graph.microsoft.com is followed
 
@@ -577,6 +613,18 @@ host without echoing query parameters.
   `error_code="invalid_redirect"`
 - **AND** the bearer token MUST NOT have been transmitted to
   `attacker.example.com`
+
+#### Scenario: Pagination nextLink with non-https scheme is rejected
+
+- **WHEN** the Graph API returns a page with
+  `@odata.nextLink: "http://graph.microsoft.com/v1.0/me/messages?$skip=10"`
+  (note the `http://` scheme — TLS downgrade)
+- **THEN** `paginate()` MUST NOT issue the redirected request even
+  though the host is in the trusted set
+- **AND** `GraphAPIError` MUST be raised with
+  `error_code="invalid_redirect"`
+- **AND** the error message MUST identify the rejected scheme
+- **AND** the bearer token MUST NOT have been transmitted
 
 #### Scenario: HTTP 3xx response is not auto-followed
 

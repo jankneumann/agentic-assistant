@@ -78,6 +78,22 @@ when silent acquisition fails.
 - **AND** the device-code prompt MUST be written to stderr for the
   operator to read
 
+#### Scenario: MSAL_FALLBACK_DEVICE_CODE is process-level only
+
+- **WHEN** the environment variable `MSAL_FALLBACK_DEVICE_CODE=1` is
+  set in a process running multiple personas
+- **AND** any persona's `InteractiveDelegatedStrategy` is awaited
+- **THEN** all personas MUST use device-code fallback (the env var
+  is process-level, NOT per-persona)
+- **AND** the spec NOTES that per-persona override via
+  `persona.yaml` `auth.ms.fallback_device_code: true|false` is a
+  P5b follow-up — P5 ships only the process-level switch to keep
+  scope minimal
+- **AND** operators running headless background tasks (P7
+  scheduler, P6 A2A server) SHOULD NOT set this env var unless
+  they accept that interactive personas in the same process will
+  also fall through to device-code
+
 ### Requirement: Client Credentials Strategy
 
 The system SHALL provide `ClientCredentialsStrategy` that uses
@@ -144,9 +160,22 @@ empty cache without error.
 - **AND** at no point during the write MUST the tmp file be readable
   or writable by group or other (mode bits `0o077` MUST always be
   zero)
-- **AND** if a stale tmp file exists, the strategy MUST refuse to
-  overwrite it (because of `O_EXCL`) and surface an
-  `MSALAuthenticationError` with an actionable message
+
+#### Scenario: Concurrent refresh handles tmp-file collision via random suffix
+
+- **WHEN** two `InteractiveDelegatedStrategy` instances exist for
+  the same persona (e.g., one per running task or per harness)
+- **AND** both attempt to write the token cache simultaneously
+- **THEN** each strategy SHALL write to a distinct tmp path with
+  the form `msal_token_cache.json.<random-8-char-suffix>.tmp`
+- **AND** each MUST then `os.rename` to the canonical
+  `msal_token_cache.json` (last writer wins; rename is atomic on
+  POSIX)
+- **AND** neither strategy SHALL fail with
+  `MSALAuthenticationError` due to a tmp-file collision
+- **AND** any stale tmp file older than 5 minutes (judged by
+  `os.path.getmtime`) MUST be removed before retrying, to clean
+  up after crashed processes
 
 #### Scenario: Missing cache file yields empty cache without error
 

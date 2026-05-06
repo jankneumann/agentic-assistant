@@ -88,11 +88,13 @@ and any design decision IDs (D1–D12 in `design.md`) it verifies.
   **Dependencies**: 1.2, 1.8
 
 - [ ] 1.10 Write tests for `paginate()` (`@odata.nextLink`-chasing,
-  page ceiling, header preservation)
+  page ceiling raises, header preservation)
   **Spec scenarios**: graph-client / "Paginate yields successive
   pages until nextLink absent", "nextLink chase preserves header and
-  base URL", "Page ceiling triggers termination with warning"
-  **Design decisions**: D4
+  base URL", "Page ceiling raises rather than terminates silently",
+  "Page ceiling is configurable"
+  **Design decisions**: D4, D19 (page ceiling supersedes silent
+  truncation)
   **Dependencies**: 1.2
 
 - [ ] 1.11 Write tests for resilience integration (per-extension
@@ -300,12 +302,16 @@ and any design decision IDs (D1–D12 in `design.md`) it verifies.
   **Dependencies**: 1.14
 
 - [ ] 6.5 Write tests for capability consumption (ToolPolicy,
-  GuardrailProvider; assert MemoryPolicy is NOT consumed)
+  GuardrailProvider, MemoryPolicy minimal-prepend injection)
   **Spec scenarios**: ms-agent-framework-harness / "Authorized
   extensions are filtered through ToolPolicy",
   "spawn_sub_agent calls GuardrailProvider before constructing
-  sub-agent"
-  **Design decisions**: D10 (Capability resolver wiring for MSAF)
+  sub-agent", "Memory snippets prepended to instructions",
+  "Empty memory snippets leaves instructions unchanged",
+  "NoopMemoryPolicy yields no injection"
+  **Design decisions**: D10 (Capability resolver wiring for MSAF;
+  MemoryPolicy now minimally consumed per D27), D27 (Minimal
+  MemoryPolicy injection)
   **Dependencies**: 1.14
 
 - [ ] 6.6 Write tests for `@traced_harness` decorator integration on

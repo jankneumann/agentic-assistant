@@ -1,0 +1,32 @@
+{
+  "review_type": "plan",
+  "target": "cli-dispatch",
+  "dispatches": [
+    {
+      "vendor": "codex",
+      "success": false,
+      "model_used": null,
+      "models_attempted": [
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-mini"
+      ],
+      "elapsed_seconds": 12.295496083039325,
+      "error": "Reading additional input from stdin...\nOpenAI Codex v0.128.0 (research preview)\n--------\nworkdir: /Users/jankneumann/Coding/agentic-assistant/.git-worktrees/ms-graph-extension\nmodel: gpt-5.4-mini\nprovider: openai\napproval: never\nsandbox: read-only\nreasoning effort: high\nreasoning summaries: none\nsession id: 019dfb3d-3d06-71d1-a10f-f8192c2ab11a\n--------\nuser\n# Review Prompt \u2014 ms-graph-extension PLAN_REVIEW round 2\n\n## Context\n\nThis is **round 2** of multi-vendor PLAN_REVIEW for the OpenSpec chang",
+      "error_class": "capacity_exhausted"
+    },
+    {
+      "vendor": "gemini",
+      "success": false,
+      "model_used": null,
+      "models_attempted": [
+        "auto"
+      ],
+      "elapsed_seconds": 600.033512583992,
+      "error": "Timeout after 600s",
+      "error_class": "transient"
+    }
+  ],
+  "quorum_requested": 2,
+  "quorum_received": 0
+}

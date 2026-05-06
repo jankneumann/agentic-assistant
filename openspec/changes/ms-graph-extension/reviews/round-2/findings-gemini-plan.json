@@ -1,0 +1,87 @@
+{
+  "review_type": "plan",
+  "target": "ms-graph-extension",
+  "reviewer_vendor": "gemini",
+  "findings": [
+    {
+      "id": "GEM-P5-01",
+      "type": "bug",
+      "criticality": "critical",
+      "description": "Critical concurrency race in token cache write path. msal-auth/spec.md (Scenario 'Tmp file is created with mode 0o600 atomically') and tasks 8.1.19/8.1.20 mandate using os.O_EXCL on the .tmp file and raising MSALAuthenticationError if it exists. In a multi-extension persona (e.g., Outlook + Teams), concurrent Graph calls that both trigger a token refresh will race for the same .tmp file, causing one to fail with a non-retriable authentication error. This violates the goal of 'Event loop remains responsive' and 'Concurrent Graph calls are not serialized'.",
+      "resolution": "Update msal-auth/spec.md to allow retrying tmp-file creation with a random suffix or implement file-locking on the cache directory during refresh. Ensure that concurrent refreshes for the same persona do not fail-fast on a tmp-file collision.",
+      "disposition": "open"
+    },
+    {
+      "id": "GEM-P5-02",
+      "type": "consistency",
+      "criticality": "high",
+      "description": "Return type mismatch for get_bytes in CloudGraphClient Protocol. design.md D3 declares the return type as '-> bytes', whereas graph-client/spec.md ('Requirement: Binary Download via get_bytes') and ms-extensions/spec.md ('Scenario: download_document delegates to get_bytes and returns metadata dict') both mandate returning a metadata dict {path, size_bytes, content_type, request_id} to avoid LLM token overflow. The design.md D3 declaration is stale and will lead to implementation errors.",
+      "resolution": "Update design.md D3 to match the spec.md contract: get_bytes returns a dict with path and metadata, not raw bytes.",
+      "disposition": "open"
+    },
+    {
+      "id": "GEM-P5-03",
+      "type": "completeness",
+      "criticality": "high",
+      "description": "CloudGraphClient Protocol is missing required lifecycle methods. graph-client/spec.md ('Requirement: HTTP Client Lifecycle and Resource Cleanup') and design.md D4 mandate that GraphClient implement __aenter__, __aexit__, and aclose for resource cleanup. However, the Protocol definition in design.md D3 and the 'Requirement: CloudGraphClient Protocol' in graph-client/spec.md do not include these methods. Generic consumers typed as CloudGraphClient (like tests or future P14 extensions) will be unable to safely close the client.",
+      "resolution": "Add __aenter__, __aexit__, and aclose to the CloudGraphClient Protocol in design.md D3 and the corresponding spec.md requirement.",
+      "disposition": "open"
+    },
+    {
+      "id": "GEM-P5-04",
+      "type": "consistency",
+      "criticality": "medium",
+      "description": "Inconsistency in trace_graph_call observability span fields. graph-client/spec.md ('Scenario: get_bytes wraps with same resilience and observability layers') mandates that the span include a 'bytes_streamed' field on success. However, the ObservabilityProvider Protocol definition in observability/spec.md and design.md D15 do not include this field in the trace_graph_call signature, which will cause a TypeError at runtime when get_bytes tries to emit the span.",
+      "resolution": "Add bytes_streamed: int | None = None to the trace_graph_call method signature in the ObservabilityProvider Protocol (observability/spec.md) and design.md D15.",
+      "disposition": "open"
+    },
+    {
+      "id": "GEM-P5-05",
+      "type": "consistency",
+      "criticality": "medium",
+      "description": "Inconsistent naming and indexing for observability attempt fields. observability/spec.md uses 'retry_attempt=0' (0-indexed) in its signature and scenarios, while graph-client/spec.md ('Scenario: 401-then-success emits two spans') uses 'attempt' (1-indexed, values 1 and 2). This will cause confusion and inconsistent dashboard data.",
+      "resolution": "Standardize on retry_attempt (0-indexed) across both observability/spec.md and graph-client/spec.md to align with P4 conventions.",
+      "disposition": "open"
+    },
+    {
+      "id": "GEM-P5-06",
+      "type": "completeness",
+      "criticality": "medium",
+      "description": "Ambiguity in MSAL_FALLBACK_DEVICE_CODE scope. design.md D1 and msal-auth/spec.md mention this environment variable as a trigger for device-code fallback. However, it is not specified whether this is a global override or if it can/should be configured per-persona (e.g., via persona.yaml auth.ms config). If it is global, it may inadvertently trigger device-flow prompts for automated background tasks in other personas.",
+      "resolution": "Specify in msal-auth/spec.md and design.md whether MSAL_FALLBACK_DEVICE_CODE is a global process-level override or if it should be checked via persona.raw config first.",
+      "disposition": "open"
+    },
+    {
+      "id": "GEM-P5-07",
+      "type": "consistency",
+      "criticality": "medium",
+      "description": "Internal contradiction regarding MemoryPolicy in MSAgentFrameworkHarness. design.md D10 states 'MemoryPolicy: not consumed in P5... deferred to a P5b follow-up'. However, D27 (added later) states 'Minimal MemoryPolicy injection in MSAF harness' and specifies prepending snippets to instructions. Task 6.5 also still contains an assertion that MemoryPolicy is NOT consumed.",
+      "resolution": "Update design.md D10 to reflect the D27 decision and update task 6.5 to assert the correct memory injection behavior.",
+      "disposition": "open"
+    },
+    {
+      "id": "GEM-P5-08",
+      "type": "completeness",
+      "criticality": "low",
+      "description": "Missing trusted_hosts from design.md. graph-client/spec.md ('Requirement: Cross-Domain Redirect Rejection') specifies a trusted_hosts constructor argument for GraphClient. This parameter is absent from the design.md D3/D4 descriptions, leading to a discrepancy between design and spec.",
+      "resolution": "Update design.md D4 to include the trusted_hosts parameter and its default behavior.",
+      "disposition": "open"
+    },
+    {
+      "id": "GEM-P5-09",
+      "type": "bug",
+      "criticality": "low",
+      "description": "Potential PII leak in GraphAPIError URL. Requirement 'Error Sanitization on GraphAPIError' (graph-client/spec.md) focuses on redacting tokens from the error message. However, since GraphAPIError subclasses httpx.HTTPStatusError, the default string representation of the parent class may include the full request URL. While Graph IDs are not usually PII, certain endpoints (e.g., /users/{upn}) could leak email addresses in logs if the status error string is not also sanitized.",
+      "resolution": "Ensure GraphAPIError.__str__ explicitly calls _sanitize_error_string on the full parent message including the URL, or override the message to exclude raw UPNs.",
+      "disposition": "open"
+    },
+    {
+      "id": "GEM-P5-10",
+      "type": "hygiene",
+      "criticality": "low",
+      "description": "Stale task reference for paginate behavior. Task 1.10 references a 'Page ceiling triggers termination with warning' scenario, but this scenario was explicitly superseded by 'Page ceiling raises rather than terminates silently' in graph-client/spec.md. Task 8.1.15 correctly references the new behavior, but 1.10 remains stale.",
+      "resolution": "Update Task 1.10 to reference the 'raises rather than terminates' behavior.",
+      "disposition": "open"
+    }
+  ]
+}

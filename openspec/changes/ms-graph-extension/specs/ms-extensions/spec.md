@@ -349,13 +349,17 @@ tenant.
 #### Scenario: list_messages does not call Graph per item
 
 - **WHEN** `outlook.list_messages(top=50)` is invoked against a
-  mocked `GraphClient` that records every `get`/`post` call
-- **AND** the mocked endpoint returns 50 messages with attachments
-- **THEN** the recorded `get`/`post` call count MUST be at most
-  `ceil(50 / page_size) + 1` (one per page; the `+1` covers an
-  optional `$expand` resolution)
-- **AND** the call count MUST NOT scale linearly with the number of
-  messages
+  mocked `GraphClient` that records every `get`/`post`/`paginate`
+  call (the call ledger)
+- **AND** the mocked `paginate()` yields `N_pages` pages each
+  containing some messages with attachments (pinned by the test
+  fixture; e.g., 5 pages × 10 messages = 50 messages)
+- **THEN** the call ledger size MUST be in the range
+  `[N_pages, N_pages + 1]` — one call per page, with at most one
+  additional call to cover an `$expand` or initial query
+- **AND** the call ledger size MUST NOT scale with the number of
+  items (i.e., increasing items-per-page from 10 to 50 while
+  holding `N_pages=5` MUST leave the ledger size unchanged)
 
 ### Requirement: Per-Tool Page Ceiling Configuration
 
