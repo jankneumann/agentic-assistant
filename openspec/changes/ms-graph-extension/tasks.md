@@ -1,20 +1,39 @@
 # Implementation Tasks — ms-graph-extension
 
 Task ordering follows the work-packages DAG declared in
-`work-packages.yaml`:
+`work-packages.yaml` (revised in PLAN_ITERATE iteration 3 — split
+foundation into protocols + impls):
 
-1. `wp-foundation` MUST land first (gates the four extension packages
-   and the harness package).
-2. `wp-ms-graph`, `wp-outlook`, `wp-teams`, `wp-sharepoint`,
-   `wp-msaf-harness` are independent of each other and run in parallel.
-3. `wp-integration` runs last; it updates existing test files that
-   assert stub behavior for the four MS extensions.
+1. `wp-foundation-protocols` MUST land first. It is the pure-interface
+   layer (cloud_client Protocol, persona factory contract,
+   ObservabilityProvider Protocol modification, MockGraphClient).
+   ~600 LOC. Tasks 1.1, 1.2, 1.15, 8.4.x, 9.1.1, 9.1.2, 9.2.x.
+2. `wp-foundation-impls` lands AFTER protocols. Concrete
+   httpx GraphClient, MSAL strategies, observability provider impls,
+   pyproject.toml dep additions. ~2400 LOC. Tasks 1.3-1.14, 1.16,
+   8.1.x, 9.1.3-9.1.9, 9.4.1.
+3. `wp-ms-graph`, `wp-outlook`, `wp-teams`, `wp-sharepoint` depend
+   ONLY on `wp-foundation-protocols` and run in PARALLEL with
+   `wp-foundation-impls` once protocols lands. They use
+   MockGraphClient in tests.
+4. `wp-msaf-harness` depends on protocols + impls (needs
+   agent-framework dep).
+5. `wp-integration` runs last; it updates existing test files that
+   assert stub behavior for the four MS extensions, then runs the
+   final quality gate.
 
 Within each work package, tests precede implementation per TDD
 discipline. Each test task references the spec scenarios it encodes
-and any design decision IDs (D1–D12 in `design.md`) it verifies.
+and any design decision IDs (D1–D12 plus post-review D13–D27 plus
+PLAN_ITERATE additions in `design.md`) it verifies.
 
-## 1. wp-foundation — Cloud client Protocol + MSAL + GraphClient
+## 1. wp-foundation-{protocols,impls} — Cloud client Protocol + MSAL + GraphClient
+
+Tasks in section 1 split between the two foundation packages:
+- **wp-foundation-protocols**: 1.1, 1.2 (CloudGraphClient Protocol),
+  1.15 (MockGraphClient).
+- **wp-foundation-impls**: 1.3-1.14 (MSAL strategies, GraphClient,
+  paginate), 1.16 (pyproject deps).
 
 - [ ] 1.1 Write tests for `CloudGraphClient` Protocol shape
   **Spec scenarios**: graph-client / "Protocol declares five required

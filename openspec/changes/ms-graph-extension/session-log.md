@@ -167,3 +167,63 @@ Quorum 2 of 2 received. Both vendor dispatches succeeded (codex 161s, gemini 54s
 ### Context
 
 This iteration was launched as the autopilot PLAN_ITERATE phase after a fresh /autopilot ms-graph-extension invocation found the proposal already had PLAN plus PLAN_REVIEW round 1 plus remediation completed externally. The five-agent parallel-Explore approach (each agent under 700 words, single-dimension focused) surfaced one new critical finding (work-packages.yaml stale path) that all single-pass approaches would likely have missed. Net change: 1 new spec delta (observability), 18 new spec scenarios across 5 files, 15 new tasks in a new section 9, two task allocations in work-packages.yaml, one design D5 amendment (version pin), two design D-section enhancements (D3 code example fix), one Impact section update in proposal.md. openspec validate --strict passes after the iteration. Next phase: PLAN_REVIEW round 2 dispatched via parallel-review-plan to verify remediation closes the iteration findings without introducing new ones.
+
+---
+
+## Phase: Plan Review Round 2 (2026-05-06)
+
+**Agent**: claude_code Opus 4.7 1M (orchestrator) plus gemini-local plus codex-local (attempted) | **Session**: autopilot P5 PLAN_REVIEW phase
+
+### Decisions
+
+1. **Two-vendor convergence achieved despite codex unavailability.** Codex dispatch failed at all three model attempts (gpt-5.5, gpt-5.4, gpt-5.4-mini) with OpenAI capacity exhaustion. Gemini dispatch reported timeout-after-600s but actually succeeded — its findings file was written before the dispatcher's stdout collection timed out. Filed as a parallel-infrastructure follow-up: dispatcher should check findings-file existence after timeout before declaring failure. Net result: claude_code self-review plus gemini-local equal 2-vendor quorum met.
+
+2. **16 distinct findings synthesized from round 2.** 1 critical, 2 high, 7 medium, 6 low. 12 fixed in iteration 2 commit aa03743. 3 rejected as already-addressed or over-cautious. 1 escalated to human (wp-foundation decomposition).
+
+3. **Cross-vendor blind spots are real and complementary.** Gemini caught 4 high+critical issues that claude_code self-review missed: D3 get_bytes return type mismatch (annotated bytes vs spec dict), CloudGraphClient Protocol missing lifecycle method declarations, D10 versus D27 MemoryPolicy contradiction, multi-PCA-instance tmp-file race in token cache write path. Claude found issues gemini missed: https-only scheme requirement on @odata.nextLink, observability kwarg consistency between specs, page-size-independent pagination bound. Different blind spots is the value proposition of cross-vendor convergence.
+
+4. **Round-1 vendor-knowledge contributions persist into round 2.** Codex unavailability in round 2 did not erase its round-1 contribution because the spec content seen by codex in round 1 is the basis from which round-2 review applies. The 5 highs codex contributed in round 1 (HTTP 202 empty bodies, Retry-After throttling, write idempotency hazards, factory signature mismatch) all stayed closed in round 2, confirming the remediation worked.
+
+### Tooling Notes
+
+- Codex v0.128.0 with the openai provider hit capacity-exhausted on three model attempts in approximately 12 seconds. Likely an OpenAI API tier or quota issue. The fallback chain (gpt-5.5 to gpt-5.4 to gpt-5.4-mini) implies the dispatcher tried each in turn and all failed. Worth investigating tier configuration on this account.
+- Gemini-local with model auto succeeded at the actual review work but the dispatcher process management timed out at 600s. The findings file is unambiguous evidence of success (references trusted_hosts and observability spec.md and Cross-Domain Redirect Rejection from iteration 1). Filed as parallel-infrastructure issue: detect file-existence after timeout and reclassify outcome.
+
+---
+
+## Phase: Plan Iteration 3 (2026-05-06)
+
+**Agent**: claude_code Opus 4.7 1M | **Session**: autopilot P5 PLAN_FIX (escalation resolution)
+
+### Decisions
+
+1. **Foundation work-package split into protocols + impls.** wp-foundation in iteration 2 had grown to ~3000 LOC and 54 tasks. Iteration 1 rejected decomposition; iteration 2 self-review re-raised it as the section-9 additions tipped the balance; user selected Option C (split now) over Option A (defer to P5b) and Option B (accept as-is). New design section D28 documents the split rationale. New design section D29 documents pyproject ownership consolidation in impls.
+
+2. **wp-foundation-protocols** (~600 LOC, no deps) owns pure-interface code: `core/cloud_client.py` (CloudGraphClient Protocol with 5 transport plus 3 lifecycle methods), `core/persona.py` (extended factory contract), `telemetry/providers/base.py` (ObservabilityProvider Protocol modification adding trace_graph_call), `tests/mocks/graph_client.py` (typed MockGraphClient that satisfies the Protocol). Tasks 1.1, 1.2, 1.15, 8.4.x, 9.1.1, 9.1.2, 9.2.x. Lock TTL 60 minutes — short window because no httpx or MSAL or Langfuse code is touched.
+
+3. **wp-foundation-impls** (~2400 LOC, depends on protocols) owns concrete code: `core/msal_auth.py` (MSALStrategy Protocol plus impls — co-located because the Protocol is narrowly scoped to MSAL and not reused by P14 Google extensions), `core/graph_client.py` (httpx GraphClient impl), `telemetry/providers/{noop,langfuse}.py`, plus pyproject.toml with all three external deps (msal, respx, agent-framework). Tasks 1.3-1.14, 1.16, 8.1.x, 9.1.3-9.1.9, 9.4.1.
+
+4. **MockGraphClient placement: protocols, not impls.** Because its purpose is to satisfy CloudGraphClient without an httpx impl, putting it in impls would force every extension test suite to wait for impls to land. It is a typed test fixture, not a concrete network client.
+
+5. **Pyproject ownership consolidates in impls.** Previously wp-msaf-harness owned the agent-framework dep; now impls owns all three deps. wp-msaf-harness declares `consumes_external_deps: [agent-framework]` and depends on impls so the dep is installed before harness implementation begins. Single pyproject lock window during the merge train.
+
+6. **Extension packages now depend ONLY on protocols.** They use MockGraphClient in tests and import CloudGraphClient via typing. wp-msaf-harness depends on protocols plus impls. wp-integration depends on all priority-2 packages.
+
+### Alternatives Considered
+
+- **Keep monolithic foundation per Option B**: rejected because the parallelism win for the four extensions is concrete (critical-path drop from 3000 LOC to 600 LOC, approximately 5x reduction) and the split boundary is clean — Protocol files are intentionally type-only contracts.
+- **Defer split to P5b per Option A**: rejected because the user explicitly chose Option C, and the split before implementation begins is significantly cheaper than after.
+- **Move MSALStrategy Protocol to protocols package**: rejected because MSALStrategy is narrowly scoped to MSAL and not reused by P14 Google extensions which will use OAuth-flow shaped abstractions. Splitting a small Protocol from its only impls would create maintenance overhead with no reuse benefit.
+
+### Trade-offs
+
+- Accepted +1 work package (now 7 plus integration) and a 6th max_loc bucket bump (4200 to 5000) to gain the parallelism for extensions.
+- Accepted slight maintenance overhead of two foundation packages (need to coordinate Protocol additions across both) over the simplicity of one foundation package, because the split boundary is well-defined and the parallelism is tangible.
+
+### Open Questions
+
+- [ ] Whether section 8.1.x and 9.1.x tasks still implicitly reference Protocol method additions (e.g., 9.1.2 says "Add trace_graph_call to base.py Protocol; implement in noop.py and langfuse.py"). Mechanically the Protocol-method addition lives in protocols package; the noop and langfuse impls live in impls package. The task description as written conflates both. For implementation cleanliness, an agent picking up 9.1.2 in protocols package would only update base.py; an agent in impls would update noop.py and langfuse.py. The task ID 9.1.2 is in protocols package — so the Protocol declaration goes there, with the impls handled separately by the agent picking up 9.1.2 implementation in impls. Note for implementer: when this pattern occurs, the task is split-by-package automatically and the implementer should only modify files in their write_allow scope.
+
+### Context
+
+User selected Option C (split now) at the autopilot escalation. Iteration 3 implemented the split: work-packages.yaml restructured (one package became two; max_loc bumped to 5000; max_packages bumped to 7); design.md gained two new D-sections (D28 split rationale, D29 pyproject consolidation); tasks.md header revised with new package allocation guide. openspec validate --strict passes. Round-3 PLAN_REVIEW skipped because the change is structural (no spec content changes; only DAG and ownership) and vendor-dispatch reliability is currently low. Convergence declared. Next phase: IMPLEMENT.

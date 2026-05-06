@@ -776,6 +776,104 @@ prepend them under a `## Recent context` heading inside the
 change required. (ms-agent-framework-harness spec: "Memory Snippet
 Injection in create_agent".)
 
+## Decisions added during PLAN_ITERATE iteration 3 (2026-05-06)
+
+### D28 — Foundation work-package split: protocols + impls
+
+After PLAN_ITERATE iteration 2 the foundation package had grown to
+~3000 LOC and 54 tasks (sections 1, 8.1.x, 8.4.x, 9.1.x, 9.2.x).
+That made wp-foundation a single-agent assignment that would (a)
+overflow context, (b) gate the four extension packages
+unnecessarily even though the extensions only need the Protocols
+to start, and (c) extend the merge-train critical path by holding
+all impls work in series before fan-out.
+
+Resolution: split foundation into two packages.
+
+**`wp-foundation-protocols`** (~600 LOC, no deps) owns
+*pure-interface* code:
+
+- `core/cloud_client.py` — `CloudGraphClient` Protocol (5 transport
+  methods + 3 lifecycle methods)
+- `core/persona.py` — extended `create_extension(config, *,
+  persona=None)` factory contract and `PersonaRegistry.load_extensions`
+  signature change
+- `telemetry/providers/base.py` — adds `trace_graph_call` method
+  to the existing `ObservabilityProvider` Protocol
+- `tests/mocks/graph_client.py` — typed `MockGraphClient` test
+  fixture that satisfies `CloudGraphClient`. Lives here (not in
+  impls) so extension test suites can use it without depending on
+  the httpx GraphClient.
+
+**`wp-foundation-impls`** (~2400 LOC, depends on protocols) owns
+*concrete* code:
+
+- `core/msal_auth.py` — `MSALStrategy` Protocol (narrowly scoped to
+  MSAL; not reused by P14 Google extensions which use OAuth
+  differently) plus `InteractiveDelegatedStrategy` and
+  `ClientCredentialsStrategy` impls. Co-located here because the
+  Protocol and impls evolve together within the MSAL subsystem.
+- `core/graph_client.py` — `GraphClient` httpx-based impl of
+  `CloudGraphClient`
+- `telemetry/providers/{noop,langfuse}.py` — `trace_graph_call`
+  impls
+- `pyproject.toml` + `uv.lock` — adds `msal>=1.28`, `respx>=0.21`
+  (test-only), and the pinned `agent-framework>=1.0.0,<2.0.0`
+  (per D5 PLAN_ITERATE pin)
+
+**Why MockGraphClient lives in protocols, not impls:** its purpose
+is "thing that satisfies CloudGraphClient without an httpx impl".
+Putting it in impls would force every extension test suite to wait
+for impls to land. Conceptually it is a typed test fixture, not a
+concrete network client.
+
+**Why MSALStrategy Protocol stays in impls (co-located with
+classes):** it is narrowly scoped to MSAL. P14 Google extensions
+will define their own auth abstraction (likely OAuth-flow shaped)
+that does not satisfy `MSALStrategy`. There is no reuse argument
+for moving this Protocol into the protocols package, and splitting
+a small Protocol from its only impls would create maintenance
+overhead. By contrast, `CloudGraphClient` and `ObservabilityProvider`
+ARE shared across MS and Google (P14) and harness layers, which
+justifies their position in the protocols package.
+
+**DAG and parallelism implications:**
+
+```
+wp-foundation-protocols (600 LOC)
+ │
+ ├─→ wp-foundation-impls (2400 LOC)         ─┐
+ ├─→ wp-ms-graph     (extension, ~300 LOC)  ─┤  parallel-2
+ ├─→ wp-outlook      (extension, ~350 LOC)  ─┤
+ ├─→ wp-teams        (extension, ~300 LOC)  ─┤
+ ├─→ wp-sharepoint   (extension, ~250 LOC)  ─┘
+ │
+ └─→ wp-msaf-harness (depends on impls too) ─→ wp-integration
+```
+
+Critical path before extensions can start drops from ~3000 LOC to
+~600 LOC (5x reduction). Total LOC remains ~5000 (max_loc bumped
+from 4200 to 5000 to accommodate; max_packages from 6 to 7).
+
+**Alternative considered — keep monolithic:** rejected because the
+parallelism win for the four extensions is concrete and the split
+boundary is clean (no leaky cross-package edits expected; the
+Protocol files exist precisely as type-only contracts). The risk
+of "review ping-pong" between protocols and impls is mitigated by
+landing protocols first in a single small commit.
+
+### D29 — Pyproject ownership consolidates in wp-foundation-impls
+
+All three external deps (`msal`, `respx`, `agent-framework`) now
+land in `wp-foundation-impls` via task 1.16. Previously,
+`wp-msaf-harness` owned the `agent-framework` dep. Consolidating
+into impls means a single pyproject lock window during the merge
+train, no semantic-boundary debate, and a deterministic version
+pin point. `wp-msaf-harness` `consumes_external_deps:
+[agent-framework]` (declarative, no pyproject write) and depends
+on impls so the dep is installed before harness implementation
+begins.
+
 ## Open Questions
 
 - **`agent-framework` version pin**: which exact version? Decision
