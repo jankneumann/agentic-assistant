@@ -57,3 +57,63 @@
 ### Context
 
 The planning goal was to produce all OpenSpec artifacts (proposal, design, specs, tasks, contracts, work-packages, session-log) for P5 of the agentic-assistant roadmap. P5 implements real ms_graph and outlook and teams and sharepoint extensions plus a full MS Agent Framework harness, with Entra ID plus SSO as the primary auth target since the work persona is the primary consumer. Functional prereqs (P3 http-tools-layer, P1.8 capability-protocols, P9 error-resilience) all archived. Six discovery questions answered with all-recommended options. One direction question answered with a hybrid that produced sub-approach A.2 (Protocol-with-custom-MS-impl). The plan validates openspec validate strict clean. Awaiting Gate 2 user approval before transitioning to implement-feature.
+
+---
+
+## Phase: Plan-review (2026-05-05)
+
+**Agent**: claude_code Opus 4.7 (orchestrator) + codex gpt-5.5 + gemini auto | **Session**: parallel-review-plan dispatch + consensus synthesis
+
+### Findings before remediation
+
+| Source | Critical | High | Medium | Low | Total |
+|---|---|---|---|---|---|
+| claude (self-review) | 0 | 2 | 6 | 4 | 12 |
+| codex | 0 | 5 | 5 | 1 | 11 |
+| gemini | 0 | 0 | 2 | 2 | 4 |
+| **Combined unique** | 0 | 8 | ~12 | ~6 | ~26 |
+
+Quorum 2 of 2 received. Both vendor dispatches succeeded (codex 161s, gemini 54s).
+
+### Multi-vendor agreement (3 reviewers)
+
+- **A**: 429 Retry-After header not honored (claude 2 + codex 6 + gemini 1)
+- **B**: Missing transport-level observability span (claude 4 + codex 10 + gemini 3, with gemini adding the request-id correlation detail)
+
+### Cross-vendor agreement (2 reviewers)
+
+- **C**: No per-request httpx timeout specified (claude 3 + gemini 2)
+- **D**: download_document return type contradicts dict-only Protocol (codex 2 high + gemini 4 low)
+
+### Codex-unique HIGH findings (vendor-specific MS Graph wire knowledge)
+
+- **E**: PersonaRegistry.load_extensions calls factories with one arg, but new factory contract specified two — broken in production
+- **F**: outlook.send_email returns HTTP 202 with empty body on success; spec required parsed JSON
+- **G**: GraphAPIError outside the httpx.HTTPStatusError hierarchy — P9 retry classifier never matched, retries silently never fired
+- **H**: Retry on non-idempotent POSTs would cause duplicate emails plus duplicate Teams chat messages
+
+### Decisions made during remediation
+
+1. **Adopt all 8 high findings as fixes.** Each becomes a normative spec requirement (D13–D27).
+2. **download_document approach**: extend CloudGraphClient Protocol with a fifth method get_bytes (50 MiB cap, streaming, tempfile result). The asymmetry with P14 is acceptable because the same Protocol shape can also serve Google Drive downloads.
+3. **MSAF MemoryPolicy**: add minimal memory injection (50 LOC, prepend last N memory snippets to instructions parameter). Closes the asymmetry with DeepAgents harness without waiting for an upstream agent-framework hook.
+4. **Factory contract migration**: `create_extension(config, *, persona=None)` keyword-only, with default None, so stubs (gmail/gcal/gdrive) and third-party persona-submodule extensions stay backward-compatible. The four real factories use persona to construct MSAL plus GraphClient internally.
+5. **GraphAPIError compatibility**: subclass httpx.HTTPStatusError so P9 classifier matches it without changes to P9.
+6. **Per-method retry safety**: `retry_safe: bool = True` parameter on post and on the Protocol; write tools opt out.
+
+### Remediation scope
+
+- 5 spec files modified to add requirements (graph-client gained 8, msal-auth gained 4 including the to_thread wrapping and gitignore check, ms-extensions gained 4 including url-encoding and scope-replace and breaker-error and download_document update, ms-agent-framework-harness gained 1 for memory injection, extension-registry gained 1 for the factory contract)
+- design.md gained sections D13 through D27 documenting the post-review additions
+- tasks.md gained section 8 with about 30 new tasks across foundation, the four extensions, the MSAF harness, and integration
+- work-packages.yaml LOC estimates bumped from 3000 to 4200 across the 6 packages, max_loc cap raised, lock keys and write_allow scopes updated
+
+### Open Questions
+
+- [ ] Whether to also add Microsoft Graph batch endpoint support (graph.microsoft.com/v1.0/$batch) for higher-throughput operations: deferred to P5b. Not raised by review but adjacent to performance findings.
+- [ ] Whether the trace_graph_call observability hook should also emit a normalized cost-attribution metric (request count per extension per persona): deferred to P4 follow-up.
+
+### Tooling Notes
+
+- The consensus_synthesizer reported 0 confirmed findings. Inspection showed this is a tooling false negative: its description-text similarity matcher does not cluster claude+codex+gemini findings that describe the same gap with different prose (for example "missing 429 Retry-After" vs "honor Retry-After" vs "respect Retry-After header"). Manual topical synthesis was performed in the orchestrator response. Worth filing an upstream issue against the synthesizer for fuzzy or topical matching.
+- Three vendors all spent meaningfully different time on the review (claude self-review during authoring, codex 161s, gemini 54s). Codex produced the most thorough review with vendor-specific MS Graph wire knowledge that the orchestrator (claude) lacked. This validates the parallel-review-plan design intent: orchestrator blind spots get caught by independent reviewers.

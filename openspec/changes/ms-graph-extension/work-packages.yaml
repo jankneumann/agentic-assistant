@@ -4,14 +4,17 @@ change_id: ms-graph-extension
 defaults:
   auto_loop:
     # P5 ships a foundation layer (cloud_client + msal_auth +
-    # graph_client + MockGraphClient) plus four real extensions
-    # plus the MSAF harness implementation. The four extension
-    # packages run in parallel after the foundation lands;
-    # wp-integration runs serially at the end. Integration package
-    # is exempted from max_packages (per
+    # graph_client + MockGraphClient + extended factory contract +
+    # trace_graph_call observability hook) plus four real
+    # extensions plus the MSAF harness implementation (with minimal
+    # MemoryPolicy injection). Estimate grew after the
+    # parallel-review-plan multi-vendor review surfaced 8 HIGH
+    # findings and a dozen mediums; remediation tasks landed in
+    # tasks.md section 8 and folded into the appropriate packages.
+    # Integration package is exempted from max_packages (per
     # complexity_gate._count_impl_packages — see
     # http-tools-layer's comment).
-    max_loc: 3000
+    max_loc: 4200
     max_packages: 6
     max_external_deps: 3
 
@@ -23,15 +26,23 @@ packages:
   - id: wp-foundation
     name: "Foundation: CloudGraphClient Protocol + MSAL strategies + GraphClient"
     description: >
-      Implements the layered foundation per design.md D1–D4: the
-      `CloudGraphClient` Protocol (core/cloud_client.py), two MSAL
-      strategy classes with serializable token cache discipline
-      (core/msal_auth.py), and the custom httpx-based `GraphClient`
-      that satisfies the Protocol with P9 resilience integration
-      (core/graph_client.py). Also lands the typed `MockGraphClient`
-      under tests/mocks/ that downstream extension tests substitute.
-      Adds `msal>=1.28` and `respx>=0.21` (test-only) to pyproject.toml
-      and locks uv.lock. Covers tasks.md sections 1.1–1.16.
+      Implements the layered foundation per design.md D1–D4 (and
+      post-review additions D13–D22, D26): the `CloudGraphClient`
+      Protocol with five methods (core/cloud_client.py), two MSAL
+      strategy classes with serializable token cache discipline +
+      asyncio.to_thread wrapping + atomic 0o600 tmp creation +
+      gitignore verification (core/msal_auth.py), the custom
+      httpx-based `GraphClient` with Retry-After honoring,
+      configured timeouts, transport-level trace_graph_call
+      observability, empty-body 202/204 handling, GraphAPIError
+      subclassing httpx.HTTPStatusError, retry_safe parameter, and
+      get_bytes streaming download (core/graph_client.py). Also
+      lands the typed `MockGraphClient`, the extended factory
+      contract (`create_extension(config, *, persona=None)`) wired
+      through PersonaRegistry, and a new
+      `trace_graph_call` method on the P4 observability provider.
+      Adds `msal>=1.28` and `respx>=0.21` to pyproject.toml. Covers
+      tasks.md sections 1.1–1.16 and 8.1.x and 8.4.x.
     tasks:
       - "1.1"
       - "1.2"
@@ -49,6 +60,32 @@ packages:
       - "1.14"
       - "1.15"
       - "1.16"
+      - "8.1.1"
+      - "8.1.2"
+      - "8.1.3"
+      - "8.1.4"
+      - "8.1.5"
+      - "8.1.6"
+      - "8.1.7"
+      - "8.1.8"
+      - "8.1.9"
+      - "8.1.10"
+      - "8.1.11"
+      - "8.1.12"
+      - "8.1.13"
+      - "8.1.14"
+      - "8.1.15"
+      - "8.1.16"
+      - "8.1.17"
+      - "8.1.18"
+      - "8.1.19"
+      - "8.1.20"
+      - "8.1.21"
+      - "8.1.22"
+      - "8.1.23"
+      - "8.4.1"
+      - "8.4.2"
+      - "8.4.3"
     priority: 1
     dependencies: []
     scope:
@@ -56,11 +93,18 @@ packages:
         - "src/assistant/core/cloud_client.py"
         - "src/assistant/core/msal_auth.py"
         - "src/assistant/core/graph_client.py"
+        - "src/assistant/core/persona.py"
+        - "src/assistant/core/observability.py"
+        - "src/assistant/extensions/_stub.py"
+        - "src/assistant/extensions/gmail.py"
+        - "src/assistant/extensions/gcal.py"
+        - "src/assistant/extensions/gdrive.py"
         - "tests/mocks/__init__.py"
         - "tests/mocks/graph_client.py"
         - "tests/test_cloud_client.py"
         - "tests/test_msal_auth.py"
         - "tests/test_graph_client.py"
+        - "tests/test_persona_registry_factory_contract.py"
         - "pyproject.toml"
         - "uv.lock"
       read_allow:
@@ -70,23 +114,29 @@ packages:
         - "src/assistant/core/cloud_client.py"
         - "src/assistant/core/msal_auth.py"
         - "src/assistant/core/graph_client.py"
+        - "src/assistant/core/persona.py"
+        - "src/assistant/core/observability.py"
         - "pyproject.toml"
         - "uv.lock"
       keys:
         - "core:cloud_client:protocol"
         - "core:msal_auth:strategies"
         - "core:graph_client:impl"
+        - "core:persona:factory_contract"
+        - "core:observability:trace_graph_call"
         - "deps:pyproject"
       ttl_minutes: 180
       reason: >
         Establishes the Protocol shape and concrete httpx GraphClient
-        that all four extensions and the MSAF harness import. Locking
-        the three core modules + pyproject.toml prevents conflicting
-        edits to interface or dep set during the parallel fan-out
-        that follows.
+        that all four extensions and the MSAF harness import. Locks
+        also cover the extended factory contract in core/persona.py
+        and the new trace_graph_call method on
+        core/observability.py. Locking these together prevents
+        conflicting edits to interface or dep set during the
+        parallel fan-out that follows.
     verification: tier_b
     metadata:
-      loc_estimate: 1100
+      loc_estimate: 1900
       external_deps:
         - msal
         - respx
@@ -103,13 +153,24 @@ packages:
       `MsGraphExtension` exposing search_people, get_my_profile,
       and search_messages. Default scopes include People.Read +
       User.Read. Tools are dual-wrapped (LangChain StructuredTool +
-      MSAF @ai_function) per design D6, D11. Covers tasks 2.1–2.5.
+      MSAF @ai_function) per design D6, D11. Per design D23–D25,
+      tools URL-encode path-segment IDs with rejection on
+      separators/control chars, apply REPLACE semantics for persona
+      scope override, and surface OPEN-breaker invocations as
+      structured GraphAPIError. Covers tasks 2.1–2.5 and the
+      ms_graph slices of 8.2.1–8.2.6.
     tasks:
       - "2.1"
       - "2.2"
       - "2.3"
       - "2.4"
       - "2.5"
+      - "8.2.1"
+      - "8.2.2"
+      - "8.2.3"
+      - "8.2.4"
+      - "8.2.5"
+      - "8.2.6"
     priority: 2
     dependencies:
       - wp-foundation
@@ -138,7 +199,7 @@ packages:
         sibling extensions running in parallel.
     verification: tier_b
     metadata:
-      loc_estimate: 350
+      loc_estimate: 480
       external_deps: []
 
   # ──────────────────────────────────────────────────────────
@@ -159,6 +220,13 @@ packages:
       - "3.4"
       - "3.5"
       - "3.6"
+      - "8.2.1"
+      - "8.2.2"
+      - "8.2.3"
+      - "8.2.4"
+      - "8.2.5"
+      - "8.2.6"
+      - "8.2.7"
     priority: 2
     dependencies:
       - wp-foundation
@@ -187,7 +255,7 @@ packages:
         from sibling extensions in parallel.
     verification: tier_b
     metadata:
-      loc_estimate: 450
+      loc_estimate: 580
       external_deps: []
 
   # ──────────────────────────────────────────────────────────
@@ -208,6 +276,13 @@ packages:
       - "4.4"
       - "4.5"
       - "4.6"
+      - "8.2.1"
+      - "8.2.2"
+      - "8.2.3"
+      - "8.2.4"
+      - "8.2.5"
+      - "8.2.6"
+      - "8.2.8"
     priority: 2
     dependencies:
       - wp-foundation
@@ -235,7 +310,7 @@ packages:
         tool). Locked to prevent parallel sibling drift.
     verification: tier_b
     metadata:
-      loc_estimate: 380
+      loc_estimate: 510
       external_deps: []
 
   # ──────────────────────────────────────────────────────────
@@ -256,6 +331,13 @@ packages:
       - "5.3"
       - "5.4"
       - "5.5"
+      - "8.2.1"
+      - "8.2.2"
+      - "8.2.3"
+      - "8.2.4"
+      - "8.2.5"
+      - "8.2.6"
+      - "8.2.9"
     priority: 2
     dependencies:
       - wp-foundation
@@ -283,7 +365,7 @@ packages:
         parallel sibling drift.
     verification: tier_b
     metadata:
-      loc_estimate: 320
+      loc_estimate: 450
       external_deps: []
 
   # ──────────────────────────────────────────────────────────
@@ -312,6 +394,8 @@ packages:
       - "6.6"
       - "6.7"
       - "6.8"
+      - "8.3.1"
+      - "8.3.2"
     priority: 2
     dependencies:
       - wp-foundation
@@ -346,7 +430,7 @@ packages:
         order is naturally serialized.
     verification: tier_b
     metadata:
-      loc_estimate: 500
+      loc_estimate: 580
       external_deps:
         - agent-framework
 
@@ -378,6 +462,9 @@ packages:
       - "7.7"
       - "7.8"
       - "7.9"
+      - "8.5.1"
+      - "8.5.2"
+      - "8.5.3"
     priority: 3
     dependencies:
       - wp-ms-graph

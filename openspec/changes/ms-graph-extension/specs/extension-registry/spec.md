@@ -1,3 +1,63 @@
+## ADDED Requirements
+
+### Requirement: Extension Factory Contract Accepts Optional Persona
+
+The system SHALL extend the `create_extension` factory contract to
+accept a keyword-only `persona: PersonaConfig | None = None`
+argument in addition to the existing `config: dict` argument. The
+new signature is `create_extension(config: dict, *, persona:
+PersonaConfig | None = None) -> Extension`. Stub factories
+(`gmail`, `gcal`, `gdrive`) SHALL accept the new argument and
+ignore it. Real extension factories
+(`ms_graph`, `outlook`, `teams`, `sharepoint`) SHALL use `persona`
+to construct their own `MSALStrategy` (via `create_msal_strategy`)
+and per-extension `GraphClient`, then pass the client into the
+extension class constructor.
+
+`PersonaRegistry.load_extensions()` SHALL pass `persona=<the
+persona>` to every factory call. Existing third-party extension
+factories that do not accept a `persona` argument MUST raise a
+clear `TypeError` at load time, identifying the offending
+extension name and the migration recipe.
+
+#### Scenario: PersonaRegistry passes persona to all factories
+
+- **WHEN** `PersonaRegistry.load_extensions(persona)` is called for a
+  persona with `extensions: ms_graph, outlook, gmail` enabled
+- **THEN** each loaded module's `create_extension` MUST be called
+  with both the per-extension config dict AND the keyword argument
+  `persona=<the persona>`
+- **AND** stub factories (`gmail`) MUST accept this without raising
+
+#### Scenario: Real factory constructs MSALStrategy and GraphClient internally
+
+- **WHEN** the `outlook` factory `create_extension({}, persona=p)`
+  is called with a persona configured for `auth.ms.flow=interactive`
+- **THEN** the factory MUST call `create_msal_strategy(p)` to obtain
+  the strategy
+- **AND** the factory MUST construct
+  `GraphClient(extension_name="outlook", strategy=<strategy>,
+  scopes=<resolved scopes>)`
+- **AND** the factory MUST pass that client into
+  `OutlookExtension.__init__` as the `client` argument
+
+#### Scenario: Stub factory ignores persona argument
+
+- **WHEN** the `gmail` stub factory `create_extension({},
+  persona=p)` is called
+- **THEN** the returned object MUST be a `StubExtension` instance
+- **AND** no MSAL strategy or GraphClient MUST be constructed
+
+#### Scenario: Legacy factory signature raises actionable TypeError
+
+- **WHEN** `PersonaRegistry.load_extensions` calls a third-party
+  factory whose signature does not accept the keyword argument
+  `persona`
+- **THEN** a `TypeError` MUST be raised
+- **AND** the error message MUST identify the offending extension
+  name and instruct the operator to add `*, persona:
+  PersonaConfig | None = None` to the factory signature
+
 ## MODIFIED Requirements
 
 ### Requirement: Stub Implementations for All Configured Extensions

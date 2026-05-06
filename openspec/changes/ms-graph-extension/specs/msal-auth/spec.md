@@ -134,6 +134,20 @@ empty cache without error.
   `msal_token_cache.json.tmp`
 - **AND** then renamed atomically to `msal_token_cache.json`
 
+#### Scenario: Tmp file is created with mode 0o600 atomically
+
+- **WHEN** the strategy persists a token cache and creates the
+  `.tmp` file
+- **THEN** the tmp file MUST be created via `os.open(path,
+  os.O_CREAT | os.O_WRONLY | os.O_EXCL, 0o600)` (or equivalent)
+  so that the file mode is 0o600 from the moment of creation
+- **AND** at no point during the write MUST the tmp file be readable
+  or writable by group or other (mode bits `0o077` MUST always be
+  zero)
+- **AND** if a stale tmp file exists, the strategy MUST refuse to
+  overwrite it (because of `O_EXCL`) and surface an
+  `MSALAuthenticationError` with an actionable message
+
 #### Scenario: Missing cache file yields empty cache without error
 
 - **WHEN** an `InteractiveDelegatedStrategy` is constructed for a
@@ -152,6 +166,38 @@ empty cache without error.
 - **AND** the error message MUST instruct the operator to run `chmod
   700 personas/<name>/.cache/`
 
+### Requirement: Persona Repo Gitignore Verification
+
+The system SHALL verify that the persona repository's `.gitignore`
+excludes the cache directory `.cache/` before any token write occurs.
+The check SHALL look for an entry matching `.cache/` or
+`personas/<name>/.cache/` (via fnmatch/glob) at any
+`.gitignore` file from the cache file's directory up to the persona
+root. If no matching entry is found,
+`MSALAuthenticationError` SHALL be raised before tokens are written
+to disk, with a message instructing the operator to add `.cache/` to
+the persona's `.gitignore`.
+
+This requirement protects existing personas (created before the P5
+template change) where `personas/_template/.gitignore` was the only
+amendment and would not retroactively apply.
+
+#### Scenario: Missing gitignore entry blocks token write
+
+- **WHEN** a persona's `.gitignore` does not include `.cache/` or
+  any pattern matching the cache directory
+- **AND** the strategy attempts to write a token to the cache
+- **THEN** `MSALAuthenticationError` MUST be raised before any file
+  is written to disk
+- **AND** the message MUST tell the operator to add `.cache/` to the
+  persona repository's `.gitignore`
+
+#### Scenario: Present gitignore entry allows token write
+
+- **WHEN** a persona's `.gitignore` contains `.cache/`
+- **AND** the strategy attempts to write a token to the cache
+- **THEN** the write MUST proceed without raising
+
 ### Requirement: Strategy Selection by Persona Configuration
 
 The system SHALL provide a factory `create_msal_strategy(persona:
@@ -160,6 +206,13 @@ class based on `persona.auth.ms.flow` (one of `interactive` or
 `client_credentials`). The factory SHALL resolve credential
 environment variable names through the existing `_env()` pattern in
 `core/persona.py`.
+
+The `auth.ms` subtree SHALL be read via the persona's `raw` dict
+(e.g., `persona.raw.get("auth", {}).get("ms", {})`) rather than
+through new top-level `PersonaConfig` fields. This preserves
+backward compatibility with the existing `auth.config` shape used
+elsewhere in `core/persona.py`. A future phase MAY promote `auth.ms`
+to a typed field on `PersonaConfig`; P5 explicitly does not.
 
 #### Scenario: interactive flow returns InteractiveDelegatedStrategy
 
@@ -185,6 +238,38 @@ environment variable names through the existing `_env()` pattern in
 - **THEN** `MSALAuthenticationError` MUST be raised
 - **AND** the message MUST identify the missing env var name and the
   persona
+
+### Requirement: Synchronous MSAL Calls Run Off the Event Loop
+
+The system SHALL ensure that synchronous MSAL operations
+(`acquire_token_interactive`, `acquire_token_silent`,
+`acquire_token_for_client`, `initiate_device_flow`) are wrapped with
+`asyncio.to_thread()` so they do not block the asyncio event loop.
+Concurrent Graph calls from sibling extensions SHALL NOT serialize
+behind a single MSAL token-acquisition operation.
+
+#### Scenario: acquire_token wraps synchronous MSAL call in to_thread
+
+- **WHEN** `await strategy.acquire_token(scopes)` is called and the
+  underlying `acquire_token_silent` is mocked to sleep 100ms
+- **AND** a second concurrent `await strategy.acquire_token(scopes)`
+  is awaited at the same time on the same strategy instance
+- **THEN** both calls MUST complete in a wall-clock interval of
+  approximately the single MSAL latency (around 100ms), not two
+  serialized intervals (200ms)
+- **AND** `asyncio.to_thread` (or an equivalent `loop.run_in_executor`
+  call) MUST appear in the call stack
+
+#### Scenario: Concurrent Graph calls are not serialized by MSAL
+
+- **WHEN** two extensions concurrently issue Graph requests through a
+  shared `MSALStrategy` instance
+- **AND** the strategy must acquire a fresh token (silent
+  acquisition path)
+- **THEN** the two extension calls MUST proceed concurrently after
+  the single token acquisition completes
+- **AND** the event loop MUST remain responsive during MSAL
+  invocation
 
 ### Requirement: Authentication Errors Do Not Retry
 

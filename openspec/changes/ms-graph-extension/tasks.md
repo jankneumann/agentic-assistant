@@ -382,5 +382,297 @@ and any design decision IDs (D1–D12 in `design.md`) it verifies.
 
 - [ ] 7.9 File P5b follow-up issues for deferred scope:
   SharePoint writes, Outlook calendar event creation, Teams meeting
-  creation, MSAF MemoryPolicy wiring
+  creation, full-fidelity MSAF MemoryPolicy hook (when
+  agent-framework SDK exposes one)
   **Dependencies**: 7.8
+
+## 8. Post-review remediation tasks
+
+Tasks added in response to the parallel-review-plan multi-vendor
+review (claude + codex + gemini). Each task references the design
+decision (D13–D27) and spec scenario(s) it implements. Tasks are
+grouped by work package — assignees fold them into the existing
+package work.
+
+### 8.1 wp-foundation additions
+
+- [ ] 8.1.1 Write tests for Retry-After honoring on 429 and 503
+  (delta-seconds form, HTTP-date form, no-header fallback)
+  **Spec scenarios**: graph-client / "429 with delta-seconds
+  Retry-After delays retry", "503 with HTTP-date Retry-After delays
+  retry", "429 without Retry-After falls through to default
+  backoff"
+  **Design decisions**: D13
+  **Dependencies**: 1.14
+
+- [ ] 8.1.2 Implement Retry-After honoring in GraphClient (parse
+  header, sleep up to indicated value before P9 backoff applies)
+  **Dependencies**: 8.1.1
+
+- [ ] 8.1.3 Write tests for per-request httpx.Timeout default
+  (connect=10, read=30, write=30, pool=5) and read-timeout raising
+  GraphAPIError
+  **Spec scenarios**: graph-client / "Default timeout values
+  applied", "Read timeout raises GraphAPIError"
+  **Design decisions**: D14
+  **Dependencies**: 1.14
+
+- [ ] 8.1.4 Implement timeout configuration in GraphClient
+  constructor; pass to httpx.AsyncClient
+  **Dependencies**: 8.1.3
+
+- [ ] 8.1.5 Write tests for trace_graph_call observability span
+  (one per request, 401-then-success emits two, path normalization
+  redacts IDs)
+  **Spec scenarios**: graph-client / "Successful GET emits one
+  trace_graph_call span", "401-then-success emits two spans",
+  "Path normalization redacts message_id-shaped segments"
+  **Design decisions**: D15
+  **Dependencies**: 1.14
+
+- [ ] 8.1.6 Add `trace_graph_call(...)` method to the P4
+  observability provider interface; implement in noop and
+  Langfuse providers; wire into GraphClient request loop
+  **Dependencies**: 8.1.5
+
+- [ ] 8.1.7 Write tests for empty 202/204 body handling (POST returns
+  empty dict, GET 204 returns empty dict, 200 with zero-length JSON
+  body returns empty dict)
+  **Spec scenarios**: graph-client / "202 empty body returns empty
+  dict", "204 empty body returns empty dict", "200 with empty
+  JSON-Content-Type body returns empty dict"
+  **Design decisions**: D16
+  **Dependencies**: 1.14
+
+- [ ] 8.1.8 Implement empty-body handling in GraphClient.get/post —
+  short-circuit JSON parsing for 202/204/empty-body 200 responses
+  **Dependencies**: 8.1.7
+
+- [ ] 8.1.9 Write tests confirming GraphAPIError subclasses
+  httpx.HTTPStatusError and that 5xx triggers P9 retry
+  **Spec scenarios**: graph-client / "GraphAPIError is an
+  httpx.HTTPStatusError", "5xx GraphAPIError triggers P9 retry"
+  **Design decisions**: D17
+  **Dependencies**: 1.14
+
+- [ ] 8.1.10 Refactor GraphAPIError to extend httpx.HTTPStatusError
+  (preserve typed error_code, request_id, message fields while
+  satisfying P9's classifier)
+  **Dependencies**: 8.1.9
+
+- [ ] 8.1.11 Write tests for retry_safe parameter (False bypasses
+  P9, True default retries on 5xx, breaker still records on both
+  paths)
+  **Spec scenarios**: graph-client / "retry_safe=False bypasses P9
+  retry", "retry_safe=True (default) retries on 5xx"
+  **Design decisions**: D18
+  **Dependencies**: 1.14
+
+- [ ] 8.1.12 Implement retry_safe parameter on
+  CloudGraphClient.post and GraphClient.post — split into two
+  internal paths (retrying vs non-retrying); both record breaker
+  state on failure
+  **Dependencies**: 8.1.11
+
+- [ ] 8.1.13 Write tests for get_bytes (download to tempfile,
+  metadata dict shape, max_bytes ceiling aborts and cleans up,
+  resilience+observability wrapping)
+  **Spec scenarios**: graph-client / "Successful download returns
+  path + metadata dict", "Download exceeding max_bytes aborts with
+  size_exceeded", "get_bytes wraps with same resilience and
+  observability layers"
+  **Design decisions**: D19
+  **Dependencies**: 1.14
+
+- [ ] 8.1.14 Implement CloudGraphClient.get_bytes (Protocol) and
+  GraphClient.get_bytes (impl) — streaming download, max_bytes
+  enforcement, tempfile result, partial cleanup on abort
+  **Dependencies**: 8.1.13
+
+- [ ] 8.1.15 Write tests for paginate raising on page_ceiling
+  exceeded (default 100, configurable 500)
+  **Spec scenarios**: graph-client / "Page ceiling raises rather
+  than terminates silently", "Page ceiling is configurable"
+  **Design decisions**: D19 (paginate ceiling fix bundled here)
+  **Dependencies**: 1.14
+
+- [ ] 8.1.16 Refactor paginate to raise GraphAPIError(error_code=
+  "page_ceiling_exceeded") on ceiling, after warning log, instead
+  of yielding-and-returning
+  **Dependencies**: 8.1.15
+
+- [ ] 8.1.17 Write tests for asyncio.to_thread wrapping of MSAL sync
+  calls (concurrent acquire_token does not serialize)
+  **Spec scenarios**: msal-auth / "acquire_token wraps synchronous
+  MSAL call in to_thread", "Concurrent Graph calls are not
+  serialized by MSAL"
+  **Design decisions**: D20
+  **Dependencies**: 1.8
+
+- [ ] 8.1.18 Wrap all synchronous MSAL calls in
+  InteractiveDelegatedStrategy and ClientCredentialsStrategy with
+  asyncio.to_thread
+  **Dependencies**: 8.1.17
+
+- [ ] 8.1.19 Write tests for atomic tmp-file mode 0o600 creation
+  via os.open with O_CREAT|O_WRONLY|O_EXCL, refusal to overwrite
+  stale tmp file
+  **Spec scenarios**: msal-auth / "Tmp file is created with mode
+  0o600 atomically"
+  **Design decisions**: D21
+  **Dependencies**: 1.8
+
+- [ ] 8.1.20 Refactor token cache write path to use os.open with
+  the right mode flags from creation; fail-fast on stale tmp
+  **Dependencies**: 8.1.19
+
+- [ ] 8.1.21 Write tests for persona-repo .gitignore verification
+  (missing entry blocks write, present entry allows write)
+  **Spec scenarios**: msal-auth / "Missing gitignore entry blocks
+  token write", "Present gitignore entry allows token write"
+  **Design decisions**: D22
+  **Dependencies**: 1.8
+
+- [ ] 8.1.22 Implement gitignore check before any token cache
+  write; fail with MSALAuthenticationError when missing
+  **Dependencies**: 8.1.21
+
+- [ ] 8.1.23 Update msal-auth factory to read auth.ms via
+  persona.raw rather than typed PersonaConfig fields
+  **Spec scenarios**: msal-auth / "Strategy Selection by Persona
+  Configuration" requirement
+  **Design decisions**: D8 (clarification)
+  **Dependencies**: 1.8
+
+### 8.2 wp-ms-graph / wp-outlook / wp-teams / wp-sharepoint additions
+
+- [ ] 8.2.1 Write tests for tool input URL-encoding and validation
+  (path-separator rejection, control-char rejection, search via
+  params)
+  **Spec scenarios**: ms-extensions / "Path segment with slash is
+  rejected before HTTP call", "Path segment with control character
+  is rejected", "Search string is passed via params, not path"
+  **Design decisions**: D23
+  **Dependencies**: 1.14
+  Applies to: each of 2.x (ms_graph), 3.x (outlook), 4.x (teams),
+  5.x (sharepoint)
+
+- [ ] 8.2.2 Implement URL-encoding helper (urllib.parse.quote with
+  safe="") and input validator; use in every tool that interpolates
+  IDs into paths
+  **Dependencies**: 8.2.1
+  Applies to: 2.4, 3.5, 4.5, 5.4
+
+- [ ] 8.2.3 Write tests for scope override REPLACE semantics
+  (persona scopes replace defaults, empty list uses defaults,
+  missing key uses defaults)
+  **Spec scenarios**: ms-extensions / "Persona scopes replace
+  defaults entirely", "Empty persona scopes uses defaults",
+  "Missing persona scopes key uses defaults"
+  **Design decisions**: D24
+  **Dependencies**: 1.14
+  Applies to: each extension
+
+- [ ] 8.2.4 Implement scope resolution helper using REPLACE
+  semantics; use in all four real extension constructors
+  **Dependencies**: 8.2.3
+  Applies to: 2.4, 3.5, 4.5, 5.4
+
+- [ ] 8.2.5 Write tests for tool invocation with OPEN breaker
+  raising GraphAPIError(error_code="breaker_open")
+  **Spec scenarios**: ms-extensions / "Tool invocation with OPEN
+  breaker raises structured error"
+  **Design decisions**: D25
+  **Dependencies**: 1.14
+  Applies to: each extension
+
+- [ ] 8.2.6 Wrap each extension's tool method with breaker-state
+  check; raise structured error when breaker is OPEN
+  **Dependencies**: 8.2.5
+  Applies to: 2.4, 3.5, 4.5, 5.4
+
+- [ ] 8.2.7 (outlook) Update _send_email to pass retry_safe=False
+  when calling client.post
+  **Spec scenarios**: graph-client / "retry_safe=False bypasses
+  P9 retry" (consumer)
+  **Design decisions**: D18
+  **Dependencies**: 8.1.12
+  Applies to: 3.5
+
+- [ ] 8.2.8 (teams) Update _post_chat_message to pass
+  retry_safe=False when calling client.post
+  **Design decisions**: D18
+  **Dependencies**: 8.1.12
+  Applies to: 4.5
+
+- [ ] 8.2.9 (sharepoint) Update _download_document to call
+  client.get_bytes (replacing the original spec scenario that
+  expected get to return bytes)
+  **Spec scenarios**: ms-extensions / "download_document delegates
+  to get_bytes and returns metadata dict"
+  **Design decisions**: D19
+  **Dependencies**: 8.1.14
+  Applies to: 5.4
+
+### 8.3 wp-msaf-harness additions
+
+- [ ] 8.3.1 Write tests for MemoryPolicy snippet injection (snippets
+  prepended under "## Recent context" heading, empty list leaves
+  unchanged, noop policy yields no injection)
+  **Spec scenarios**: ms-agent-framework-harness / "Memory snippets
+  prepended to instructions", "Empty memory snippets leaves
+  instructions unchanged", "NoopMemoryPolicy yields no injection"
+  **Design decisions**: D27
+  **Dependencies**: 1.14, 6.7
+
+- [ ] 8.3.2 Implement MemoryPolicy.get_recent_snippets call in
+  MSAgentFrameworkHarness.create_agent; prepend snippets to
+  instructions under "## Recent context" heading
+  **Dependencies**: 8.3.1
+
+### 8.4 wp-foundation: extension factory contract
+
+- [ ] 8.4.1 Write tests for extended factory contract
+  (PersonaRegistry passes persona kwarg to all factories, real
+  factories build MSAL+GraphClient internally, stubs ignore
+  persona, third-party legacy signature raises actionable
+  TypeError)
+  **Spec scenarios**: extension-registry / "PersonaRegistry passes
+  persona to all factories", "Real factory constructs MSALStrategy
+  and GraphClient internally", "Stub factory ignores persona
+  argument", "Legacy factory signature raises actionable TypeError"
+  **Design decisions**: D26
+  **Dependencies**: 1.14
+
+- [ ] 8.4.2 Refactor `create_extension` factory contract across
+  all seven extension modules to accept `*, persona: PersonaConfig
+  | None = None`. Stubs (gmail/gcal/gdrive) accept and ignore.
+  Real factories (ms_graph/outlook/teams/sharepoint) call
+  `create_msal_strategy(persona)` and construct GraphClient.
+  **Dependencies**: 8.4.1, 1.8, 1.14
+
+- [ ] 8.4.3 Update PersonaRegistry.load_extensions to pass
+  `persona=<the persona>` to every `create_extension` call;
+  catch TypeError from legacy factories and re-raise with
+  actionable message
+  **Dependencies**: 8.4.1
+  Belongs in wp-foundation since it touches core/persona.py
+
+### 8.5 wp-integration additions
+
+- [ ] 8.5.1 Verify the dual-format parity test (existing 7.5)
+  also covers: tools that take ID arguments validate them,
+  tools that take search arguments pass via params=, breaker-
+  open path raises consistently across all four extensions
+  **Dependencies**: 8.2.6, 7.5
+
+- [ ] 8.5.2 Add an integration smoke test for download_document
+  exercising get_bytes streaming + tempfile cleanup against
+  MockGraphClient (no real Graph required)
+  **Dependencies**: 8.1.14, 5.4
+
+- [ ] 8.5.3 Add a section to CLAUDE.md "What's Not Yet Wired"
+  documenting that MSAF memory injection is the minimal-viable
+  prepend-to-instructions form; full MemoryPolicy hook awaits
+  agent-framework SDK support
+  **Dependencies**: 8.3.2

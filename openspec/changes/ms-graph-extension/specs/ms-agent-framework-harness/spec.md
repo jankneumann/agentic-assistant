@@ -118,10 +118,10 @@ the supplied `task` string, and returning the response.
 
 The system SHALL consume capabilities from the P1.8
 `CapabilityResolver`: `ToolPolicy` (to determine authorized
-extensions), `ContextProvider` (for the system prompt), and
-`GuardrailProvider` (to gate `spawn_sub_agent`). The harness SHALL
-NOT consume `MemoryPolicy` in P5; memory wiring is documented as a
-P5b follow-up.
+extensions), `ContextProvider` (for the system prompt),
+`GuardrailProvider` (to gate `spawn_sub_agent`), and `MemoryPolicy`
+(for minimal memory injection — see "Memory Snippet Injection"
+requirement below).
 
 #### Scenario: Authorized extensions are filtered through ToolPolicy
 
@@ -143,6 +143,59 @@ P5b follow-up.
   before any `Agent` construction
 - **AND** if the decision is denied, the sub-agent MUST NOT be
   created and a `PermissionError` MUST be raised
+
+### Requirement: Memory Snippet Injection in create_agent
+
+The system SHALL inject the persona's recent memory snippets into the
+constructed `Agent`'s `instructions` parameter at `create_agent`
+time. The harness SHALL request the snippets via the configured
+`MemoryPolicy.get_recent_snippets(persona, role, limit=N)` (where N
+defaults to 10), and SHALL prepend the resulting text block to the
+composed system prompt under a clearly demarcated section heading
+(`## Recent context`). When the persona has no `MemoryPolicy`
+configured, or the policy returns an empty list, no section MUST be
+injected and the instructions MUST equal the composed prompt
+unchanged.
+
+This closes the asymmetry with the DeepAgents harness (which already
+consumes `MemoryPolicy`) by ensuring MSAF agents on the work persona
+have access to the same recent-context snippets without requiring
+any change to the `agent-framework` SDK contract.
+
+#### Scenario: Memory snippets prepended to instructions
+
+- **WHEN** `MemoryPolicy.get_recent_snippets(persona, role,
+  limit=10)` returns `["snippet-1", "snippet-2"]`
+- **AND** `compose_system_prompt(persona, role)` returns
+  `"You are work assistant."`
+- **AND** `create_agent(...)` is awaited
+- **THEN** the constructed `Agent`'s `instructions` MUST contain the
+  substring `"## Recent context"`
+- **AND** the instructions MUST contain both `"snippet-1"` and
+  `"snippet-2"`
+- **AND** the original prompt `"You are work assistant."` MUST also
+  appear
+
+#### Scenario: Empty memory snippets leaves instructions unchanged
+
+- **WHEN** `MemoryPolicy.get_recent_snippets(...)` returns `[]`
+- **AND** `compose_system_prompt(persona, role)` returns
+  `"You are work assistant."`
+- **AND** `create_agent(...)` is awaited
+- **THEN** the constructed `Agent`'s `instructions` MUST equal
+  `"You are work assistant."`
+- **AND** the substring `"## Recent context"` MUST NOT appear in the
+  instructions
+
+#### Scenario: NoopMemoryPolicy yields no injection
+
+- **WHEN** the persona has no `MemoryPolicy` configured (default
+  noop policy is active)
+- **AND** `create_agent(...)` is awaited
+- **THEN** the harness MUST NOT call `get_recent_snippets` at all
+  (or MUST treat the noop result as empty)
+- **AND** the constructed `Agent`'s `instructions` MUST equal the
+  composed prompt unchanged
 
 ### Requirement: @traced_harness Decorator is Applied to invoke
 
