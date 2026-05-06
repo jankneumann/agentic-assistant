@@ -176,9 +176,21 @@ class CloudGraphClient(Protocol):
         params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
         max_bytes: int = 50 * 1024 * 1024,
-    ) -> bytes: ...
+    ) -> dict[str, Any]: ...
+    # ^ returns metadata dict with keys: path, size_bytes,
+    #   content_type, request_id (per D19 / graph-client spec).
+    #   Streaming the bytes body to a tempfile and returning a
+    #   handle/metadata avoids LLM context overflow on large
+    #   downloads.
 
     async def health_check(self) -> HealthStatus: ...
+
+    # Lifecycle — also available on the Protocol so type-checked
+    # consumers (tests, future P14 extensions) can use a uniform
+    # async-context-manager pattern.
+    async def __aenter__(self) -> "CloudGraphClient": ...
+    async def __aexit__(self, *exc: Any) -> None: ...
+    async def aclose(self) -> None: ...
 ```
 
 `paginate` chases `@odata.nextLink` by default; for Google APIs (P14)
@@ -206,7 +218,18 @@ implementation of `CloudGraphClient`. Key properties:
 
 - **Single shared `httpx.AsyncClient`** per persona (lifespan-managed
   through the P10 extension lifecycle when that lands; P5 builds with
-  a context-manager pattern in the meantime).
+  a context-manager pattern in the meantime). Configured with
+  `follow_redirects=False` to prevent any 3xx response from carrying
+  the bearer token to a non-Graph host.
+- **Trusted-hosts validation**: `GraphClient` accepts a
+  `trusted_hosts: list[str] | None = None` constructor argument
+  defaulting to the three currently-active Graph hosts
+  (`graph.microsoft.com`, `graph.microsoft.us`,
+  `microsoftgraph.chinacloudapi.cn`). Any `@odata.nextLink` whose
+  scheme is not `https` or whose host is not in this list is
+  rejected with `GraphAPIError(error_code="invalid_redirect")`
+  before the bearer is attached. (graph-client spec:
+  "Cross-Domain Redirect Rejection".)
 - **MSAL token plumbing**: every request fetches a fresh token via the
   configured strategy's `acquire_token(scopes)`. Token caching is the
   strategy's responsibility, not the client's.
@@ -443,18 +466,18 @@ The MSAF harness consumes the following capabilities via the
   passes as `Agent(instructions=...)`.
 - **`GuardrailProvider`**: invoked by the harness's `spawn_sub_agent`
   to gate delegation requests, mirroring DeepAgents' integration.
-- **`MemoryPolicy`**: not consumed in P5. The MSAF SDK does not yet
-  have a clean memory injection point that maps to our
-  `MemoryPolicy.export_for_harness()`. Memory wiring is deferred to a
-  P5b follow-up after the MSAF SDK exposes a stable memory hook.
+- **`MemoryPolicy`**: consumed minimally in P5 via instructions
+  prepend — see D27 for the full contract. The harness invokes
+  `MemoryPolicy.get_recent_snippets(persona, role, limit=10)` at
+  `create_agent` time and prepends a `## Recent context` block to
+  the composed system prompt. Full-fidelity memory integration
+  (mid-turn retrieval, structured memory items, write-back) is
+  deferred to P5b pending an `agent-framework` SDK memory hook —
+  see ms-agent-framework-harness/spec.md "Follow-up scope" note.
+  This supersedes the original "deferred entirely" decision; the
+  rationale for the change is in D27.
 - **`SandboxProvider`**: not consumed. Sandbox semantics apply to host
   harnesses (Claude Code), not SDK harnesses.
-
-**Why MemoryPolicy is deferred, not minimally wired:** Bolting memory
-on with brittle prompt injection now would either lock us into a
-contract `agent-framework` doesn't yet support, or paper over the
-Memory contract entirely. Better to ship MSAF without memory in P5
-and add a follow-up issue.
 
 ### D11 — Extension tool format conversion is per-extension, not central
 

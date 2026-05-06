@@ -1,0 +1,97 @@
+{
+  "review_type": "plan",
+  "target": "ms-graph-extension",
+  "reviewer_vendor": "claude_code",
+  "findings": [
+    {
+      "id": 1,
+      "type": "contract_mismatch",
+      "criticality": "medium",
+      "description": "Cross-document inconsistency between observability/spec.md (NEW in iteration 1) and graph-client/spec.md trace_graph_call scenarios. observability/spec.md defines the Protocol method with kwargs {extension_name, method, path, status_code, duration_ms, breaker_key, request_id=None, retry_attempt=0, error=None, metadata=None}. graph-client/spec.md scenarios at L300-309 only assert a subset (extension_name, method, path, status_code, request_id, duration_ms) and the 401-then-success scenario at L307-309 says 'trace_graph_call MUST be called exactly twice' without specifying which kwargs differ between attempts. The retry_attempt and error kwargs newly defined in observability spec are not exercised in any graph-client scenario.",
+      "resolution": "Update graph-client/spec.md scenarios to assert retry_attempt and error kwargs on retry attempts. Specifically: the 401-then-success scenario should specify the first call has retry_attempt=0 and the second has retry_attempt=1 (or whatever the auth-refresh path generates); add or update a 5xx-retry scenario specifying error class is set on failed attempts and None on the final success.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/graph-client/spec.md"
+    },
+    {
+      "id": 2,
+      "type": "security",
+      "criticality": "medium",
+      "description": "Cross-domain redirect requirement (graph-client/spec.md, NEW in iteration 1) does not address scheme. An @odata.nextLink with scheme http:// (not https://) would currently match host validation and proceed to fetch, downgrading TLS and exposing the bearer token. The trusted_hosts mechanism only checks hostnames.",
+      "resolution": "Add a clause to the Cross-Domain Redirect Rejection requirement: the @odata.nextLink scheme MUST be 'https'. Reject with GraphAPIError(error_code='invalid_redirect') on any non-https scheme. Add a scenario asserting an http:// nextLink is rejected before the bearer token is attached.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/graph-client/spec.md"
+    },
+    {
+      "id": 3,
+      "type": "resilience",
+      "criticality": "medium",
+      "description": "Concurrent token-cache refresh is not coalesced. If two async tasks call acquire_token_silent() simultaneously and both find the cache stale, both will independently call MSAL refresh and both will atomically write the cache (last-writer-wins per the existing 0o600 atomic-rename requirement). This wastes a Graph token-endpoint call and may trigger AAD throttling on the work tenant. Round-1 covered file-write atomicity but not request coalescing.",
+      "resolution": "Add a requirement to msal-auth/spec.md: 'Concurrent acquire_token() calls for the same scope set on a single MSALStrategy instance MUST be coalesced via an asyncio.Lock (or equivalent) so at most one MSAL refresh is in flight per (strategy, scope-set) at any time. The lock SHALL be released after the first refresher writes the cache; subsequent waiters SHALL re-read the cache and return the freshly-cached token without calling MSAL.' Add a scenario asserting two concurrent acquire_token calls trigger only one PublicClientApplication.acquire_token_silent invocation.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/msal-auth/spec.md"
+    },
+    {
+      "id": 4,
+      "type": "spec_gap",
+      "criticality": "medium",
+      "description": "First-run edge case for token cache directory creation is not specified. The spec mandates writing to personas/<name>/.cache/msal_token_cache.json but does not address what happens when .cache/ does not yet exist (newly-mounted persona, first ever auth attempt). Implementation could either silently mkdir(parents=True) with 0o700 or require the directory to pre-exist. Different choices have security implications: implicit mkdir(0o700) is safer but conflicts with the existing gitignore-verification requirement which assumes the directory already exists for reading the .gitignore.",
+      "resolution": "Add a requirement to msal-auth/spec.md: 'The persona repository MUST contain a pre-existing .cache/ directory with mode 0o700 before token write is attempted. The InteractiveDelegatedStrategy SHALL NOT create the .cache/ directory itself (creating it would mask gitignore-verification failures and could create the directory in an unexpected location if the persona repo is misconfigured). When the directory is missing, the strategy SHALL raise MSALAuthenticationError with an actionable message including the expected path and the operator-side fix recipe (mkdir -p personas/<name>/.cache && chmod 700).' Update the personas/_template scaffolding (task 7.3) to include an empty .cache/ directory with .gitkeep.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/msal-auth/spec.md"
+    },
+    {
+      "id": 5,
+      "type": "architecture",
+      "criticality": "medium",
+      "description": "wp-foundation now contains 54 tasks (1.1-1.16, 8.1.1-8.1.23, 8.4.1-8.4.3, 9.1.1-9.1.9, 9.2.1-9.2.2, 9.4.1) representing ~3000 LOC (per the new loc_estimate). This is twice the next-largest package. Implementing as a single agent assignment risks context overflow, slow review feedback, and merge-train serialization. Iteration 1 rejected decomposition but the additional section-9 tasks tip the balance.",
+      "resolution": "Split wp-foundation into wp-foundation-protocols (cloud_client.py + persona.py factory contract + telemetry providers/base.py — interface-only, ~600 LOC) and wp-foundation-impls (msal_auth.py + graph_client.py + telemetry providers/{noop,langfuse}.py + tests + pyproject — ~2400 LOC). The interface package gates all extension packages; the impls package can run in parallel with extension implementations as long as extensions only import the interfaces (typing.Protocol allows this). Lock keys split accordingly.",
+      "disposition": "escalate",
+      "file_path": "openspec/changes/ms-graph-extension/work-packages.yaml"
+    },
+    {
+      "id": 6,
+      "type": "testability",
+      "criticality": "medium",
+      "description": "ms-extensions/spec.md Pagination Discipline scenario 'list_messages does not call Graph per item' (NEW in iteration 1) uses 'ceil(50 / page_size) + 1' as the bound, but page_size is not pinned in the spec. Microsoft Graph's default page sizes vary by endpoint (10 for messages, 100 for users, 200 for files). A test author has to know each endpoint's effective page_size to compute the expected bound, making the scenario brittle to Graph backend changes.",
+      "resolution": "Replace the page_size-dependent bound with an empirical assertion: 'the call count MUST scale with the number of pages yielded by the underlying paginate() call, not with the number of items'. Operationally: assert recorded get/post count is in [N_pages, N_pages + small_constant] where N_pages = number of pages the mocked GraphClient yielded. Test authors track yielded pages directly rather than computing from items.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/ms-extensions/spec.md"
+    },
+    {
+      "id": 7,
+      "type": "spec_gap",
+      "criticality": "low",
+      "description": "Per-Tool Page Ceiling Configuration requirement (NEW in iteration 1) dictates that the LangChain StructuredTool description MUST contain the literal substring 'page_ceiling'. This couples the spec to specific English wording. An agent reading the description in any non-English locale, or a future i18n pass on tool descriptions, would break the substring assertion without violating the actual requirement (telling users about truncation).",
+      "resolution": "Soften the assertion: tool descriptions MUST state the upper bound on results returned and MUST mention the truncation-via-error behavior. Test verifies via a structured key in the tool's metadata dict (e.g., StructuredTool.metadata['page_ceiling']) rather than substring match on the human-readable description.",
+      "disposition": "accept",
+      "file_path": "openspec/changes/ms-graph-extension/specs/ms-extensions/spec.md"
+    },
+    {
+      "id": 8,
+      "type": "compatibility",
+      "criticality": "low",
+      "description": "The new observability spec delta MODIFIED the ObservabilityProvider Protocol but the Impact section in proposal.md does not include a migration plan note. Any out-of-tree third-party ObservabilityProvider implementation (none currently shipped, but the architecture supports it) would break with TypeError on dispatch when the new trace_graph_call attribute is missing. Round-1 commit 1cecb0f's similar Protocol change to extension_registry's create_extension factory included a TypeError-with-migration-recipe scenario; the same treatment is missing for ObservabilityProvider.",
+      "resolution": "Add a scenario to specs/observability/spec.md (the new delta): 'When a third-party out-of-tree ObservabilityProvider implementation is dispatched and the new trace_graph_call attribute is missing, the harness wrapper MUST raise TypeError identifying the offending provider class and the migration recipe (add the new method, return None for noop)'. Update proposal.md Impact to mention this is a breaking change for any custom provider.",
+      "disposition": "accept",
+      "file_path": "openspec/changes/ms-graph-extension/specs/observability/spec.md"
+    },
+    {
+      "id": 9,
+      "type": "spec_gap",
+      "criticality": "low",
+      "description": "Test strategy matrix at design.md D7 (lines 349-358) lists three test layers (respx unit, MockGraphClient extension-level, opt-in integration) but the new section 9 tasks (9.1.1, 9.1.3, 9.1.5, 9.1.7, 9.1.9, 9.2.1, 9.3.1, 9.3.3) do not explicitly tag each test with which layer it belongs to. Implementer may pick the wrong layer (e.g., testing redirect rejection at MockGraphClient level when it requires real httpx wire mocking via respx).",
+      "resolution": "Add a one-line layer tag to each section-9 test task. For example, 9.1.5 'Write tests for cross-domain redirect rejection [respx — wire-level redirect responses]', 9.1.1 'Write tests for trace_graph_call Protocol [unit — mock provider classes]', 9.3.1 'Write tests asserting list-tool pagination discipline [extension-level — MockGraphClient call ledger]'. This is task-document hygiene; no spec change.",
+      "disposition": "accept",
+      "file_path": "openspec/changes/ms-graph-extension/tasks.md"
+    },
+    {
+      "id": 10,
+      "type": "resilience",
+      "criticality": "low",
+      "description": "trusted_hosts list defaults to four documented Graph hosts (graph.microsoft.com, graph.microsoft.us, graph.microsoft.de, microsoftgraph.chinacloudapi.cn). graph.microsoft.de was deprecated by Microsoft in 2021 (Germany cloud sunset). Including it as a default trusted host expands the surface unnecessarily and ships outdated information. Mitigation: persona override exists, so deployments to active sovereign clouds can override.",
+      "resolution": "Remove graph.microsoft.de from the default trusted_hosts list. Update the comment to note that historical sovereign clouds (Germany) are sunset and operators of new sovereign clouds should set trusted_hosts via the GraphClient constructor. This is a low-criticality nit; the existing default does no harm.",
+      "disposition": "accept",
+      "file_path": "openspec/changes/ms-graph-extension/specs/graph-client/spec.md"
+    }
+  ]
+}
