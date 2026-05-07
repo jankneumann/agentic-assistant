@@ -9,7 +9,7 @@
   "blocking_findings": [],
   "vendor_availability": {
     "claude_code": true,
-    "codex": false,
+    "codex": true,
     "gemini": true
   },
   "packages_status": {
