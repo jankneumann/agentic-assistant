@@ -1,0 +1,22 @@
+// FIXTURE_GRAPH_RESPONSE_v1
+// Synthetic Microsoft Graph response for GET /me/chats. No real
+// names, addresses, or IDs — see CLAUDE.md G6.
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#chats",
+  "value": [
+    {
+      "id": "FIXTURE_CHAT_ID_1",
+      "topic": "FIXTURE_TOPIC_alpha",
+      "chatType": "oneOnOne",
+      "createdDateTime": "2026-05-01T00:00:00Z",
+      "lastUpdatedDateTime": "2026-05-02T00:00:00Z"
+    },
+    {
+      "id": "FIXTURE_CHAT_ID_2",
+      "topic": "FIXTURE_TOPIC_bravo",
+      "chatType": "group",
+      "createdDateTime": "2026-04-29T00:00:00Z",
+      "lastUpdatedDateTime": "2026-05-03T00:00:00Z"
+    }
+  ]
+}

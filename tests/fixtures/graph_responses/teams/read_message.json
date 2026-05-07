@@ -1,0 +1,21 @@
+// FIXTURE_GRAPH_RESPONSE_v1
+// Synthetic Microsoft Graph response for
+// GET /chats/{chat_id}/messages/{message_id}. Synthetic only — see
+// CLAUDE.md G6.
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#chats('FIXTURE_CHAT_ID')/messages/$entity",
+  "id": "FIXTURE_MESSAGE_ID",
+  "messageType": "message",
+  "createdDateTime": "2026-05-05T08:30:00Z",
+  "lastModifiedDateTime": "2026-05-05T08:30:00Z",
+  "from": {
+    "user": {
+      "id": "FIXTURE_USER_ID",
+      "displayName": "FIXTURE_DISPLAY_NAME"
+    }
+  },
+  "body": {
+    "contentType": "text",
+    "content": "FIXTURE_BODY_CONTENT_text"
+  }
+}
