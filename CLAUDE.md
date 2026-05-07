@@ -147,12 +147,38 @@ that waste the most time:
 
 See `openspec/roadmap.md` for the full sequence. Notable gaps:
 
-- **`memory-architecture` phase — memory layer**: no per-persona Postgres
-  or Graphiti yet.
-- **`ms-graph-extension` / `google-extensions` phases**: all stubs return
-  `[]` from `as_langchain_tools()`.
+- **`google-extensions` phase**: `gmail`, `gcal`, `gdrive` still
+  return `[]` from `as_langchain_tools()`. The four MS extensions
+  (`ms_graph`, `outlook`, `teams`, `sharepoint`) are real after
+  `ms-graph-extension` (P5) — they ship code only and stay disabled
+  on the personal persona until the work persona lands in P15.
 - **`work-persona-config` phase**: submodule + role overrides come
-  when the work machine is available.
+  when the work machine is available. Until then no persona enables
+  the four MS extensions.
+- **MSAF MemoryPolicy is minimal-prepend only**: per
+  `ms-graph-extension` D27, the MS Agent Framework harness consumes
+  `MemoryPolicy.get_recent_snippets(persona, role, limit=10)` at
+  `create_agent` time and prepends the result under a
+  `## Recent context` heading. The four built-in policies
+  (`File`, `PostgresGraphiti`, `HostProvided`, `Noop`) all currently
+  return `[]`; live retrieval against `MemoryManager` is a P5b
+  candidate when (a) the `agent-framework` SDK exposes a memory
+  injection point with a stable contract, OR (b) usage data shows
+  the prepend approach is insufficient. Until then MSAF agents have
+  empty `## Recent context` sections; DeepAgents agents have full
+  memory continuity. Documented asymmetry — see the
+  `ms-agent-framework-harness` spec "Follow-up scope" note.
+- **`agent-framework` v1.0.1 packaging quirk**: PyPI ships the meta
+  package as a namespace-package; the installed
+  `agent_framework/__init__.py` ends up empty due to multiple
+  connector packages racing to claim the namespace. The MSAF
+  harness uses lazy imports inside method bodies so the stub-load
+  path is unaffected, but `from agent_framework import Agent` at
+  runtime will fail until the package's namespace declarations
+  are repaired upstream OR the install method is changed (e.g.,
+  pin to `agent-framework-core` directly rather than the meta
+  package). Tests bypass via `unittest.mock.patch(...,
+  create=True)`.
 
 ### Known follow-ups from archived changes
 
