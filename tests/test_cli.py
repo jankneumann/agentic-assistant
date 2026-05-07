@@ -156,12 +156,16 @@ def test_default_harness_is_deep_agents(stub_factory, monkeypatch) -> None:
     assert seen and seen[0] == "deep_agents"
 
 
-def test_h_ms_agent_framework_surfaces_stub_error(stub_factory) -> None:
+def test_h_ms_agent_framework_blocked_when_persona_disables_it(stub_factory) -> None:
+    """Post-P5 contract: the MSAF harness is real, but personal persona
+    leaves ``ms_agent_framework.enabled = false`` so the factory's
+    enablement gate raises before any harness construction.
+
+    The legacy "not yet implemented" / "P5 / deferred" surface is gone
+    (covered by the dedicated ``test_harness_ms_agent_fw.py`` suite);
+    this test now asserts the post-P5 enablement-gate failure mode.
+    """
     runner = CliRunner()
-    # personal persona has ms_agent_framework disabled by default; enable it
-    # by passing through to the real factory would also raise "not enabled".
-    # But here the stub_factory returns the real MSAgentFrameworkHarness for
-    # this name, so the error will come from create_agent.
     result = runner.invoke(
         cli_mod.main,
         ["-p", "personal", "-H", "ms_agent_framework"],
@@ -169,7 +173,14 @@ def test_h_ms_agent_framework_surfaces_stub_error(stub_factory) -> None:
     )
     assert result.exit_code != 0
     combined = result.output + (str(result.exception) if result.exception else "")
-    assert "not yet implemented" in combined.lower() or "p5" in combined.lower()
+    # Legacy stub markers MUST be gone now.
+    assert "not yet implemented" not in combined.lower()
+    assert "deferred" not in combined.lower()
+    # New failure mode: factory enablement gate.
+    assert (
+        "not enabled" in combined.lower()
+        or "harness" in combined.lower()
+    )
 
 
 # ── Interactive REPL Loop ───────────────────────────────────────────
