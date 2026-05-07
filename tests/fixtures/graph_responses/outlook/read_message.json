@@ -1,0 +1,24 @@
+{
+  "_comment": "// FIXTURE_GRAPH_RESPONSE_v1 — synthetic only (CLAUDE.md G6)",
+  "id": "FIXTURE_MSG_ID_1",
+  "subject": "FIXTURE_SUBJECT_FULL",
+  "body": {
+    "contentType": "text",
+    "content": "FIXTURE_BODY_FULL"
+  },
+  "from": {
+    "emailAddress": {
+      "name": "FIXTURE_SENDER_NAME",
+      "address": "fixture-sender@example.invalid"
+    }
+  },
+  "toRecipients": [
+    {
+      "emailAddress": {
+        "name": "FIXTURE_RECIPIENT_NAME",
+        "address": "fixture-recipient@example.invalid"
+      }
+    }
+  ],
+  "receivedDateTime": "2026-05-06T10:00:00Z"
+}
