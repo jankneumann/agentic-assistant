@@ -25,16 +25,15 @@ from assistant.extensions.base import Extension
 from assistant.extensions.gcal import create_extension as create_gcal
 from assistant.extensions.gdrive import create_extension as create_gdrive
 from assistant.extensions.gmail import create_extension as create_gmail
-from assistant.extensions.ms_graph import create_extension as create_ms_graph
-from assistant.extensions.outlook import create_extension as create_outlook
-from assistant.extensions.sharepoint import create_extension as create_sharepoint
-from assistant.extensions.teams import create_extension as create_teams
+
+# The four MS extensions (``ms_graph``/``teams``/``sharepoint``/
+# ``outlook``) are excluded from the stub HealthStatus parametrize —
+# their real impls require ``persona`` per D26, and their breaker-
+# derived HealthStatus coverage lives in the matching
+# ``tests/test_extensions_<name>.py``. The three remaining google-
+# stubs (``gmail``/``gcal``/``gdrive``) become real in P14.
 
 ALL_STUBS = [
-    ("ms_graph", create_ms_graph),
-    ("teams", create_teams),
-    ("sharepoint", create_sharepoint),
-    ("outlook", create_outlook),
     ("gmail", create_gmail),
     ("gcal", create_gcal),
     ("gdrive", create_gdrive),
