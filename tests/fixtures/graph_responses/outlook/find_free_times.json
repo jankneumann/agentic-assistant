@@ -1,0 +1,56 @@
+{
+  "_comment": "// FIXTURE_GRAPH_RESPONSE_v1 — synthetic only (CLAUDE.md G6)",
+  "meetingTimeSuggestions": [
+    {
+      "confidence": 100.0,
+      "organizerAvailability": "free",
+      "meetingTimeSlot": {
+        "start": {
+          "dateTime": "2026-05-07T09:00:00",
+          "timeZone": "UTC"
+        },
+        "end": {
+          "dateTime": "2026-05-07T09:30:00",
+          "timeZone": "UTC"
+        }
+      },
+      "attendeeAvailability": [
+        {
+          "attendee": {
+            "type": "required",
+            "emailAddress": {
+              "address": "fixture-attendee-1@example.invalid"
+            }
+          },
+          "availability": "free"
+        }
+      ]
+    },
+    {
+      "confidence": 80.0,
+      "organizerAvailability": "free",
+      "meetingTimeSlot": {
+        "start": {
+          "dateTime": "2026-05-07T14:00:00",
+          "timeZone": "UTC"
+        },
+        "end": {
+          "dateTime": "2026-05-07T14:30:00",
+          "timeZone": "UTC"
+        }
+      },
+      "attendeeAvailability": [
+        {
+          "attendee": {
+            "type": "required",
+            "emailAddress": {
+              "address": "fixture-attendee-1@example.invalid"
+            }
+          },
+          "availability": "free"
+        }
+      ]
+    }
+  ],
+  "emptySuggestionsReason": ""
+}
