@@ -518,10 +518,31 @@ class GraphClient:
                     error="GraphAPIError",
                 )
                 # Force-refresh exactly once.
-                fresh = await self._bearer_token(force_refresh=True)
-                request.headers["Authorization"] = f"Bearer {fresh}"
                 start_t2 = time.perf_counter()
-                response2 = await self._client.send(request)
+                try:
+                    fresh = await self._bearer_token(force_refresh=True)
+                    request.headers["Authorization"] = f"Bearer {fresh}"
+                    response2 = await self._client.send(request)
+                except Exception as exc:
+                    # Auth-refresh attempt itself failed (token endpoint
+                    # down, transport error, MSAL exception). Emit a
+                    # span with status_code=None so the failed refresh
+                    # round-trip is visible in dashboards before we
+                    # propagate. Without this, the only signal is the
+                    # bare exception — error rate metrics would miss it.
+                    duration_ms_2 = (time.perf_counter() - start_t2) * 1000.0
+                    _emit_graph_call_span(
+                        extension_name=self.extension_name,
+                        method=request.method,
+                        path=request.url.path,
+                        status_code=None,
+                        duration_ms=duration_ms_2,
+                        breaker_key=self._breaker_key,
+                        request_id=None,
+                        retry_attempt=retry_attempt + 1,
+                        error=type(exc).__name__,
+                    )
+                    raise
                 duration_ms_2 = (time.perf_counter() - start_t2) * 1000.0
                 request_id_2 = self._request_id_of(response2)
                 _emit_graph_call_span(

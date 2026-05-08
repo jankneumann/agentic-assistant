@@ -40,6 +40,8 @@ from __future__ import annotations
 import urllib.parse
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel, Field
+
 from assistant.core.cloud_client import CloudGraphClient
 from assistant.core.resilience import (
     CircuitBreaker,
@@ -51,6 +53,55 @@ from assistant.core.resilience import (
 
 if TYPE_CHECKING:
     from assistant.core.persona import PersonaConfig
+
+
+# ---------------------------------------------------------------------------
+# Pydantic args schemas — one per tool, drives both StructuredTool.args_schema
+# (LangChain) and per-tool parameter validation. Mirrors the pattern used
+# by outlook + teams; without these the StructuredTool surface accepts
+# any kwargs and skips validation entirely.
+# ---------------------------------------------------------------------------
+
+
+class _SearchSitesArgs(BaseModel):
+    query: str = Field(
+        ...,
+        description="Free-text search; passed via $search parameter.",
+    )
+    top: int = Field(
+        default=25,
+        description="Maximum number of sites to return per page.",
+    )
+
+
+class _ListDocumentsArgs(BaseModel):
+    site_id: str = Field(
+        ...,
+        description=(
+            "SharePoint site identifier. URL-encoded as a path segment; "
+            "rejected if it contains '/', '\\', or control characters."
+        ),
+    )
+    top: int = Field(
+        default=25,
+        description="Maximum number of documents to return per page.",
+    )
+
+
+class _DownloadDocumentArgs(BaseModel):
+    site_id: str = Field(
+        ...,
+        description=(
+            "SharePoint site identifier. URL-encoded as a path segment."
+        ),
+    )
+    item_id: str = Field(
+        ...,
+        description=(
+            "SharePoint drive-item identifier. URL-encoded as a path "
+            "segment."
+        ),
+    )
 
 # ---------------------------------------------------------------------------
 # Default scopes — D24: REPLACE semantics. Persona-provided scopes
@@ -289,6 +340,7 @@ class SharepointExtension:
                     "page_ceiling=100 applies to nextLink chasing; "
                     "narrow the query if results would exceed it."
                 ),
+                args_schema=_SearchSitesArgs,
             ),
             StructuredTool.from_function(
                 coroutine=self._list_documents,
@@ -301,6 +353,7 @@ class SharepointExtension:
                     "avoid truncation. <= ceil(items / page_size) Graph "
                     "calls per invocation."
                 ),
+                args_schema=_ListDocumentsArgs,
             ),
             StructuredTool.from_function(
                 coroutine=self._download_document,
@@ -312,6 +365,7 @@ class SharepointExtension:
                     "request_id}. The caller is responsible for cleanup. "
                     "Default size ceiling: 50 MiB."
                 ),
+                args_schema=_DownloadDocumentArgs,
             ),
         ]
 
@@ -449,24 +503,30 @@ def create_extension(
     config: dict[str, Any],
     *,
     persona: PersonaConfig | None = None,
+    client: CloudGraphClient | None = None,
 ) -> SharepointExtension:
     """Construct a ``SharepointExtension`` for the given persona.
 
-    Per D26, the factory accepts a keyword-only ``persona`` (defaults
-    to None for the Protocol shape but every real-extension factory
-    short-circuits with TypeError when persona is missing — calling
-    a real MS-365 extension without persona-driven auth is a
-    misconfiguration that we want to surface immediately, not at
-    first Graph call).
+    Two construction modes (mirrors teams.create_extension symmetry —
+    the four real-extension factories all accept the same shape):
 
-    The factory:
-    1. Short-circuits with actionable ``TypeError`` if persona is None.
-    2. Lazy-imports ``create_msal_strategy`` + ``GraphClient`` from
-       wp-foundation-impls (so this module imports cleanly even if
-       impls have not yet landed).
-    3. Builds the per-extension MSAL strategy + GraphClient.
-    4. Constructs and returns the ``SharepointExtension``.
+    1. **Production** — ``create_extension(config, persona=persona)``.
+       Builds an MSAL strategy and ``GraphClient`` from the persona's
+       ``auth.ms`` block. Lazy imports defer the
+       ``msal_auth``/``graph_client`` dependency until persona is
+       validated (so this module imports cleanly even if impls have
+       not yet landed).
+    2. **Test** — ``create_extension(config, client=mock_client)``.
+       The persona-required short-circuit is skipped; the supplied
+       ``CloudGraphClient`` is used directly.
+
+    A call with neither ``persona`` nor ``client`` raises ``TypeError``
+    per extension-registry D26 (the persona YAML key path is named so
+    the operator can fix the misconfiguration without grep).
     """
+    if client is not None:
+        return SharepointExtension(config, client)
+
     if persona is None:
         raise TypeError(
             "Extension 'sharepoint' requires a non-None persona argument "
@@ -490,9 +550,9 @@ def create_extension(
 
     scopes = _resolve_scopes(config)
     strategy = create_msal_strategy(persona)
-    client = GraphClient(
+    real_client = GraphClient(
         extension_name="sharepoint",
         strategy=strategy,
         scopes=scopes,
     )
-    return SharepointExtension(config, client)
+    return SharepointExtension(config, real_client)

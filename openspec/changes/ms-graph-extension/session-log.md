@@ -227,3 +227,34 @@ This iteration was launched as the autopilot PLAN_ITERATE phase after a fresh /a
 ### Context
 
 User selected Option C (split now) at the autopilot escalation. Iteration 3 implemented the split: work-packages.yaml restructured (one package became two; max_loc bumped to 5000; max_packages bumped to 7); design.md gained two new D-sections (D28 split rationale, D29 pyproject consolidation); tasks.md header revised with new package allocation guide. openspec validate --strict passes. Round-3 PLAN_REVIEW skipped because the change is structural (no spec content changes; only DAG and ownership) and vendor-dispatch reliability is currently low. Convergence declared. Next phase: IMPLEMENT.
+
+---
+
+## Phase: Implementation Iteration 1 (2026-05-08)
+
+**Agent**: claude-opus-4-7 orchestrator | **Session**: autopilot ms-graph-extension resume
+
+### Decisions
+
+1. Dispatched two parallel review agents with disjoint scopes instead of a single in-thread review. Rationale was that the implementation spans roughly sixteen thousand lines across eighty-one files; reading every changed source file in-thread would consume most of the orchestrator context budget. Agent A covered cloud_client and msal_auth and graph_client and ms_agent_fw, which is security and transport. Agent B covered the four extensions and persona and capabilities memory and telemetry base, which is extensions and integration. Both agents returned structured findings JSON that the orchestrator synthesized.
+2. Verified every medium-or-above finding against actual code before fixing. Of eighteen candidate findings, five were rejected on inspection. PROTOCOL-1 was rejected because Python typing actually allows the Protocol shape used. LOGIC-1 was rejected because the agent misread the cache_dir conditional. SEC-1 was rejected because async-with already calls aclose. OBSERVABILITY-2 was rejected because request_id None when no response is correct. EXT-6 was rejected because sharepoint does not actually await a sync method. Seven were verified and fixed. Five low-criticality items were deferred to follow-up.
+3. Threshold-stop after iteration 1. All remaining findings are below the medium threshold; per the skill termination condition, this is the natural exit. Surfacing the deferred items to the user rather than continuing to iteration 2, which would scan unchanged code.
+
+### Alternatives Considered
+
+- Single in-thread review: rejected because sixteen thousand lines exceeds a single-context review budget; useful detail would be lost.
+- Three reviewers as a consensus pass: rejected because that is the IMPL_REVIEW phase, not IMPL_ITERATE; running it inside iterate would conflate the two phases and burn vendor quota for what is supposed to be a fast self-review pass.
+- Trust agent findings without verification: rejected because reviewer agents over-flag; five of eighteen findings turned out to be false positives, which is not unhealthy but is non-zero.
+
+### Trade-offs
+
+- Accepted disjoint scopes for the two review agents over overlapping scopes because the wall-clock benefit of disjoint coverage was larger than the consensus benefit of overlap at this phase. Cross-seam concerns were re-checked manually during synthesis.
+- Accepted deferring four low-criticality findings to follow-up rather than fixing them in this iteration. Reasons are RESILIENCE-1 as a sixty-second retry-after cap design choice rather than bug, EDGE-CASE-1 as fsync durability hardening rather than correctness, VALIDATION-1 path docstring tightening, UX-1 print to logger, EXT-7 naming consistency across extensions. None affect correctness or security; they are good follow-up issues.
+
+### Open Questions
+
+- Whether to file the five deferred low-criticality findings as labeled GH issues now, or roll them into the existing P5b candidate bucket. Decision deferred to user.
+
+### Context
+
+Verified seven findings and shipped fixes for all of them. EXT-1 was the most important. The outlook send_email signature accepted a single string for the to parameter, but the spec scenario explicitly mandates a list. Implementation now accepts list of str and the test was updated. EXT-2 added a client kwarg to outlook and sharepoint factories so all four real-extension factories share the same shape; teams already had it. EXT-3 and EXT-4 and EXT-5 added args_schema Pydantic models to the three SharePoint StructuredTool calls so LangChain validates parameters before invocation. ERROR-1 wrapped each lazy agent_framework import in the MSAF harness with a helpful RuntimeError pointing the operator at the documented v1.0.1 packaging quirk. OBSERVABILITY-1 made the auth-refresh exception path emit a trace_graph_call span before propagating, so failed refresh attempts are visible in dashboards instead of opaque exception traces. RESILIENCE-2 made cache-persist failures non-fatal for OSError because the token is still valid, while preserving the gitignore-guard MSALAuthenticationError as a structural signal the operator must address. All four quality gates pass: pytest seven hundred sixty-three passed with zero new failures versus prior, mypy clean, ruff clean, openspec validate clean.

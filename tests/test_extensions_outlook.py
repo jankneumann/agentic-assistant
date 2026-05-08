@@ -312,7 +312,7 @@ def test_send_email_post_body_shape() -> None:
 
     asyncio.run(
         ext._send_email(
-            to="recipient@example.invalid",
+            to=["recipient@example.invalid"],
             subject="hi",
             body="hello",
         )
@@ -349,7 +349,7 @@ def test_send_email_passes_retry_safe_false() -> None:
 
     asyncio.run(
         ext._send_email(
-            to="recipient@example.invalid",
+            to=["recipient@example.invalid"],
             subject="hi",
             body="hello",
         )

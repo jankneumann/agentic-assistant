@@ -309,7 +309,16 @@ class _SearchMessagesArgs(BaseModel):
 
 
 class _SendEmailArgs(BaseModel):
-    to: str = Field(..., description="Recipient email address.")
+    to: list[str] = Field(
+        ...,
+        description=(
+            "Recipient email addresses. Per ms-extensions spec scenario "
+            "'send_email POSTs to /me/sendMail with the expected body "
+            "shape', this is a list — pass `[\"a@b.com\"]` for a single "
+            "recipient. Each address becomes one `toRecipients[].address` "
+            "entry in the Graph payload."
+        ),
+    )
     subject: str = Field(..., description="Email subject line.")
     body: str = Field(..., description="Plain-text email body.")
 
@@ -515,15 +524,24 @@ class OutlookExtension:
 
     @_guard_open_breaker
     async def _send_email(
-        self, to: str, subject: str, body: str
+        self, to: list[str], subject: str, body: str
     ) -> dict[str, Any]:
         """Send an email via ``/me/sendMail``.
+
+        ``to`` is a list of recipient addresses per ms-extensions spec
+        scenario "send_email POSTs to /me/sendMail with the expected
+        body shape" — each entry becomes one ``toRecipients[]`` element.
 
         D18 (per-method retry safety): ``retry_safe=False`` is passed to
         ``client.post`` so the resilience layer does NOT auto-retry on
         transient 5xx — Microsoft Graph has no idempotency-key protocol
         for ``sendMail``, so an auto-retry would duplicate the message.
         """
+        if not to:
+            raise ValueError(
+                "outlook.send_email: `to` must contain at least one "
+                "recipient address"
+            )
         message_body: dict[str, Any] = {
             "message": {
                 "subject": subject,
@@ -532,7 +550,7 @@ class OutlookExtension:
                     "content": body,
                 },
                 "toRecipients": [
-                    {"emailAddress": {"address": to}},
+                    {"emailAddress": {"address": addr}} for addr in to
                 ],
             },
         }
@@ -601,15 +619,31 @@ def create_extension(
     config: dict[str, Any],
     *,
     persona: PersonaConfig | None = None,
+    client: CloudGraphClient | None = None,
 ) -> OutlookExtension:
     """Construct an ``OutlookExtension`` for the given persona.
 
+    Two construction modes (mirrors teams.create_extension symmetry —
+    the four real-extension factories all accept the same shape):
+
+    1. **Production** — ``create_extension(config, persona=persona)``.
+       Builds an MSAL strategy and ``GraphClient`` from the persona's
+       ``auth.ms`` block. Lazy imports defer the
+       ``msal_auth``/``graph_client`` dependency until persona is
+       validated (so module import stays cheap even before
+       wp-foundation-impls lands).
+    2. **Test** — ``create_extension(config, client=mock_client)``.
+       The persona-required short-circuit is skipped; the supplied
+       ``CloudGraphClient`` is used directly.
+
     Per extension-registry / "Real factory called with persona=None
-    raises actionable TypeError" (D26): the four real Microsoft 365
-    factories require a non-None persona. The error message identifies
-    the offending extension and cites the persona YAML key path so the
-    operator can fix the persona config.
+    raises actionable TypeError" (D26): a call with neither
+    ``persona`` nor ``client`` raises ``TypeError`` with the persona
+    YAML key path so the operator can fix the persona config.
     """
+    if client is not None:
+        return OutlookExtension(config, client=client)
+
     if persona is None:
         raise TypeError(
             "outlook: real extension requires a non-None `persona` argument; "
@@ -627,9 +661,9 @@ def create_extension(
 
     strategy = create_msal_strategy(persona)
     scopes = _resolve_scopes(config)
-    client = GraphClient(
+    real_client = GraphClient(
         extension_name="outlook",
         strategy=strategy,
         scopes=scopes,
     )
-    return OutlookExtension(config, client=client)
+    return OutlookExtension(config, client=real_client)
