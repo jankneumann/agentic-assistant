@@ -141,8 +141,20 @@ preferred_tools:
   - content_analyzer:knowledge_graph
 ```
 
-These are **forward declarations**. `composition.py:49-52` folds them
-into the system prompt. Real wiring lands with P3.
+P3 is archived, so these flow through two paths: an advisory render in
+`composition.py:49-52` *and* a binding-time lookup via
+`HttpToolRegistry.by_preferred()` at `http_tools/registry.py:45-49`.
+The lookup is exact-string match against `{source}:{operationId}` keys
+discovered from each `tool_sources.<name>.base_url_env` endpoint's
+`/openapi.json`. The ACA endpoints exist today
+(`search_knowledge_base` at GET `/api/v1/kb/search` and
+`query_knowledge_graph` at POST `/api/v1/graph/query` —
+`/tmp/aca/src/api/routes/{kb_search,graph}_routes.py`), but ACA emits
+FastAPI's default munged operationIds (no
+`generate_unique_id_function` override at `src/api/app.py:147`), so
+the role's strings silently no-op against the registry until ACA adds
+`operation_id="search"` and `operation_id="knowledge_graph"` to the
+two relevant decorators. See R5.
 
 Each skill's markdown specifies *when* to reach for the declared
 tools. Example from `feynman.md`:
@@ -224,10 +236,11 @@ can be added later if tone-shaping proves useful.
   teacher's prompt explicitly asks the user to pick when method is
   unspecified, rather than selecting.
 - **R2**: Model reaches for `content_analyzer:*` tools mid-Feynman
-  (i.e. outside Step 1), violating the narrated contract. Currently
-  unobservable — tools aren't wired until P3. Flagged for the post-P3
-  review: if it happens in practice, the follow-on proposal for
-  per-skill tool gating becomes concrete.
+  (i.e. outside Step 1), violating the narrated contract. P3 is
+  archived and P4 (`observability`) is archived, so once the ACA
+  operationId alignment in R5 ships, this becomes observable from day
+  1 via P4 spans on each tool invocation. If it happens in practice,
+  the follow-on proposal for per-skill tool gating becomes concrete.
 - **R3**: Deep Agents' skill-discovery picks up stale skills after a
   file is deleted or renamed. Low-impact — skills are read at agent
   creation time, so a REPL session already loaded keeps the skill set
@@ -235,6 +248,27 @@ can be added later if tone-shaping proves useful.
 - **R4**: The `/method` REPL command's prompt-level directive is
   ignored by the model. Low-likelihood given system-level injection,
   but user can always exit and restart with `--method` as a fallback.
+
+- **R5**: ACA-side operationId mismatch causes silent no-op binding.
+  ACA's FastAPI app emits default munged operationIds
+  (`search_knowledge_base_api_v1_kb_search_get`,
+  `query_knowledge_graph_api_v1_graph_query_post`), but the role
+  declares `content_analyzer:search` and
+  `content_analyzer:knowledge_graph`. `HttpToolRegistry.by_preferred()`
+  exact-matches and silently drops misses. **Mitigation**: a two-line
+  change in `agentic-content-analyzer`, adding
+  `operation_id="search"` to `search_knowledge_base`
+  (`src/api/routes/kb_search_routes.py:95`) and
+  `operation_id="knowledge_graph"` to `query_knowledge_graph`
+  (`src/api/routes/graph_routes.py:119`). The teacher role ships
+  before that change lands; the strings render as advisory prompt
+  text and binding activates once ACA aligns. **Detection**: an
+  http_tools integration test in this repo SHOULD assert that
+  `registry.by_preferred(["content_analyzer:search",
+  "content_analyzer:knowledge_graph"])` returns 2 tools when the
+  registry is populated against ACA's live `/openapi.json`. Until the
+  ACA fix lands, that test would fail — so it's gated on the ACA-side
+  PR.
 
 ## References
 
@@ -247,6 +281,19 @@ can be added later if tone-shaping proves useful.
 - `src/assistant/cli.py:146-159` — `/role` rebuild (why `/method`
   needs to be separate).
 - `src/assistant/core/composition.py:49-52` — `preferred_tools`
-  rendering today (advisory only).
-- `openspec/roadmap.md` P3 `http-tools-layer` — when real tool
-  wiring lands.
+  advisory render into the system prompt.
+- `src/assistant/http_tools/registry.py:45-49` —
+  `HttpToolRegistry.by_preferred()` exact-match resolution that turns
+  `preferred_tools` strings into bound `StructuredTool` instances.
+- `src/assistant/http_tools/discovery.py:178-283` — registers each
+  discovered operation under `{source}:{op.operation_id}`.
+- `openspec/roadmap.md` P3 `http-tools-layer` — archived 2026-04-24;
+  the registry/builder/discovery referenced above are live.
+- `openspec/specs/role-registry/spec.md:44` — canonical example
+  `preferred_tools: ["content_analyzer:search"]` shape this role
+  follows.
+- ACA repo (`https://github.com/jankneumann/agentic-content-analyzer`)
+  `src/api/routes/kb_search_routes.py:95` (`search_knowledge_base`)
+  and `src/api/routes/graph_routes.py:119` (`query_knowledge_graph`)
+  — the two endpoints whose operationIds need the alignment described
+  in R5.

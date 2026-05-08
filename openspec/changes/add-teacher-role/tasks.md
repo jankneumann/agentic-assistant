@@ -201,8 +201,9 @@ dependency task(s).
   (flips to `in-progress` when this proposal is implemented and
   `archived` on final archive). Description: "Add `teacher` role
   with Feynman + Socratic skill files; add `--method` CLI flag and
-  `/method` / `/methods` REPL commands; forward-declare
-  `content_analyzer:*` preferred tools for post-P3 wiring."
+  `/method` / `/methods` REPL commands; declare `content_analyzer:*`
+  preferred tools that bind via the archived P3 http-tools layer once
+  ACA aligns its operationIds (see R5)."
 
   **Spec scenarios**: n/a (roadmap bookkeeping)
   **Design decisions**: none
@@ -247,3 +248,19 @@ dependency task(s).
   `[Teacher:socratic]>`).
   **Spec scenarios**: n/a (exploratory)
   **Dependencies**: 6.2
+
+- [ ] 6.4 Verify ACA-binding status (R5 in design.md). Inspect
+  `discover_tools(...)` output for the `content_analyzer` source —
+  e.g. `assistant --list-tools` from `src/assistant/cli.py` — and
+  record whether the registry contains `content_analyzer:search` and
+  `content_analyzer:knowledge_graph`. Two valid outcomes:
+  - **ACA already aligned**: both keys present → mark this task done.
+  - **ACA not yet aligned**: both keys absent → file an issue against
+    `agentic-content-analyzer` requesting `operation_id="search"` on
+    `search_knowledge_base` (`src/api/routes/kb_search_routes.py:95`)
+    and `operation_id="knowledge_graph"` on `query_knowledge_graph`
+    (`src/api/routes/graph_routes.py:119`); reference this proposal.
+    Mark task done — the role itself is fully shipped; the binding
+    activates automatically once ACA's PR lands.
+  **Spec scenarios**: n/a (cross-repo contract verification)
+  **Dependencies**: 6.3
