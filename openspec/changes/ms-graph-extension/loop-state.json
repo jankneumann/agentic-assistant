@@ -1,12 +1,13 @@
 {
   "schema_version": 1,
   "change_id": "ms-graph-extension",
-  "current_phase": "SUBMIT_PR",
+  "current_phase": "IMPL_ITERATE",
   "iteration": 3,
   "total_iterations": 3,
   "max_phase_iterations": 3,
   "findings_trend": [16, 0],
   "blocking_findings": [],
+  "pr_url": "https://github.com/jankneumann/agentic-assistant/pull/24",
   "vendor_availability": {
     "claude_code": true,
     "codex": true,

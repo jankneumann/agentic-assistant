@@ -455,12 +455,27 @@ class InteractiveDelegatedStrategy:
         return str(result["access_token"])
 
     def _maybe_persist(self) -> None:
-        _persist_cache_if_changed(
-            self._cache,
-            cache_dir=self._cache_dir,
-            cache_path=self._cache_path,
-            persona_root=self._persona_root,
-        )
+        try:
+            _persist_cache_if_changed(
+                self._cache,
+                cache_dir=self._cache_dir,
+                cache_path=self._cache_path,
+                persona_root=self._persona_root,
+            )
+        except OSError as exc:
+            # Best-effort persistence: the caller already holds a valid
+            # token from MSAL. A transient disk/permissions failure
+            # should not fail token acquisition — the next acquire will
+            # try silent first (re-using the in-memory cache for this
+            # process) and re-attempt the persist. The MSALAuthentication
+            # Error from the gitignore guard (D22) deliberately remains
+            # fatal — that one signals a structural misconfig the
+            # operator must fix before tokens can be cached safely.
+            logger.warning(
+                "msal_auth: token cache persistence failed "
+                "(token still valid for this call): %s",
+                exc,
+            )
 
 
 class ClientCredentialsStrategy:

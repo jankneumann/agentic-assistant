@@ -129,14 +129,24 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         self._active_model = model
 
         if chat_client_kind == "azure_openai":
-            from agent_framework.azure_openai import (  # type: ignore[import-not-found, unused-ignore]
-                AzureOpenAIChatClient,
-            )
+            try:
+                from agent_framework.azure_openai import (  # type: ignore[import-not-found, unused-ignore]
+                    AzureOpenAIChatClient,
+                )
+            except ImportError as exc:
+                raise _agent_framework_install_error(
+                    "agent_framework.azure_openai.AzureOpenAIChatClient"
+                ) from exc
 
             return AzureOpenAIChatClient()
-        from agent_framework.openai import (  # type: ignore[import-not-found, unused-ignore]
-            OpenAIChatClient,
-        )
+        try:
+            from agent_framework.openai import (  # type: ignore[import-not-found, unused-ignore]
+                OpenAIChatClient,
+            )
+        except ImportError as exc:
+            raise _agent_framework_install_error(
+                "agent_framework.openai.OpenAIChatClient"
+            ) from exc
 
         return OpenAIChatClient()
 
@@ -196,9 +206,14 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         instructions = self._compose_instructions()
         chat_client = self._build_chat_client()
 
-        from agent_framework import (  # type: ignore[import-not-found, attr-defined, unused-ignore]
-            Agent,
-        )
+        try:
+            from agent_framework import (  # type: ignore[import-not-found, attr-defined, unused-ignore]
+                Agent,
+            )
+        except ImportError as exc:
+            raise _agent_framework_install_error(
+                "agent_framework.Agent"
+            ) from exc
 
         return Agent(
             client=chat_client,
@@ -262,6 +277,34 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         )
         agent = await sub.create_agent(tools, extensions)
         return await sub.invoke(agent, task)
+
+
+def _agent_framework_install_error(symbol: str) -> RuntimeError:
+    """Build an actionable error for a failed lazy ``agent_framework`` import.
+
+    Three failure modes the user might hit at this point:
+
+    1. The ``agent-framework`` package is not installed at all.
+    2. Installed but a known v1.0.1 namespace-collision shipped an
+       empty ``agent_framework/__init__.py``, so submodules import but
+       top-level names (``Agent``) do not — see CLAUDE.md "What's Not
+       Yet Wired" for the documented quirk.
+    3. A different SDK version that no longer exposes the symbol the
+       harness expects.
+
+    All three surface as ``ImportError``; the message points the
+    operator at concrete next steps so the failure is debuggable
+    without grepping the harness source.
+    """
+    return RuntimeError(
+        f"MSAgentFrameworkHarness: failed to import {symbol!r}. "
+        "Install with `pip install 'agent-framework>=1.0.0,<2.0.0'`. "
+        "If already installed, check for the v1.0.1 namespace-package "
+        "quirk (empty agent_framework/__init__.py despite RECORD "
+        "claiming bytes) — see CLAUDE.md 'What's Not Yet Wired' for "
+        "the workaround. The harness module loads fine in this state; "
+        "only invoke-time fails."
+    )
 
 
 def _stringify_run_result(result: Any) -> str:
