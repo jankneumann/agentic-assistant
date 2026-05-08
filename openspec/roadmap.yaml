@@ -167,7 +167,7 @@ items:
   - item_id: observability
     change_id: observability
     title: Observability layer (tracing, cost, delegation spans)
-    status: candidate
+    status: archived
     priority: 7
     effort: M
     depends_on: [bootstrap-vertical-slice]
@@ -280,7 +280,7 @@ items:
   - item_id: error-resilience
     change_id: error-resilience
     title: Error resilience (retry + circuit breaker + graceful degradation)
-    status: candidate
+    status: archived
     priority: 13
     effort: M
     depends_on: [http-tools-layer]
