@@ -49,13 +49,17 @@ Agents' native skill-discovery mechanism — no new core plumbing required.
 
 4. **Declarative tool preference**. Teacher's `role.yaml` lists
    `content_analyzer:search` and `content_analyzer:knowledge_graph` in
-   `preferred_tools`. These are not wired to real tools until P3
-   (`http-tools-layer`) — today they only flow into the composed system
-   prompt via `composition.py:49-52`. Each skill's markdown specifies
-   *when* in its loop the tools become useful (e.g. Feynman Step 1:
-   "before writing your plain-language explanation, you MAY consult
-   `knowledge_graph` for the canonical definition of the target
-   concept; cite it as an anchor").
+   `preferred_tools`. P3 (`http-tools-layer`) is archived, so these
+   strings flow through two parallel paths: the advisory render via
+   `composition.py:49-52` *and* the binding-time lookup via
+   `HttpToolRegistry.by_preferred()` at `http_tools/registry.py:45-49`.
+   Live binding requires ACA (`agentic-content-analyzer`) to expose the
+   matching operationIds — see *Out of Scope* below for the ACA-side
+   contract step. Each skill's markdown specifies *when* in its loop
+   the tools become useful (e.g. Feynman Step 1: "before writing your
+   plain-language explanation, you MAY consult `knowledge_graph` for
+   the canonical definition of the target concept; cite it as an
+   anchor").
 
 5. **CLI surface additions** (`src/assistant/cli.py`):
    - New `--method <name>` / `-m <name>` option on the top-level command,
@@ -188,8 +192,19 @@ dozen files.
   declared at the role level and narrated at the skill level; hard
   per-skill gates are a P3-or-later proposal contingent on whether the
   narrated contract proves insufficient in practice.
-- **Real content-analyzer tool access**. Gated on P3 `http-tools-layer`.
-  `preferred_tools` on the teacher role is forward-declared.
+- **ACA-side `operation_id` annotations**. Live binding of the
+  teacher's `preferred_tools` to ACA's HTTP endpoints requires
+  `operation_id="search"` on `search_knowledge_base` (GET
+  `/api/v1/kb/search`) and `operation_id="knowledge_graph"` on
+  `query_knowledge_graph` (POST `/api/v1/graph/query`) in the
+  `agentic-content-analyzer` repo. ACA today emits FastAPI's default
+  munged operationIds (no `generate_unique_id_function` override at
+  `src/api/app.py:147`), so `HttpToolRegistry.by_preferred()` silently
+  drops the role's strings until that two-line ACA-side change ships.
+  Tracked separately because it lives in a different repo. The teacher
+  role itself ships fully functional in the meantime — the strings
+  render advisory-only into the prompt, and binding turns on
+  automatically once ACA aligns.
 - **Persona-specific teacher overrides**. No
   `personas/<name>/roles/teacher.yaml` in this change. Can be added
   per-persona if the `personal` persona wants a tone tweak.
