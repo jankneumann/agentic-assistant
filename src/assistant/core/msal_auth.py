@@ -215,6 +215,13 @@ def _atomic_write_cache(cache_path: Path, data: str) -> None:
     fd = os.open(str(tmp_path), os.O_CREAT | os.O_WRONLY | os.O_EXCL, 0o600)
     try:
         os.write(fd, data.encode("utf-8"))
+        # fsync before close so the data is durable on disk before the
+        # rename publishes it. Without this, a crash between close()
+        # and the next fsync of the directory inode could leave us with
+        # a renamed file pointing at unwritten blocks. Cost is one disk
+        # flush per cache write, which only happens when MSAL signals
+        # has_state_changed.
+        os.fsync(fd)
     finally:
         os.close(fd)
     os.rename(str(tmp_path), str(cache_path))
@@ -436,7 +443,18 @@ class InteractiveDelegatedStrategy:
                     f"device flow init failed: {flow.get('error_description', flow)}"
                 )
             # Spec: "device-code prompt MUST be written to stderr".
+            # The print() to stderr is the user-facing prompt — the
+            # operator MUST see this immediately to enter the device
+            # code, regardless of structured-log filtering. The
+            # logger.info() that follows captures the event for
+            # observability without echoing the device code into
+            # structured logs (which may be ingested by long-retention
+            # log stores where one-time codes have no lasting value).
             print(flow.get("message", ""), file=sys.stderr, flush=True)
+            logger.info(
+                "msal_auth: device-code flow initiated for tenant %s",
+                self._tenant_id,
+            )
             result = await asyncio.to_thread(app.acquire_token_by_device_flow, flow)
         else:
             result = await asyncio.to_thread(

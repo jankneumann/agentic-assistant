@@ -258,3 +258,35 @@ User selected Option C (split now) at the autopilot escalation. Iteration 3 impl
 ### Context
 
 Verified seven findings and shipped fixes for all of them. EXT-1 was the most important. The outlook send_email signature accepted a single string for the to parameter, but the spec scenario explicitly mandates a list. Implementation now accepts list of str and the test was updated. EXT-2 added a client kwarg to outlook and sharepoint factories so all four real-extension factories share the same shape; teams already had it. EXT-3 and EXT-4 and EXT-5 added args_schema Pydantic models to the three SharePoint StructuredTool calls so LangChain validates parameters before invocation. ERROR-1 wrapped each lazy agent_framework import in the MSAF harness with a helpful RuntimeError pointing the operator at the documented v1.0.1 packaging quirk. OBSERVABILITY-1 made the auth-refresh exception path emit a trace_graph_call span before propagating, so failed refresh attempts are visible in dashboards instead of opaque exception traces. RESILIENCE-2 made cache-persist failures non-fatal for OSError because the token is still valid, while preserving the gitignore-guard MSALAuthenticationError as a structural signal the operator must address. All four quality gates pass: pytest seven hundred sixty-three passed with zero new failures versus prior, mypy clean, ruff clean, openspec validate clean.
+
+---
+
+## Phase: Implementation Iteration 2 (2026-05-08)
+
+**Agent**: claude-opus-4-7 orchestrator | **Session**: autopilot ms-graph-extension resume
+
+### Decisions
+
+1. Rolled all five deferred low-criticality findings into iteration 2 rather than filing them as separate GH issues. Rationale was that the user requested address-and-roll-in over file-and-defer; the cumulative diff stays manageable and the audit trail is one place rather than five.
+2. For UX-1 the device-code prompt, kept the print to stderr unchanged and added a logger.info call alongside it. The print is the user-facing prompt that MUST be visible regardless of structured-log filtering; the logger.info captures the event without echoing the device code into long-retention log stores. This is more conservative than the original agent recommendation of replacing print with logger.info.
+3. For EXT-7 naming consistency, renamed outlook _safe_segment and teams _validate_id_segment to _validate_path_segment to match sharepoint. Signatures still differ slightly per extension; the shared name is for grep-ability and cognitive consistency, not signature unification.
+
+### Alternatives Considered
+
+- Replace print with logger.info entirely for UX-1: rejected because logger.info may be filtered by structured-log config and the device-code prompt is a synchronous user-action requirement. Print to stderr guarantees visibility.
+- Refactor outlook and teams to split validate-from-encode like sharepoint: rejected as unnecessary churn for a cognitive-consistency fix; the names align without rewriting the bodies.
+- File the 5 lows as separate GitHub issues per the original Landing-the-Plane convention: rejected because the user explicitly directed roll-into-this-work.
+
+### Trade-offs
+
+- Accepted small additional log volume from logger.info on every device-code flow over the alternative of having no structured-log signal for that event.
+- Accepted that fsync adds one disk flush per token-cache mutation over the durability gain on crash-during-rename. Cost is negligible at observed write rates (one per token acquire success).
+- Accepted documenting the signature asymmetry across the three _validate_path_segment implementations rather than refactoring all three to one signature. The cognitive consistency gain from the shared name is high; the cost of the asymmetry is bounded to a one-line note in the outlook docstring.
+
+### Open Questions
+
+- None. All findings from iteration 1 review are now addressed. Ready for IMPL_REVIEW.
+
+### Context
+
+Five low-criticality findings shipped: RESILIENCE-1 added max_retry_after_seconds parameter to GraphClient with default 60.0 and used it in _honor_retry_after; EDGE-CASE-1 added os.fsync before close in _atomic_write_cache for durability across crash-between-write-and-rename; VALIDATION-1 tightened _full_url to reject relative paths containing parent-directory segments; UX-1 added a logger.info call alongside the existing print for the device-code flow event; EXT-7 renamed outlook _safe_segment and teams _validate_id_segment to _validate_path_segment to match sharepoint. All four quality gates pass: pytest 763 passed with zero new failures, mypy clean, ruff clean, openspec validate clean. Test count and pass count unchanged from iteration 1.
