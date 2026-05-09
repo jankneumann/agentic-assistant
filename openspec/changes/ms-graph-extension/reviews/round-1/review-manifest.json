@@ -1,5 +1,5 @@
 {
-  "review_type": "plan",
+  "review_type": "implementation",
   "target": "cli-dispatch",
   "dispatches": [
     {
@@ -9,7 +9,7 @@
       "models_attempted": [
         "gpt-5.5"
       ],
-      "elapsed_seconds": 161.27247658302076,
+      "elapsed_seconds": 191.2959296250483,
       "error": null,
       "error_class": null
     },
@@ -20,7 +20,7 @@
       "models_attempted": [
         "auto"
       ],
-      "elapsed_seconds": 53.87697595800273,
+      "elapsed_seconds": 141.9749438749859,
       "error": null,
       "error_class": null
     }

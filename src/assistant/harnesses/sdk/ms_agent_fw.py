@@ -22,7 +22,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from assistant.core.composition import compose_system_prompt
 from assistant.core.persona import PersonaConfig
 from assistant.core.role import RoleConfig
 from assistant.harnesses.base import SdkHarnessAdapter
@@ -31,6 +30,7 @@ from assistant.telemetry.decorators import traced_harness
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from assistant.core.capabilities.context import ContextProvider
     from assistant.core.capabilities.guardrails import GuardrailProvider
     from assistant.core.capabilities.memory import MemoryPolicy
     from assistant.core.capabilities.tools import ToolPolicy
@@ -68,6 +68,7 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         tool_policy: ToolPolicy | None = None,
         memory_policy: MemoryPolicy | None = None,
         guardrail_provider: GuardrailProvider | None = None,
+        context_provider: ContextProvider | None = None,
         chat_client_factory: Callable[[], Any] | None = None,
         memory_snippet_limit: int = DEFAULT_MEMORY_SNIPPET_LIMIT,
     ) -> None:
@@ -75,6 +76,7 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         self._tool_policy = tool_policy
         self._memory_policy = memory_policy
         self._guardrail_provider = guardrail_provider
+        self._context_provider = context_provider
         self._chat_client_factory = chat_client_factory
         self._memory_snippet_limit = memory_snippet_limit
         self._active_model: str = self._DEFAULT_MODEL
@@ -107,6 +109,27 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
 
         resolver = CapabilityResolver()
         return resolver.resolve(self.persona, "sdk", self.role).guardrails
+
+    def _resolve_context_provider(self) -> ContextProvider:
+        """Return the persona+role's ContextProvider, or the default.
+
+        Per ms-agent-framework-harness spec / "Capability Consumption":
+        the harness MUST consume ``ContextProvider`` from the
+        ``CapabilityResolver`` rather than calling
+        ``compose_system_prompt`` directly. The default provider falls
+        back to the existing ``compose_system_prompt`` shape so personas
+        without a custom context provider behave identically to before.
+        """
+        if self._context_provider is not None:
+            return self._context_provider
+        from assistant.core.capabilities.context import DefaultContextProvider
+        from assistant.core.capabilities.resolver import CapabilityResolver
+
+        resolver = CapabilityResolver()
+        resolved = resolver.resolve(self.persona, "sdk", self.role)
+        if resolved.context is not None:
+            return resolved.context
+        return DefaultContextProvider()
 
     # ── Chat client construction ──────────────────────────────────
 
@@ -159,8 +182,16 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         ``## Recent context`` so the agent reads them before the
         composed system-prompt body. An empty snippet list MUST leave
         the prompt unchanged (no heading injected).
+
+        The base system prompt is sourced from the persona+role's
+        ``ContextProvider`` (resolved via ``CapabilityResolver`` per
+        spec "Capability Consumption" requirement). The default
+        provider delegates to ``compose_system_prompt``; persona configs
+        can override by registering a custom ContextProvider.
         """
-        base = compose_system_prompt(self.persona, self.role)
+        base = self._resolve_context_provider().compose_system_prompt(
+            self.persona, self.role
+        )
 
         memory_policy = self._resolve_memory_policy()
         snippets = memory_policy.get_recent_snippets(
@@ -272,6 +303,7 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
             tool_policy=self._tool_policy,
             memory_policy=self._memory_policy,
             guardrail_provider=self._guardrail_provider,
+            context_provider=self._context_provider,
             chat_client_factory=self._chat_client_factory,
             memory_snippet_limit=self._memory_snippet_limit,
         )

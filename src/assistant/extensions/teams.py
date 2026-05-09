@@ -229,11 +229,13 @@ class _PostChatMessageArgs(BaseModel):
         ...,
         description="Chat identifier; URL-encoded as a path segment.",
     )
-    content: str = Field(
+    text: str = Field(
         ...,
         description=(
-            "Message body to post. Sent as plain text (contentType "
-            "'text'); the caller is responsible for any rendering."
+            "Message text to post. Sent as the `body.content` field of "
+            "the Graph chatMessage payload exactly as specified by the "
+            "ms-extensions spec scenario `post_chat_message POSTs to "
+            "/chats/{chatId}/messages`."
         ),
     )
 
@@ -401,12 +403,16 @@ class TeamsExtension:
     async def _post_chat_message(
         self,
         chat_id: str,
-        content: str,
+        text: str,
     ) -> dict[str, Any]:
         """Post a message into a chat (non-idempotent write).
 
         Wire shape: ``POST /chats/{chat_id}/messages`` with body
-        ``{"body": {"content": <text>, "contentType": "text"}}``.
+        ``{"body": {"content": <text>}}`` — exactly as the
+        ms-extensions spec scenario "post_chat_message POSTs to
+        /chats/{chatId}/messages" mandates. No ``contentType`` field
+        is sent; Microsoft Graph defaults to plain text and the spec
+        is the contract of record.
 
         D18: ``retry_safe=False`` — Teams chat messages are non-
         idempotent; auto-replaying a transient 5xx would duplicate the
@@ -417,7 +423,7 @@ class TeamsExtension:
         """
         await self._raise_if_breaker_open()
         chat_seg = _validate_path_segment("chat_id", chat_id)
-        body = {"body": {"content": content, "contentType": "text"}}
+        body = {"body": {"content": text}}
         return await self._client.post(
             f"/chats/{chat_seg}/messages",
             json=body,

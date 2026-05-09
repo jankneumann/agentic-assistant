@@ -245,10 +245,10 @@ def test_post_chat_message_body_shape() -> None:
     """ms-extensions / "post_chat_message POSTs to
     /chats/{chatId}/messages".
 
-    The spec scenario asserts the body equals
-    ``{"body": {"content": "hello"}}``; we additionally pin
-    ``contentType: "text"`` because Graph requires it for synthetic
-    posts.
+    The spec scenario mandates the body equals exactly
+    ``{"body": {"content": "hello"}}`` and the parameter is named
+    ``text``. No ``contentType`` field — Microsoft Graph defaults to
+    plain text for chatMessage posts and the spec is the contract.
     """
     mock = MockGraphClient()
     mock.next_post_response = {"id": "msg-123"}
@@ -256,7 +256,7 @@ def test_post_chat_message_body_shape() -> None:
 
     result = asyncio.run(ext._post_chat_message(
         chat_id="c1",
-        content="hello",
+        text="hello",
     ))
 
     assert result == {"id": "msg-123"}
@@ -265,9 +265,7 @@ def test_post_chat_message_body_shape() -> None:
     assert len(post_calls) == 1
     _name, args, kwargs = post_calls[0]
     assert args == ("/chats/c1/messages",)
-    assert kwargs["json"] == {
-        "body": {"content": "hello", "contentType": "text"},
-    }
+    assert kwargs["json"] == {"body": {"content": "hello"}}
 
 
 def test_post_chat_message_passes_retry_safe_false() -> None:
@@ -282,7 +280,7 @@ def test_post_chat_message_passes_retry_safe_false() -> None:
     mock.next_post_response = {"id": "msg-1"}
     ext = _build(client=mock)
 
-    asyncio.run(ext._post_chat_message(chat_id="c1", content="hi"))
+    asyncio.run(ext._post_chat_message(chat_id="c1", text="hi"))
 
     post_calls = [c for c in mock.calls if c[0] == "post"]
     assert len(post_calls) == 1
@@ -301,7 +299,7 @@ def test_post_chat_message_url_encodes_chat_id() -> None:
 
     asyncio.run(ext._post_chat_message(
         chat_id="19:c@thread.v2",
-        content="hello",
+        text="hello",
     ))
 
     post_calls = [c for c in mock.calls if c[0] == "post"]
@@ -323,7 +321,7 @@ def test_post_chat_message_url_encodes_chat_id() -> None:
          {"team_id": "a", "channel_id": "c\x00d"}),
         ("_read_message", {"chat_id": "c/d", "message_id": "m"}),
         ("_read_message", {"chat_id": "c", "message_id": "m\x1f"}),
-        ("_post_chat_message", {"chat_id": "c\\d", "content": "x"}),
+        ("_post_chat_message", {"chat_id": "c\\d", "text": "x"}),
     ],
 )
 def test_invalid_path_segment_raises_value_error_before_http_call(

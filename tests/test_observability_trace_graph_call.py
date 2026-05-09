@@ -252,20 +252,21 @@ async def test_one_trace_graph_call_per_attempt(monkeypatch: pytest.MonkeyPatch)
     assert result == {"id": "1"}
     await c.aclose()
 
-    # Each HTTP attempt emitted one span.
+    # Per observability spec scenario "Successful retry emits one
+    # trace_graph_call per attempt": each HTTP attempt emits one span,
+    # AND the second call's retry_attempt MUST be 1 (not 0).
+    # `resilience.http_attempt` is still emitted as a separate
+    # retry-loop axis per the same spec requirement; trace_graph_call's
+    # retry_attempt is the per-HTTP-request attribution and MUST
+    # monotonically increase across retries of one user-level operation.
     assert len(captured_calls) == 2
     first, second = captured_calls
     assert first["status_code"] == 502
     assert first["retry_attempt"] == 0
     assert first["error"] is not None
     assert second["status_code"] == 200
-    assert second["retry_attempt"] == 0  # P9's retry is _around_ a new send;
-    # we annotate retry_attempt=0 for each fresh attempt because
-    # @resilient_http re-invokes _get_inner with attempt counter inside
-    # tenacity. The "monotonically increasing" guarantee in the spec is
-    # satisfied at the auth-refresh boundary; for transient retries
-    # tenacity itself owns the attempt-count axis (visible via
-    # resilience.http_attempt span emitted by P9).
+    assert second["retry_attempt"] == 1
+    assert second["error"] is None
 
 
 async def test_open_breaker_emits_no_trace_graph_call_but_short_circuit_span(

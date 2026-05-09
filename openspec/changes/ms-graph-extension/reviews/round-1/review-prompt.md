@@ -1,114 +1,66 @@
-# Review Prompt — ms-graph-extension (Plan Phase)
+# IMPL_REVIEW round 1 — ms-graph-extension (P5)
 
-You are reviewing an OpenSpec change proposal for **P5 ms-graph-extension** of the agentic-assistant project. Your job is to identify spec gaps, contract mismatches, architectural concerns, security issues, performance issues, observability gaps, compatibility risks, resilience gaps, correctness issues, and style/convention violations.
+You are doing a multi-vendor implementation review of OpenSpec change `ms-graph-extension` on branch `openspec/ms-graph-extension`. This is round 1 of the IMPL_REVIEW phase, after IMPL_ITERATE iteration 2. Your output will feed a consensus synthesizer that compares findings across vendors.
 
-## Read these artifacts (read-only):
+## Scope
 
-All paths relative to repo root:
+Review the full implementation diff `main..HEAD` (~13 commits, ~17k LOC across ~81 files). Particular focus areas:
 
-- `openspec/changes/ms-graph-extension/proposal.md` — what, why, three approaches with sub-approach A.2 selected
-- `openspec/changes/ms-graph-extension/design.md` — 12 decisions (D1–D12), risks/trade-offs, migration plan
-- `openspec/changes/ms-graph-extension/specs/msal-auth/spec.md` — MSAL strategy abstraction
-- `openspec/changes/ms-graph-extension/specs/graph-client/spec.md` — CloudGraphClient Protocol + custom GraphClient impl
-- `openspec/changes/ms-graph-extension/specs/ms-extensions/spec.md` — four real Microsoft 365 extensions
-- `openspec/changes/ms-graph-extension/specs/ms-agent-framework-harness/spec.md` — full MSAF harness implementation
-- `openspec/changes/ms-graph-extension/specs/extension-registry/spec.md` — MODIFIED: narrow stub set to gmail/gcal/gdrive
-- `openspec/changes/ms-graph-extension/specs/harness-adapter/spec.md` — REMOVED stub-state requirement, MODIFIED observability scenarios
-- `openspec/changes/ms-graph-extension/tasks.md` — TDD-ordered task list with spec scenario references
-- `openspec/changes/ms-graph-extension/contracts/README.md` — contract sub-types ruled out
-- `openspec/changes/ms-graph-extension/work-packages.yaml` — six impl packages + integration
+1. **Foundation** (`src/assistant/core/cloud_client.py`, `src/assistant/core/msal_auth.py`, `src/assistant/core/graph_client.py`) — Protocol shape, MSAL auth, httpx transport with `@resilient_http` retry + per-source circuit breaker
+2. **Four real M365 extensions** (`src/assistant/extensions/{ms_graph,outlook,teams,sharepoint}.py`) — replace P1 stubs; each emits LangChain `StructuredTool` AND MSAF `@ai_function` callables (D11 dual-format parity)
+3. **MSAgentFrameworkHarness** (`src/assistant/harnesses/sdk/ms_agent_fw.py`) — replaces `NotImplementedError` stub with full SDK integration
+4. **Spec compliance** — all SHALL/MUST clauses in `openspec/changes/ms-graph-extension/specs/**/*.md`
 
-## Project context:
+## Context to read first
 
-- Python 3.12, async-first, type-hinted, ruff + mypy + pytest
-- Persona-based architecture (per-persona auth boundary)
-- Functional prereqs P3 http-tools-layer, P1.8 capability-protocols, P9 error-resilience all archived
-- Existing reusable modules: `core/resilience.py` (retry + circuit breaker), `http_tools/auth.py`, `core/persona.py` (`_env()` env-var lookup pattern)
-- Existing harnesses: `harnesses/sdk/deep_agents.py` (reference SdkHarnessAdapter implementation)
+- `openspec/changes/ms-graph-extension/proposal.md`
+- `openspec/changes/ms-graph-extension/design.md` — decisions D1–D29 encode WHY each non-obvious choice was made
+- `openspec/changes/ms-graph-extension/specs/` — seven spec deltas
+- `openspec/changes/ms-graph-extension/work-packages.yaml` — 8 packages with file scopes
+- Recent iterate commits `8ef26f3` and `d1e8d2a` for changes since first impl
 
-## Discovery decisions (already locked, do NOT re-litigate):
+## Output format — STRICT
 
-- MSAL flow: interactive+silent + client_credentials, both pluggable. Web-interactive only (no msal[broker]).
-- MSAF SDK: `agent-framework` (PyPI). Confirmed via Context7.
-- API surface: read-heavy + send Outlook email + post Teams chat. SharePoint write-side, calendar create, Teams meeting create deferred.
-- Test strategy: respx + typed MockGraphClient + opt-in `RUN_GRAPH_TESTS=1`.
-- Persona default: personal persona stays opted out.
-- Approach: A.2 (Transport-interface Protocol with custom MS impl).
-
-## What to evaluate:
-
-### Specification Completeness
-- Do all requirements use SHALL/MUST language?
-- Are requirements testable and unambiguous?
-- Is anything missing that should be normative?
-
-### Architecture Alignment
-- Does the design follow existing project patterns (resilience integration, _env() lookups, persona-as-boundary)?
-- Are abstractions justified?
-- Are there leaky abstractions or hidden coupling?
-
-### Security
-- Token cache file discipline (mode 0o600, atomic write, gitignore)
-- Authentication failure handling (no retry, sanitized errors)
-- Any secrets in configuration paths?
-- OWASP top-10 considerations for new HTTP code paths?
-
-### Performance
-- Any unbounded loops or queries (pagination ceiling matters)?
-- Async correctness in MSAL strategy + GraphClient + extensions
-- Caching strategy for tokens
-
-### Observability
-- New code paths emit observability spans?
-- Existing observability requirements (trace_tool_call, trace_llm_call) preserved?
-- Transport-level observability for Graph HTTP calls?
-
-### Compatibility
-- Breaking changes to extension-registry / harness-adapter — handled cleanly via deltas?
-- Are migration paths reversible?
-
-### Resilience
-- Retry / timeout / fallback for Graph calls?
-- 429 (rate-limit) handling and Retry-After respect?
-- 401 (auth-expired) handling?
-- Circuit breaker behavior at boundary?
-- Idempotency for write tools (send_email, post_chat_message)?
-
-### Work Package Validity
-- DAG acyclic?
-- Parallel write_allow scopes non-overlapping?
-- Lock keys canonical?
-- Verification tiers appropriate?
-
-## Output format
-
-Output **only** valid JSON conforming to `openspec/schemas/review-findings.schema.json`. Schema:
+Output ONLY valid JSON conforming to `openspec/schemas/review-findings.schema.json`. Required top-level shape:
 
 ```json
 {
-  "review_type": "plan",
+  "review_type": "implementation",
   "target": "ms-graph-extension",
-  "reviewer_vendor": "<your vendor name e.g. codex or gemini>",
+  "reviewer_vendor": "<your-vendor-name>",
   "findings": [
     {
       "id": 1,
-      "type": "spec_gap | contract_mismatch | architecture | security | performance | style | correctness | observability | compatibility | resilience",
-      "criticality": "low | medium | high | critical",
-      "description": "what the issue is, specific and actionable",
-      "resolution": "what to do about it",
-      "disposition": "fix | regenerate | accept | escalate",
-      "file_path": "openspec/changes/ms-graph-extension/<path>"
+      "type": "spec_gap|contract_mismatch|architecture|security|performance|style|correctness|observability|compatibility|resilience",
+      "criticality": "critical|high|medium|low",
+      "description": "Concise problem statement with file:line reference",
+      "resolution": "Concrete fix recommendation",
+      "disposition": "fix|regenerate|accept|escalate",
+      "package_id": "whole-branch"
     }
   ]
 }
 ```
 
-## Review style
+## Review dimensions — high priority
 
-- Be specific: cite file paths, requirement names, scenario names.
-- Be honest: do not rubber-stamp. The plan was authored by another LLM and may have blind spots in vendor-specific knowledge (Entra ID, Microsoft Graph, the agent-framework SDK).
-- Prioritize: HIGH/CRITICAL only for issues that should block implementation.
-- Identify positives implicitly via absence — only emit findings, not praise.
-- If you find no issues in a category, emit no findings for it.
+- **spec_gap**: SHALL/MUST clauses in spec deltas not satisfied by implementation
+- **security**: token handling, TLS, redirect rejection, secret persistence, injection vectors
+- **resilience**: retry idempotency (D18 — non-idempotent writes pass `retry_safe=False`), circuit breaker keying, timeout handling, retry-after caps
+- **correctness**: incorrect Graph API endpoints, wrong query params, broken pagination, missing await
+- **contract_mismatch**: D11 dual-format parity violations, factory contract D26 violations
+- **observability**: missing `trace_graph_call` invocations, error context in catch blocks
 
-Output the JSON object only. No markdown, no commentary, no preamble.
+## Review dimensions — lower priority
+
+- style/naming
+- doc-strings
+- minor performance
+
+## Rules
+
+- **DO NOT modify any files.** Read-only review.
+- **Output ONLY the JSON object.** No prose, no markdown fences.
+- **`reviewer_vendor` MUST identify your model.**
+- Findings already addressed by iterate commits `8ef26f3` and `d1e8d2a` should NOT be re-reported. The iterate-1 commit body lists them: outlook send_email signature, sharepoint args_schemas, factory client kwarg symmetry, MSAF lazy import error message, graph_client trace gap on auth-refresh, msal_auth cache persist non-fatal. The iterate-2 commit lists: GraphClient max_retry_after_seconds, msal_auth fsync, _full_url ".." rejection, device-code logger, validate_path_segment rename.
+- Be specific — file:line references and design-decision IDs (D1–D29) when applicable.

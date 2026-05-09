@@ -1,0 +1,235 @@
+{
+  "schema_version": 1,
+  "review_type": "implementation",
+  "target": "ms-graph-extension",
+  "reviewers": [
+    {
+      "vendor": "claude_code",
+      "agent_id": "claude_code",
+      "success": true,
+      "findings_count": 5,
+      "elapsed_seconds": 0.0,
+      "error": null
+    },
+    {
+      "vendor": "gpt-5-codex",
+      "agent_id": "gpt-5-codex",
+      "success": true,
+      "findings_count": 6,
+      "elapsed_seconds": 0.0,
+      "error": null
+    },
+    {
+      "vendor": "gemini-2.0-flash",
+      "agent_id": "gemini-2.0-flash",
+      "success": true,
+      "findings_count": 5,
+      "elapsed_seconds": 0.0,
+      "error": null
+    }
+  ],
+  "quorum_met": true,
+  "quorum_requested": 3,
+  "quorum_received": 3,
+  "consensus_findings": [
+    {
+      "id": 1,
+      "status": "unconfirmed",
+      "primary_vendor": "claude_code",
+      "primary_finding_id": 1,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "edge-case",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "src/assistant/core/graph_client.py:_full_url rejects raw '..' segments but not URL-encoded '%2e%2e'. Extensions URL-encode via urllib.parse.quote(safe='') before interpolation, so user-controlled IDs cannot slip '..' through. Internal callers use literal path constants; risk surface is bounded to developer error rather than user input."
+    },
+    {
+      "id": 2,
+      "status": "unconfirmed",
+      "primary_vendor": "claude_code",
+      "primary_finding_id": 2,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "architecture",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "src/assistant/core/graph_client.py:max_retry_after_seconds is a GraphClient constructor kwarg but personas configure their extensions through YAML; there is no current path for a persona to override the cap from configuration. The default 60.0 matches prior hardcoded behavior so existing personas are unaffected, but the new knob is effectively code-only."
+    },
+    {
+      "id": 3,
+      "status": "unconfirmed",
+      "primary_vendor": "claude_code",
+      "primary_finding_id": 3,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "style",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "src/assistant/extensions/outlook.py + teams.py + sharepoint.py: _validate_path_segment is now a shared name across all four real extensions but signatures differ (outlook: value first with kwarg parameter; teams: name first then value; sharepoint: name first then value, no encoding return). The outlook docstring flags this asymmetry but a future engineer grepping for the function across extensions may not notice the signature differences immediately."
+    },
+    {
+      "id": 4,
+      "status": "unconfirmed",
+      "primary_vendor": "claude_code",
+      "primary_finding_id": 4,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "observability",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "src/assistant/extensions/outlook.py:_send_email now raises ValueError on empty 'to' list (added in iteration 1 fix EXT-1). No test exercises this edge case \u2014 the existing send_email tests all pass non-empty lists."
+    },
+    {
+      "id": 5,
+      "status": "unconfirmed",
+      "primary_vendor": "claude_code",
+      "primary_finding_id": 5,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "style",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "src/assistant/harnesses/sdk/ms_agent_fw.py:_agent_framework_install_error returns RuntimeError. Python convention is that import-related failures raise ImportError; RuntimeError reads as 'you cannot run this code right now' rather than 'you cannot import this module'. Tests exercise the path and pass."
+    },
+    {
+      "id": 6,
+      "status": "unconfirmed",
+      "primary_vendor": "gpt-5-codex",
+      "primary_finding_id": 1,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "observability",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "P9 retries do not increment trace_graph_call retry_attempt: src/assistant/core/graph_client.py:489-638 defaults retry_attempt to 0, while wrappers at src/assistant/core/graph_client.py:722, src/assistant/core/graph_client.py:757, and src/assistant/core/graph_client.py:892 re-invoke through @resilient_http without passing the actual P9 attempt number, so a 503-then-200 retry emits spans with retry_attempt=0 twice, violating the observability spec and D15."
+    },
+    {
+      "id": 7,
+      "status": "unconfirmed",
+      "primary_vendor": "gpt-5-codex",
+      "primary_finding_id": 2,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "correctness",
+      "agreed_criticality": "high",
+      "recommended_disposition": "accept",
+      "description": "get_bytes bypasses the 401 invalid_token refresh path: src/assistant/core/graph_client.py:940-991 acquires one token, streams once, and raises GraphAPIError for non-success responses without checking WWW-Authenticate or calling acquire_token(force_refresh=True), violating the graph-client Authentication Token Refresh on 401 requirement for binary downloads."
+    },
+    {
+      "id": 8,
+      "status": "unconfirmed",
+      "primary_vendor": "gpt-5-codex",
+      "primary_finding_id": 3,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "resilience",
+      "agreed_criticality": "high",
+      "recommended_disposition": "accept",
+      "description": "retry_safe=False POSTs can leave the graph breaker stuck half-open: src/assistant/core/graph_client.py:780-807 records failures for non-retrying POSTs but never records success, and CircuitBreaker.acquire_admission only clears the probe flag in src/assistant/core/resilience.py:271-279, so a successful half-open send_email/post_chat_message leaves state='half_open' and future calls short-circuit."
+    },
+    {
+      "id": 9,
+      "status": "unconfirmed",
+      "primary_vendor": "gpt-5-codex",
+      "primary_finding_id": 4,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "contract_mismatch",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "teams.post_chat_message does not match the spec contract: src/assistant/extensions/teams.py:227-238 exposes a content argument, but the spec scenario calls text='hello'; src/assistant/extensions/teams.py:401-425 also sends {'body': {'content': content, 'contentType': 'text'}} while the spec requires exactly {'body': {'content': 'hello'}}."
+    },
+    {
+      "id": 10,
+      "status": "unconfirmed",
+      "primary_vendor": "gpt-5-codex",
+      "primary_finding_id": 5,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "spec_gap",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "MSAgentFrameworkHarness does not consume ContextProvider despite D10/Capability Consumption: src/assistant/harnesses/sdk/ms_agent_fw.py:155-175 calls compose_system_prompt directly and the harness constructor has no context_provider injection path, so custom CapabilityResolver context providers are ignored."
+    },
+    {
+      "id": 11,
+      "status": "unconfirmed",
+      "primary_vendor": "gpt-5-codex",
+      "primary_finding_id": 6,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "resilience",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "Timeout errors are not consistently mapped to GraphAPIError as required: src/assistant/core/graph_client.py:506-525 catches only httpx.ReadTimeout, so ConnectTimeout, WriteTimeout, and PoolTimeout propagate as raw httpx exceptions; get_bytes at src/assistant/core/graph_client.py:957-1037 has no timeout-to-GraphAPIError mapping at all."
+    },
+    {
+      "id": 12,
+      "status": "unconfirmed",
+      "primary_vendor": "gemini-2.0-flash",
+      "primary_finding_id": 1,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "spec_gap",
+      "agreed_criticality": "high",
+      "recommended_disposition": "accept",
+      "description": "src/assistant/core/graph_client.py:932: GraphClient.get_bytes lacks the 401 invalid_token refresh logic. While GET/POST use _send_with_auth_retry (D9), get_bytes uses client.stream directly and raises on 401 without attempting exactly one force_refresh, violating the 'Authentication Token Refresh on 401' requirement in graph-client/spec.md."
+    },
+    {
+      "id": 13,
+      "status": "unconfirmed",
+      "primary_vendor": "gemini-2.0-flash",
+      "primary_finding_id": 2,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "correctness",
+      "agreed_criticality": "critical",
+      "recommended_disposition": "accept",
+      "description": "src/assistant/core/graph_client.py:366,932: GraphClient.get_bytes fails to follow redirects required for SharePoint content. SharePoint document downloads (/content) typically return 302/307 redirects to pre-signed URLs. With follow_redirects=False (D4) and no manual redirect handling in get_bytes, download_document will fail with GraphAPIError on the 3xx response."
+    },
+    {
+      "id": 14,
+      "status": "unconfirmed",
+      "primary_vendor": "gemini-2.0-flash",
+      "primary_finding_id": 3,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "resilience",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "src/assistant/core/graph_client.py:821: GraphClient._post_no_retry does not call record_success() on successful completion. This prevents non-idempotent tool calls (like outlook.send_email) from closing a 'half_open' breaker, even when they succeed, delaying recovery until a 'retry_safe=True' call occurs."
+    },
+    {
+      "id": 15,
+      "status": "unconfirmed",
+      "primary_vendor": "gemini-2.0-flash",
+      "primary_finding_id": 4,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "observability",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "src/assistant/core/graph_client.py:512: _send_with_auth_retry only catches httpx.ReadTimeout to emit spans. Other transport exceptions (ConnectError, ConnectTimeout, etc.) retried by @resilient_http will not emit a high-fidelity trace_graph_call span for that attempt, leading to blind spots in transport-tier telemetry."
+    },
+    {
+      "id": 16,
+      "status": "unconfirmed",
+      "primary_vendor": "gemini-2.0-flash",
+      "primary_finding_id": 5,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "compatibility",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "src/assistant/extensions/ms_graph.py:321: MsGraphExtension.create_extension factory signature is missing the 'client' kwarg. Unlike outlook, teams, and sharepoint extensions, the ms_graph factory cannot be called with an injected MockGraphClient, causing inconsistency in the test-layer interface (D26)."
+    }
+  ],
+  "summary": {
+    "total_unique_findings": 16,
+    "confirmed_count": 0,
+    "unconfirmed_count": 16,
+    "disagreement_count": 0,
+    "blocking_count": 0
+  }
+}

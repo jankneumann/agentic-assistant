@@ -290,3 +290,36 @@ Verified seven findings and shipped fixes for all of them. EXT-1 was the most im
 ### Context
 
 Five low-criticality findings shipped: RESILIENCE-1 added max_retry_after_seconds parameter to GraphClient with default 60.0 and used it in _honor_retry_after; EDGE-CASE-1 added os.fsync before close in _atomic_write_cache for durability across crash-between-write-and-rename; VALIDATION-1 tightened _full_url to reject relative paths containing parent-directory segments; UX-1 added a logger.info call alongside the existing print for the device-code flow event; EXT-7 renamed outlook _safe_segment and teams _validate_id_segment to _validate_path_segment to match sharepoint. All four quality gates pass: pytest 763 passed with zero new failures, mypy clean, ruff clean, openspec validate clean. Test count and pass count unchanged from iteration 1.
+
+---
+
+## Phase: Implementation Iteration 3 (2026-05-08)
+
+**Agent**: claude-opus-4-7 orchestrator | **Session**: autopilot ms-graph-extension resume
+
+### Decisions
+
+1. Dispatched IMPL_REVIEW round 1 to codex-local and gemini-local via review_dispatcher with claude_code self-producing the primary findings in-thread. Three vendor finding sets generated, total of sixteen findings. Manual consensus determined that the synthesizer string-similarity matching missed semantic overlaps; codex and gemini agreed clearly on at least three issues.
+2. Verified each medium-or-above finding against actual code or spec text before treating as real. Codex and gemini between them found eight verified bugs that IMPL_ITERATE missed, including one shipping-blocking critical (SharePoint download redirect handling) and two highs (get_bytes lacks 401 refresh; non-retrying POST never records breaker success).
+3. Per user direction Option A: addressed all eight verified findings rather than scoping down to high-and-critical only.
+4. For R7 retry_attempt propagation, the spec requires `retry_attempt` to monotonically increase across P9 retries. The pre-existing test had asserted retry_attempt=0 always, contradicting the spec. Fix added a contextvars-based propagation in resilience.py and aligned the test with what the spec actually requires.
+
+### Alternatives Considered
+
+- Treat the synthesizer's "0 confirmed of 16" as authoritative: rejected because the synthesizer uses string similarity on descriptions; semantic overlap is missed when vendors describe the same issue with different words. Manual cross-walk surfaced the real consensus.
+- Fix only critical and high findings (Option B from the user-facing menu): not chosen; user selected Option A for thoroughness.
+- Modify P9 resilience.py to add the retry_attempt ContextVar: chosen because the alternative of inferring retry attempts from tenacity's internal state would have been fragile. Adding a ContextVar is purely additive; consumers that ignore it see no change.
+
+### Trade-offs
+
+- Accepted modifying resilience.py (a P9 module) to add the retry-attempt ContextVar. This was a tightly scoped change that only added a new public name and a single set call inside the existing retry loop. Other consumers like http_tools that ignore the ContextVar see no behavior change.
+- Accepted that the get_bytes refactor is significantly more complex than the previous version because it now handles two non-trivial protocol behaviors (401 invalid_token refresh and 302/307 redirect with Authorization stripping). The complexity is justified by R1 being shipping-blocking and R2 being a real spec violation.
+- Accepted that updating an existing test to match the spec is the right move when the test had codified non-spec behavior. The old test was wrong; R7's fix surfaced this.
+
+### Open Questions
+
+- None remaining for this iteration. Will re-dispatch IMPL_REVIEW round 2 to confirm convergence.
+
+### Context
+
+Eight findings from IMPL_REVIEW round 1 addressed across five files. R1 plus R2: get_bytes refactored to handle 401 invalid_token force-refresh and one-hop 302 or 307 redirect; redirect target validated as https-only and Authorization header stripped to prevent bearer leakage to non-Graph hosts (SharePoint pre-signed URLs). R3: _post_no_retry now calls breaker.record_success on the success path so half-open breakers can close after a successful non-idempotent write. R4: teams.post_chat_message renamed parameter content to text and dropped the contentType field from the body to match the spec scenario exactly; tests updated. R5: MSAgentFrameworkHarness now consumes ContextProvider via CapabilityResolver per spec D10, with a context_provider constructor kwarg for test injection and DefaultContextProvider as the fallback. R6: _send_with_auth_retry now catches all httpx transport-error subclasses (ConnectError, ConnectTimeout, ReadTimeout, WriteTimeout, PoolTimeout, RemoteProtocolError) and maps each to GraphAPIError with a distinct error_code while emitting a trace span. R7: resilience.current_retry_attempt ContextVar added; GraphClient reads it in transport methods so per-attempt spans attribute to the correct P9 retry index; pre-existing test that asserted retry_attempt=0 always was updated to match the spec scenario "Successful retry emits one trace_graph_call per attempt" mandating retry_attempt=1 on the second call. R8: ms_graph factory gained the same client kwarg pattern as the other three real-extension factories. All four quality gates green: pytest 763 passed (one prior failure was the spec-misaligned test, now fixed); mypy clean; ruff clean; openspec validate strict clean.
