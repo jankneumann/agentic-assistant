@@ -7,6 +7,7 @@ Per OpenSpec change ``error-resilience`` (P9). Design decisions D1-D15.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import enum
 import logging
 import random
@@ -17,6 +18,16 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 import tenacity
+
+# ContextVar carrying the 0-indexed retry attempt number within the
+# currently-active ``resilient_http`` retry loop. Consumers (e.g.,
+# GraphClient's per-request trace emitter) can read this to attribute
+# their per-call observability spans to the correct retry attempt.
+# Defaults to 0 outside any retry loop. Purely additive — wrapped
+# functions that ignore this var see no behavior change.
+current_retry_attempt: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "resilience_current_retry_attempt", default=0
+)
 
 from assistant.telemetry.providers.base import ObservabilityProvider
 from assistant.telemetry.sanitize import sanitize
@@ -570,6 +581,12 @@ async def _run_with_retry(
         ):
             with attempt:
                 attempt_number = attempt.retry_state.attempt_number
+                # Expose the 0-indexed attempt number to the wrapped
+                # function's call-stack via ContextVar so per-request
+                # observability spans (e.g., GraphClient.trace_graph_call)
+                # attribute correctly to the retry attempt rather than
+                # always emitting attempt=0.
+                current_retry_attempt.set(attempt_number - 1)
                 this_attempt_error: str | None = None
                 try:
                     result = await fn(*args, **kwargs)

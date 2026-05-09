@@ -452,21 +452,29 @@ def create_extension(
     config: dict[str, Any],
     *,
     persona: PersonaConfig | None = None,
+    client: CloudGraphClient | None = None,
 ) -> MsGraphExtension:
     """Construct ``MsGraphExtension`` for production load (D26).
 
-    Per the extension-registry spec scenario "Real factory called with
-    persona=None raises actionable TypeError" — the real factory MUST
-    short-circuit with a :class:`TypeError` when called without a
-    persona, before any MSALStrategy or GraphClient construction is
-    attempted. Tests that don't exercise the factory path construct
-    :class:`MsGraphExtension` directly (passing a ``MockGraphClient``
-    via the ``client=`` kwarg).
+    Two construction modes (mirrors outlook/teams/sharepoint factory
+    symmetry — all four real-extension factories share the same shape):
 
-    This deferred-import path keeps ``MsGraphExtension`` constructible
-    in tests even when ``wp-foundation-impls`` (the package that owns
-    ``msal_auth`` and ``graph_client``) has not landed.
+    1. **Production** — ``create_extension(config, persona=persona)``.
+       Builds an MSAL strategy and ``GraphClient`` from the persona's
+       ``auth.ms`` block. Lazy imports defer the
+       ``msal_auth``/``graph_client`` dependency until persona is
+       validated.
+    2. **Test** — ``create_extension(config, client=mock_client)``.
+       The persona-required short-circuit is skipped; the supplied
+       ``CloudGraphClient`` is used directly.
+
+    A call with neither ``persona`` nor ``client`` raises ``TypeError``
+    per extension-registry / "Real factory called with persona=None
+    raises actionable TypeError".
     """
+    if client is not None:
+        return MsGraphExtension(config, client=client)
+
     if persona is None:
         raise TypeError(
             "Extension 'ms_graph' requires a non-None persona argument. "
@@ -486,9 +494,9 @@ def create_extension(
 
     strategy = create_msal_strategy(persona)
     scopes = _resolve_scopes(config)
-    client: CloudGraphClient = GraphClient(
+    real_client: CloudGraphClient = GraphClient(
         extension_name="ms_graph",
         strategy=strategy,
         scopes=scopes,
     )
-    return MsGraphExtension(config, client=client)
+    return MsGraphExtension(config, client=real_client)

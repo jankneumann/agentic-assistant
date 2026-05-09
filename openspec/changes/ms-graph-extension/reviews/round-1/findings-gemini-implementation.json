@@ -1,0 +1,52 @@
+{
+  "review_type": "implementation",
+  "target": "ms-graph-extension",
+  "reviewer_vendor": "gemini-2.0-flash",
+  "findings": [
+    {
+      "id": 1,
+      "type": "spec_gap",
+      "criticality": "high",
+      "description": "src/assistant/core/graph_client.py:932: GraphClient.get_bytes lacks the 401 invalid_token refresh logic. While GET/POST use _send_with_auth_retry (D9), get_bytes uses client.stream directly and raises on 401 without attempting exactly one force_refresh, violating the 'Authentication Token Refresh on 401' requirement in graph-client/spec.md.",
+      "resolution": "Refactor get_bytes to use a variant of _send_with_auth_retry that supports streaming, or manually implement the 401 check, force_refresh=True token acquisition, and single replay logic within _get_bytes_inner.",
+      "package_id": "wp-foundation-impls",
+      "disposition": "fix"
+    },
+    {
+      "id": 2,
+      "type": "correctness",
+      "criticality": "critical",
+      "description": "src/assistant/core/graph_client.py:366,932: GraphClient.get_bytes fails to follow redirects required for SharePoint content. SharePoint document downloads (/content) typically return 302/307 redirects to pre-signed URLs. With follow_redirects=False (D4) and no manual redirect handling in get_bytes, download_document will fail with GraphAPIError on the 3xx response.",
+      "resolution": "Implement manual 3xx handling in get_bytes. On 302/307, validate the Location header against _trusted_hosts and _validate_redirect_target (D4) and issue exactly one follow-up GET to the target host WITHOUT the Authorization header.",
+      "package_id": "wp-foundation-impls",
+      "disposition": "fix"
+    },
+    {
+      "id": 3,
+      "type": "resilience",
+      "criticality": "medium",
+      "description": "src/assistant/core/graph_client.py:821: GraphClient._post_no_retry does not call record_success() on successful completion. This prevents non-idempotent tool calls (like outlook.send_email) from closing a 'half_open' breaker, even when they succeed, delaying recovery until a 'retry_safe=True' call occurs.",
+      "resolution": "Add 'await self._breaker.record_success()' to the success path of _post_no_retry (and _get_bytes_inner, if applicable) so that every successful interaction contributes to breaker recovery.",
+      "package_id": "wp-foundation-impls",
+      "disposition": "fix"
+    },
+    {
+      "id": 4,
+      "type": "observability",
+      "criticality": "low",
+      "description": "src/assistant/core/graph_client.py:512: _send_with_auth_retry only catches httpx.ReadTimeout to emit spans. Other transport exceptions (ConnectError, ConnectTimeout, etc.) retried by @resilient_http will not emit a high-fidelity trace_graph_call span for that attempt, leading to blind spots in transport-tier telemetry.",
+      "resolution": "Expand the exception handler in _send_with_auth_retry to catch all httpx.TransportError exceptions, emitting a span with status_code=None and the error class name before re-raising.",
+      "package_id": "wp-foundation-impls",
+      "disposition": "fix"
+    },
+    {
+      "id": 5,
+      "type": "compatibility",
+      "criticality": "low",
+      "description": "src/assistant/extensions/ms_graph.py:321: MsGraphExtension.create_extension factory signature is missing the 'client' kwarg. Unlike outlook, teams, and sharepoint extensions, the ms_graph factory cannot be called with an injected MockGraphClient, causing inconsistency in the test-layer interface (D26).",
+      "resolution": "Update ms_graph.py create_extension to accept an optional 'client' keyword-only argument and use it if provided, mirroring the signature of sibling extensions.",
+      "package_id": "wp-ms-graph",
+      "disposition": "fix"
+    }
+  ]
+}

@@ -46,6 +46,7 @@ from assistant.core.resilience import (
     CircuitBreakerOpenError,
     HealthStatus,
     _sanitize_and_truncate,
+    current_retry_attempt,
     get_circuit_breaker_registry,
     health_status_from_breaker,
     resilient_http,
@@ -490,23 +491,38 @@ class GraphClient:
         self,
         request: httpx.Request,
         *,
-        retry_attempt: int = 0,
+        retry_attempt: int | None = None,
     ) -> tuple[httpx.Response, int]:
         """Send ``request`` with bearer; on 401 ``invalid_token``, force-refresh once.
 
-        Returns ``(response, final_retry_attempt)``. The retry_attempt
-        counter starts at the value the caller passes in and increments
-        only on the auth-refresh replay. Each HTTP send emits exactly
-        one ``trace_graph_call`` span (D15).
+        Returns ``(response, final_retry_attempt)``. When called
+        directly the caller can pass ``retry_attempt`` explicitly; when
+        called from inside a ``resilient_http`` retry loop, the default
+        ``None`` reads the current attempt from
+        ``current_retry_attempt`` (the resilience-layer ContextVar) so
+        per-attempt spans attribute correctly to the P9 retry index
+        rather than always reporting attempt 0. The auth-refresh replay
+        increments the counter by one further so dashboards can
+        distinguish a P9 retry from an auth-refresh retry.
         """
+        if retry_attempt is None:
+            retry_attempt = current_retry_attempt.get()
         token = await self._bearer_token()
         request.headers["Authorization"] = f"Bearer {token}"
 
         start_t = time.perf_counter()
         try:
             response = await self._client.send(request)
-        except httpx.ReadTimeout as exc:
+        except (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.ReadTimeout,
+            httpx.WriteTimeout,
+            httpx.PoolTimeout,
+            httpx.RemoteProtocolError,
+        ) as exc:
             duration_ms = (time.perf_counter() - start_t) * 1000.0
+            exc_name = type(exc).__name__
             _emit_graph_call_span(
                 extension_name=self.extension_name,
                 method=request.method,
@@ -516,12 +532,27 @@ class GraphClient:
                 breaker_key=self._breaker_key,
                 request_id=None,
                 retry_attempt=retry_attempt,
-                error="ReadTimeout",
+                error=exc_name,
             )
+            # Map all transport-level errors to GraphAPIError so P9's
+            # classifier sees a single error type and the caller's
+            # except-clause stays compact. Distinct error_code per class
+            # so dashboards can break down by failure mode.
+            error_code_map = {
+                "ConnectError": "connect_error",
+                "ConnectTimeout": "connect_timeout",
+                "ReadTimeout": "read_timeout",
+                "WriteTimeout": "write_timeout",
+                "PoolTimeout": "pool_timeout",
+                "RemoteProtocolError": "protocol_error",
+            }
             raise GraphAPIError(
-                message="read timeout exceeded while waiting for Graph response",
+                message=(
+                    f"{exc_name} during Graph request "
+                    f"({request.method} {request.url.path}): {exc}"
+                ),
                 request=request,
-                error_code="read_timeout",
+                error_code=error_code_map.get(exc_name, "transport_error"),
             ) from exc
 
         duration_ms = (time.perf_counter() - start_t) * 1000.0
@@ -780,7 +811,7 @@ class GraphClient:
         try:
             async with self._breaker.acquire_admission():
                 try:
-                    return await self._post_inner(
+                    result = await self._post_inner(
                         path, json=json, params=params, headers=headers
                     )
                 except Exception as exc:
@@ -805,6 +836,14 @@ class GraphClient:
                     ):
                         await self._breaker.record_failure(exc)
                     raise
+                # Success: record so a HALF_OPEN breaker can close (the
+                # @resilient_http path records via tenacity's success
+                # hook, but _post_no_retry bypasses that path entirely
+                # for D18 retry-safe=False writes — without an explicit
+                # record_success here, send_email and post_chat_message
+                # leave a probing breaker stuck in HALF_OPEN forever).
+                await self._breaker.record_success()
+                return result
         except CircuitBreakerOpenError as exc:
             raise GraphAPIError(
                 message=f"breaker {self._breaker_key} is open: {exc}",
@@ -937,91 +976,231 @@ class GraphClient:
         headers: dict[str, str] | None,
         max_bytes: int,
     ) -> dict[str, Any]:
+        """Stream a binary download with 401-refresh and one-hop redirect.
+
+        Two non-trivial protocol behaviors that get/post handle via
+        ``_send_with_auth_retry`` but that streaming downloads must
+        handle inline because we cannot buffer the body before deciding
+        whether to retry:
+
+        - **401 invalid_token**: per graph-client spec "Authentication
+          Token Refresh on 401", a single ``force_refresh=True`` retry
+          must be attempted before raising. Without this, a stale-cache
+          token at the start of a long-running session would fail every
+          download even though the next get/post would succeed.
+
+        - **302/307 redirect**: SharePoint's
+          ``/sites/{id}/drive/items/{id}/content`` returns a 302 to a
+          pre-signed download URL on Azure storage rather than serving
+          bytes inline. With ``follow_redirects=False`` set on the
+          client (D4 — pagination redirect-rejection), we must follow
+          this exactly once, validate the target is HTTPS, and **strip
+          the Authorization header** before issuing the follow-up
+          request: pre-signed URLs embed their own auth in query
+          parameters, and forwarding the bearer to a non-Graph host
+          would leak it.
+
+        Both branches are bounded to one attempt each so a hostile
+        upstream cannot construct a redirect/refresh loop.
+        """
         token = await self._bearer_token()
         merged_headers = dict(headers or {})
         merged_headers["Authorization"] = f"Bearer {token}"
         url = self._full_url(path)
+        request_params = params
 
-        # tempfile is created via mkstemp so we get an fd we can write
-        # to and a path we can return; closed before yielding back.
         fd, tmp_path = tempfile.mkstemp(prefix="graph_dl_", suffix=".bin")
         os.close(fd)
 
         cumulative: int = 0
         request_id: str | None = None
         content_type: str = "application/octet-stream"
-        start_t = time.perf_counter()
         emitted_path = path
         method = "GET"
-        try:
-            async with self._client.stream(
-                "GET",
-                url,
-                params=params,
-                headers=merged_headers,
-            ) as response:
-                request_id = self._request_id_of(response)
-                content_type = response.headers.get(
-                    "Content-Type", "application/octet-stream"
-                )
-                emitted_path = response.request.url.path
-                if not response.is_success:
-                    duration_ms = (time.perf_counter() - start_t) * 1000.0
-                    _emit_graph_call_span(
-                        extension_name=self.extension_name,
-                        method=method,
-                        path=emitted_path,
-                        status_code=response.status_code,
-                        duration_ms=duration_ms,
-                        breaker_key=self._breaker_key,
-                        request_id=request_id,
-                        retry_attempt=0,
-                        bytes_streamed=0,
-                        error="GraphAPIError",
-                    )
-                    # Need to read the body for error parsing.
-                    await response.aread()
-                    error_code, msg = self._parse_body_for_error(response)
-                    raise GraphAPIError(
-                        message=msg or response.reason_phrase or "graph error",
-                        request=response.request,
-                        response=response,
-                        error_code=error_code,
-                        request_id=request_id,
-                    )
+        # Two separate counters:
+        # - ``auth_refreshes``/``redirect_follows`` (0 or 1 each) gate
+        #   the once-only auth-refresh and once-only redirect-follow
+        #   behaviors below.
+        # - ``base_attempt`` reports the P9 resilient_http retry index
+        #   to observability so spans attribute to the correct attempt
+        #   even when this method is invoked under retry.
+        auth_refreshes = 0
+        redirect_follows = 0
+        base_attempt = current_retry_attempt.get()
 
-                with open(tmp_path, "wb") as f:
-                    async for chunk in response.aiter_bytes():
-                        cumulative += len(chunk)
-                        if cumulative > max_bytes:
+        try:
+            while True:
+                start_t = time.perf_counter()
+                async with self._client.stream(
+                    "GET",
+                    url,
+                    params=request_params,
+                    headers=merged_headers,
+                ) as response:
+                    request_id = self._request_id_of(response)
+                    content_type = response.headers.get(
+                        "Content-Type", "application/octet-stream"
+                    )
+                    emitted_path = response.request.url.path
+
+                    # 401 invalid_token → exactly one force_refresh retry
+                    if response.status_code == 401 and auth_refreshes == 0:
+                        www_auth = response.headers.get("WWW-Authenticate", "")
+                        if 'error="invalid_token"' in www_auth:
                             duration_ms = (time.perf_counter() - start_t) * 1000.0
                             _emit_graph_call_span(
                                 extension_name=self.extension_name,
                                 method=method,
                                 path=emitted_path,
-                                status_code=response.status_code,
+                                status_code=401,
                                 duration_ms=duration_ms,
                                 breaker_key=self._breaker_key,
                                 request_id=request_id,
-                                retry_attempt=0,
-                                bytes_streamed=cumulative,
+                                retry_attempt=base_attempt + auth_refreshes,
+                                bytes_streamed=0,
                                 error="GraphAPIError",
                             )
-                            f.close()
+                            auth_refreshes += 1
                             try:
-                                os.unlink(tmp_path)
-                            except OSError:
-                                pass
+                                fresh = await self._bearer_token(
+                                    force_refresh=True
+                                )
+                            except Exception as exc:
+                                # Auth-refresh attempt itself failed —
+                                # emit span before propagating so the
+                                # failure is visible in dashboards.
+                                _emit_graph_call_span(
+                                    extension_name=self.extension_name,
+                                    method=method,
+                                    path=emitted_path,
+                                    status_code=None,
+                                    duration_ms=(
+                                        time.perf_counter() - start_t
+                                    ) * 1000.0,
+                                    breaker_key=self._breaker_key,
+                                    request_id=None,
+                                    retry_attempt=base_attempt + auth_refreshes,
+                                    error=type(exc).__name__,
+                                )
+                                raise
+                            merged_headers["Authorization"] = f"Bearer {fresh}"
+                            continue
+
+                    # 302/307 redirect → exactly one hop, strip Auth
+                    if (
+                        response.status_code in (302, 307)
+                        and redirect_follows == 0
+                    ):
+                        location = response.headers.get("Location", "")
+                        if not location.startswith("https://"):
                             raise GraphAPIError(
                                 message=(
-                                    f"download exceeded max_bytes={max_bytes} "
-                                    f"(read {cumulative} bytes)"
+                                    f"download redirect Location must be "
+                                    f"https://; got {location!r}"
                                 ),
-                                error_code="size_exceeded",
+                                request=response.request,
+                                response=response,
+                                error_code="redirect_invalid",
+                                request_id=request_id,
                             )
-                        f.write(chunk)
+                        duration_ms = (time.perf_counter() - start_t) * 1000.0
+                        _emit_graph_call_span(
+                            extension_name=self.extension_name,
+                            method=method,
+                            path=emitted_path,
+                            status_code=response.status_code,
+                            duration_ms=duration_ms,
+                            breaker_key=self._breaker_key,
+                            request_id=request_id,
+                            retry_attempt=base_attempt + auth_refreshes,
+                            bytes_streamed=0,
+                            error=None,
+                        )
+                        redirect_follows += 1
+                        url = location
+                        request_params = None  # Location URL embeds its own params
+                        # Strip Authorization: pre-signed URLs use SAS
+                        # tokens in the URL itself; forwarding our bearer
+                        # to a non-Graph host would leak it.
+                        merged_headers.pop("Authorization", None)
+                        continue
+
+                    if not response.is_success:
+                        duration_ms = (time.perf_counter() - start_t) * 1000.0
+                        _emit_graph_call_span(
+                            extension_name=self.extension_name,
+                            method=method,
+                            path=emitted_path,
+                            status_code=response.status_code,
+                            duration_ms=duration_ms,
+                            breaker_key=self._breaker_key,
+                            request_id=request_id,
+                            retry_attempt=base_attempt + auth_refreshes,
+                            bytes_streamed=0,
+                            error="GraphAPIError",
+                        )
+                        await response.aread()
+                        error_code, msg = self._parse_body_for_error(response)
+                        raise GraphAPIError(
+                            message=msg or response.reason_phrase or "graph error",
+                            request=response.request,
+                            response=response,
+                            error_code=error_code,
+                            request_id=request_id,
+                        )
+
+                    with open(tmp_path, "wb") as f:
+                        async for chunk in response.aiter_bytes():
+                            cumulative += len(chunk)
+                            if cumulative > max_bytes:
+                                duration_ms = (
+                                    time.perf_counter() - start_t
+                                ) * 1000.0
+                                _emit_graph_call_span(
+                                    extension_name=self.extension_name,
+                                    method=method,
+                                    path=emitted_path,
+                                    status_code=response.status_code,
+                                    duration_ms=duration_ms,
+                                    breaker_key=self._breaker_key,
+                                    request_id=request_id,
+                                    retry_attempt=base_attempt + auth_refreshes,
+                                    bytes_streamed=cumulative,
+                                    error="GraphAPIError",
+                                )
+                                f.close()
+                                try:
+                                    os.unlink(tmp_path)
+                                except OSError:
+                                    pass
+                                raise GraphAPIError(
+                                    message=(
+                                        f"download exceeded max_bytes={max_bytes} "
+                                        f"(read {cumulative} bytes)"
+                                    ),
+                                    error_code="size_exceeded",
+                                )
+                            f.write(chunk)
+                    duration_ms = (time.perf_counter() - start_t) * 1000.0
+                    _emit_graph_call_span(
+                        extension_name=self.extension_name,
+                        method=method,
+                        path=emitted_path,
+                        status_code=200,
+                        duration_ms=duration_ms,
+                        breaker_key=self._breaker_key,
+                        request_id=request_id,
+                        retry_attempt=base_attempt + auth_refreshes,
+                        bytes_streamed=cumulative,
+                        error=None,
+                    )
+                    return {
+                        "path": tmp_path,
+                        "size_bytes": cumulative,
+                        "content_type": content_type,
+                        "request_id": request_id,
+                    }
         except GraphAPIError:
-            # Already cleaned up if applicable; just re-raise.
             try:
                 if cumulative == 0 and os.path.exists(tmp_path):
                     os.unlink(tmp_path)
@@ -1035,26 +1214,6 @@ class GraphClient:
             except OSError:
                 pass
             raise
-
-        duration_ms = (time.perf_counter() - start_t) * 1000.0
-        _emit_graph_call_span(
-            extension_name=self.extension_name,
-            method=method,
-            path=emitted_path,
-            status_code=200,
-            duration_ms=duration_ms,
-            breaker_key=self._breaker_key,
-            request_id=request_id,
-            retry_attempt=0,
-            bytes_streamed=cumulative,
-            error=None,
-        )
-        return {
-            "path": tmp_path,
-            "size_bytes": cumulative,
-            "content_type": content_type,
-            "request_id": request_id,
-        }
 
     async def health_check(self) -> HealthStatus:
         """Map the per-extension breaker state to a ``HealthStatus``."""
