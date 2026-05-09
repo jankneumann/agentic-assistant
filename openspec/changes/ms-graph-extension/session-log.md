@@ -323,3 +323,35 @@ Five low-criticality findings shipped: RESILIENCE-1 added max_retry_after_second
 ### Context
 
 Eight findings from IMPL_REVIEW round 1 addressed across five files. R1 plus R2: get_bytes refactored to handle 401 invalid_token force-refresh and one-hop 302 or 307 redirect; redirect target validated as https-only and Authorization header stripped to prevent bearer leakage to non-Graph hosts (SharePoint pre-signed URLs). R3: _post_no_retry now calls breaker.record_success on the success path so half-open breakers can close after a successful non-idempotent write. R4: teams.post_chat_message renamed parameter content to text and dropped the contentType field from the body to match the spec scenario exactly; tests updated. R5: MSAgentFrameworkHarness now consumes ContextProvider via CapabilityResolver per spec D10, with a context_provider constructor kwarg for test injection and DefaultContextProvider as the fallback. R6: _send_with_auth_retry now catches all httpx transport-error subclasses (ConnectError, ConnectTimeout, ReadTimeout, WriteTimeout, PoolTimeout, RemoteProtocolError) and maps each to GraphAPIError with a distinct error_code while emitting a trace span. R7: resilience.current_retry_attempt ContextVar added; GraphClient reads it in transport methods so per-attempt spans attribute to the correct P9 retry index; pre-existing test that asserted retry_attempt=0 always was updated to match the spec scenario "Successful retry emits one trace_graph_call per attempt" mandating retry_attempt=1 on the second call. R8: ms_graph factory gained the same client kwarg pattern as the other three real-extension factories. All four quality gates green: pytest 763 passed (one prior failure was the spec-misaligned test, now fixed); mypy clean; ruff clean; openspec validate strict clean.
+
+---
+
+## Phase: Implementation Iteration 4 (2026-05-08)
+
+**Agent**: claude-opus-4-7 orchestrator | **Session**: autopilot ms-graph-extension resume
+
+### Decisions
+
+1. Dispatched IMPL_REVIEW round 2 to codex-local and gemini-local. Round 2 found six new findings, of which one (auth-after-redirect leak) was already fixed in my pre-emptive working-tree change before the dispatcher captured the diff. Five new fixes plus the already-fixed item rolled into iteration 4.
+2. Broadened the transport-error catch in _send_with_auth_retry from a hand-curated tuple to httpx.TransportError as base class. Codex pointed out that ReadError, WriteError, CloseError, LocalProtocolError, ProxyError, and UnsupportedProtocol can still escape the previous tuple. Catching the base class and using a name-keyed map for error_code is more future-proof.
+3. Added a finally-style reset for the current_retry_attempt ContextVar in resilience.py. Without reset, a non-retrying call in the same task that ran after a retried call (eg, _post_no_retry after a retried _get) would read the stale last-attempt value via the ContextVar.
+
+### Alternatives Considered
+
+- Defer codex#3 ContextVar reset to a follow-up because it is observability-only: rejected. Test isolation would have eventually surfaced cross-test leakage and the reset is a one-line addition.
+- Accept gemini#1 lower priority because base_attempt + auth_refreshes already mostly tracks: rejected. After a redirect, two separate hops would have the same retry_attempt index, defeating the purpose of the ContextVar fix in iteration 3. Including redirect_follows is the natural completion.
+- Refactor _get_bytes_inner into a smaller per-iteration helper to localize the try/except: attempted in this session and rolled back. The wrap-the-whole-loop approach is simpler and the iteration-3 control-flow is readable enough that helper extraction adds more cognitive load than it removes.
+
+### Trade-offs
+
+- Accepted modifying P9 resilience.py once more (ContextVar reset) over the alternative of just tolerating stale values. Reset is a small additive change; the leak risk in tests and concurrent code is real.
+- Accepted that the get_bytes code path now has three counters tracking related state (auth_refreshes, redirect_follows, base_attempt). The split is justified by their different roles: each gate behavior, base attribution to observability.
+- Accepted hoisting the transport-error code map to a module-level constant so both _send_with_auth_retry and _get_bytes_inner reference the same table. Adding a new httpx subclass means one edit, not two.
+
+### Open Questions
+
+- None remaining for iteration 4. Round 3 will dispatch to confirm convergence; if vendors return only low-criticality observations IMPL_REVIEW converges.
+
+### Context
+
+Six round-2 findings addressed: auth-after-redirect leak (codex#1, was self-caught and pre-emptively fixed in working tree before dispatch); broader transport-error catch in _send_with_auth_retry via httpx.TransportError base (codex#2); ContextVar token-and-reset in resilient_http retry loop (codex#3); trace span emitted before raising redirect_invalid GraphAPIError (codex#4); per-hop unique retry_attempt by adding redirect_follows to span emissions (gemini#1); httpx.TransportError handler in _get_bytes_inner with span emission and GraphAPIError mapping (gemini#2 + gemini#3). All four quality gates green: pytest 763 passed (+0/-0), mypy clean, ruff clean.

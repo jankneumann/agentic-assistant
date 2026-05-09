@@ -585,8 +585,14 @@ async def _run_with_retry(
                 # function's call-stack via ContextVar so per-request
                 # observability spans (e.g., GraphClient.trace_graph_call)
                 # attribute correctly to the retry attempt rather than
-                # always emitting attempt=0.
-                current_retry_attempt.set(attempt_number - 1)
+                # always emitting attempt=0. Capture the token so we
+                # can reset on exit — without reset, a subsequent call
+                # in the same task that does NOT go through
+                # resilient_http (e.g., GraphClient._post_no_retry)
+                # would read the stale last-attempt value.
+                _retry_attempt_token = current_retry_attempt.set(
+                    attempt_number - 1
+                )
                 this_attempt_error: str | None = None
                 try:
                     result = await fn(*args, **kwargs)
@@ -609,6 +615,7 @@ async def _run_with_retry(
                         ),
                         error_type=this_attempt_error,
                     )
+                    current_retry_attempt.reset(_retry_attempt_token)
                     raise
                 # Successful attempt — emit span with error_type=None.
                 _emit_attempt_span(
@@ -619,6 +626,7 @@ async def _run_with_retry(
                     ),
                     error_type=None,
                 )
+                current_retry_attempt.reset(_retry_attempt_token)
         await breaker.record_success()
         return result
     except Exception as exc:

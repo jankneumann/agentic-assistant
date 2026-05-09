@@ -1,66 +1,68 @@
-# Review Prompt — ms-graph-extension PLAN_REVIEW round 2
+# IMPL_REVIEW round 2 — ms-graph-extension (P5)
 
-## Context
+You are doing a multi-vendor convergence review of OpenSpec change `ms-graph-extension`. This is round 2 after round 1 surfaced 8 verified findings that were addressed in commit `458764e`.
 
-This is **round 2** of multi-vendor PLAN_REVIEW for the OpenSpec change `ms-graph-extension` (Phase P5 — Microsoft 365 extensions and MSAF harness).
+## Round 2 scope
 
-**History:**
-- Round 1 of PLAN_REVIEW (claude+codex+gemini) ran previously and surfaced 12 findings — all remediated in commit `1cecb0f` adding D13–D27 to design.md and ~30 tasks.
-- Subsequently, autopilot PLAN_ITERATE (claude_code, opus 4.7, single agent with 5 parallel Explore subagents) found and remediated 14 additional findings in commit `563688c`. PLAN_ITERATE additions:
-  - New `specs/observability/spec.md` MODIFIED requirement adding `trace_graph_call` to `ObservabilityProvider` Protocol
-  - graph-client/spec.md: HTTP client async lifecycle (`__aenter__`/`__aexit__`/`aclose`) requirement
-  - graph-client/spec.md: cross-domain redirect rejection requirement (trusted_hosts validation, `follow_redirects=False`)
-  - graph-client/spec.md: 429 Retry-After past-date and malformed-value scenarios
-  - ms-extensions/spec.md: Pagination Discipline (no N+1 Graph fetches in list-tools)
-  - ms-extensions/spec.md: Per-Tool Page Ceiling Configuration
-  - msal-auth/spec.md: replaced "event loop MUST remain responsive" with measurable timing
-  - extension-registry/spec.md: real factory called with `persona=None` raises actionable TypeError scenario
-  - design.md D5: pinned `agent-framework>=1.0.0,<2.0.0`
-  - work-packages.yaml: fixed stale path `core/observability.py` → `telemetry/providers/{base,noop,langfuse}.py`; bumped wp-foundation `loc_estimate` 1900 → 3000
-  - tasks.md: new section 9 (~15 tasks)
+Two questions to answer:
 
-## Your Task
+1. **Are the round-1 findings now addressed?** Verify each fix below holds:
+   - **R1+R2** (`src/assistant/core/graph_client.py:_get_bytes_inner`): refactored to handle 401 invalid_token force-refresh AND one-hop 302/307 redirect with Authorization stripping. Should fix SharePoint downloads.
+   - **R3** (`_post_no_retry`): now calls `breaker.record_success()` on success path.
+   - **R4** (`src/assistant/extensions/teams.py:_post_chat_message`): parameter renamed `content` → `text`; body now `{"body": {"content": text}}` (no `contentType`).
+   - **R5** (`src/assistant/harnesses/sdk/ms_agent_fw.py`): `_compose_instructions` now goes through `_resolve_context_provider().compose_system_prompt(...)`; constructor accepts `context_provider` kwarg.
+   - **R6** (`_send_with_auth_retry`): now catches all `httpx` transport-error subclasses and maps to `GraphAPIError` with distinct error_codes.
+   - **R7** (`src/assistant/core/resilience.py` + `graph_client.py`): added `current_retry_attempt: ContextVar[int]` set by `resilient_http` retry loop; transport methods read it for `trace_graph_call(retry_attempt=...)`.
+   - **R8** (`src/assistant/extensions/ms_graph.py:create_extension`): added `client: CloudGraphClient | None = None` kwarg.
 
-Review the plan **as it now stands** (post-iteration-1) and produce findings JSON conforming to `openspec/schemas/review-findings.schema.json`.
+2. **Did the remediation introduce any new bugs?** The largest-risk new code is the `_get_bytes_inner` refactor. Pay special attention to:
+   - Tempfile cleanup on each error path (auth-refresh failure, redirect-rejection, size_exceeded, other 4xx/5xx)
+   - Header state across retry iterations (Authorization re-set on refresh, removed on redirect)
+   - The `auth_refreshes` / `redirect_follows` counters (each gates exactly one branch firing)
+   - Span emission on every path including the auth-refresh exception branch
+   - `current_retry_attempt` ContextVar interaction with concurrent calls
 
-**Focus areas (round 2 specific):**
+## Scope
 
-1. **Did PLAN_ITERATE introduce new bugs?** Cross-document inconsistencies between the new content and existing requirements/scenarios. The PLAN_ITERATE pass added 18+ new scenarios; verify each is consistent with surrounding requirements.
+The full implementation diff `main..HEAD` (now 14 commits, ~17.5k LOC). Highest-priority files:
 
-2. **Did PLAN_ITERATE close round-1 findings without regressing?** Round-1 found e.g. paginate-yield contradiction (D4 vs spec); page-ceiling silent truncation; MSAL gitignore check. Verify these stay closed.
+- `src/assistant/core/graph_client.py` (heavily modified in `458764e`)
+- `src/assistant/core/resilience.py` (new ContextVar)
+- `src/assistant/harnesses/sdk/ms_agent_fw.py` (ContextProvider wiring)
+- `src/assistant/extensions/teams.py` + `ms_graph.py` (small fixes)
 
-3. **New attack surface added by PLAN_ITERATE:** `trusted_hosts` constructor arg, `__aenter__`/`__aexit__`, `MSAL_FALLBACK_DEVICE_CODE` env var, observability `trace_graph_call` Protocol method. Each is a new contract surface — review for completeness, edge cases, and abuse paths.
+## Output format — STRICT (same as round 1)
 
-4. **Plan readiness for `/implement-feature`:** Are all spec scenarios concrete enough that an agent could write the test from spec alone? Is every new requirement covered by at least one task in tasks.md? Does work-packages.yaml correctly own each new file?
+Output ONLY a JSON object conforming to the round-1 shape:
 
-5. **Anything still missing.** Things round-1 reviewers and PLAN_ITERATE agents both missed. Some examples to consider:
-   - Concurrency on token cache file (multiple async tasks refreshing token simultaneously)
-   - Behavior when `agent-framework` version pin needs to change post-merge
-   - What happens if `personas/<name>/.cache/` directory does not exist when first token write attempts
-   - Test-fixture privacy boundary (CLAUDE.md G6) for Graph response fixtures
-   - Whether new `observability` spec delta needs an Impact-section migration plan note
+```json
+{
+  "review_type": "implementation",
+  "target": "ms-graph-extension",
+  "reviewer_vendor": "<your-vendor-name>",
+  "findings": [
+    {
+      "id": 1,
+      "type": "spec_gap|contract_mismatch|architecture|security|performance|style|correctness|observability|compatibility|resilience",
+      "criticality": "critical|high|medium|low",
+      "description": "Concise file:line problem statement",
+      "resolution": "Concrete fix recommendation",
+      "disposition": "fix|regenerate|accept|escalate",
+      "package_id": "whole-branch"
+    }
+  ]
+}
+```
 
-**Output format:** JSON object (NOT array) at the top level matching `review-findings.schema.json`. Required keys: `review_type` ("plan"), `target` ("ms-graph-extension"), `reviewer_vendor` (your vendor name, e.g., "codex"), `findings` (array of finding objects with id, type, criticality, description, resolution, disposition).
+## Convergence rules
 
-**Limit yourself to ~10 findings ranked by criticality.** Critical/high findings get prioritized for fixing; medium for triage; low for documentation. Each `description` should cite specific files and line numbers where relevant.
+- **If round-1 findings R1–R8 are all addressed AND no new findings above the medium threshold**: return an empty `findings` array OR only `disposition: "accept"` low-criticality observations. This signals convergence.
+- **If a round-1 finding is NOT actually addressed**: report it again with the original criticality.
+- **If the remediation introduced a new bug**: report it as a fresh finding.
 
-**Available files (read-only):**
-- `openspec/changes/ms-graph-extension/proposal.md`
-- `openspec/changes/ms-graph-extension/design.md`
-- `openspec/changes/ms-graph-extension/tasks.md`
-- `openspec/changes/ms-graph-extension/work-packages.yaml`
-- `openspec/changes/ms-graph-extension/session-log.md`
-- `openspec/changes/ms-graph-extension/specs/extension-registry/spec.md`
-- `openspec/changes/ms-graph-extension/specs/graph-client/spec.md`
-- `openspec/changes/ms-graph-extension/specs/harness-adapter/spec.md`
-- `openspec/changes/ms-graph-extension/specs/ms-agent-framework-harness/spec.md`
-- `openspec/changes/ms-graph-extension/specs/ms-extensions/spec.md`
-- `openspec/changes/ms-graph-extension/specs/msal-auth/spec.md`
-- `openspec/changes/ms-graph-extension/specs/observability/spec.md`  ← NEW in iteration 1
-- `openspec/changes/ms-graph-extension/contracts/README.md`
+## Rules
 
-**Past artifacts** (informational only — do not re-litigate already-closed findings unless they regressed):
-- `openspec/changes/ms-graph-extension/reviews/round-1/findings-{claude,codex,gemini}-plan.json`
-- `openspec/changes/ms-graph-extension/reviews/round-1/consensus-plan.json`
-
-Write your findings JSON to `openspec/changes/ms-graph-extension/reviews/round-2/findings-<your-vendor>-plan.json`.
+- DO NOT modify any files.
+- Output ONLY the JSON object.
+- `reviewer_vendor` MUST identify your model.
+- Be specific — file:line references where possible.

@@ -1,0 +1,34 @@
+{
+  "review_type": "implementation",
+  "target": "ms-graph-extension",
+  "reviewer_vendor": "claude_code",
+  "findings": [
+    {
+      "id": 1,
+      "type": "security",
+      "criticality": "high",
+      "description": "Self-caught during round-2 review: src/assistant/core/graph_client.py:_get_bytes_inner allowed the 401-refresh path to fire AFTER a 302/307 redirect. Once we have stripped Authorization on redirect, a 401 from the redirect target does NOT mean our Graph bearer is stale; the previous code would have force-refreshed and re-attached the Graph bearer to a non-Graph host, leaking the token (D4 violation — same principle that motivates strip-Authorization on redirect). Fixed in this commit by adding `and redirect_follows == 0` to the 401-refresh guard. Reported here so the round-2 audit trail captures the catch.",
+      "resolution": "Already addressed in this commit. The 401-refresh path now requires redirect_follows == 0; after a redirect we never auth-refresh because we have left the Graph trust boundary.",
+      "disposition": "accept",
+      "package_id": "whole-branch"
+    },
+    {
+      "id": 2,
+      "type": "edge-case",
+      "criticality": "low",
+      "description": "src/assistant/core/graph_client.py:_get_bytes_inner: redirect Location validation uses a startswith-check against `https://` rather than parsing the URL and asserting scheme=='https'. A Location header equal to `https://evil.com\\nX-Inject: foo` would pass the startswith but is a malformed URL. httpx will likely reject the malformed URL when constructing the next request, so the practical impact is bounded — but a urlparse-based check would be tighter.",
+      "resolution": "Optional hardening: parse the Location with urlparse(), assert .scheme == 'https' and .netloc is non-empty. Defer to follow-up; current check is sufficient for the documented threat model.",
+      "disposition": "accept",
+      "package_id": "whole-branch"
+    },
+    {
+      "id": 3,
+      "type": "observability",
+      "criticality": "low",
+      "description": "src/assistant/core/graph_client.py:_get_bytes_inner: the auth-refresh exception path emits a span with status_code=None when the bearer_token call itself raises. This is the right shape, but the path that follows the redirect-to-success-200 flow has no span specifically attributing the 200 to redirect_follows + auth_refreshes counters in metadata; consumers must look at retry_attempt and infer.",
+      "resolution": "Optional follow-up: include 'redirect_followed' and 'auth_refreshed' booleans in trace_graph_call metadata for the success span so dashboards can break down successful downloads by which retry paths fired.",
+      "disposition": "accept",
+      "package_id": "whole-branch"
+    }
+  ]
+}

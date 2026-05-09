@@ -97,6 +97,25 @@ _UPN_LOCAL_RE = re.compile(
     r"\b([A-Za-z0-9][A-Za-z0-9._%+\-]{0,63})@([A-Za-z0-9][A-Za-z0-9.\-]{0,253}\.[A-Za-z]{2,})\b"
 )
 
+# Mapping httpx.TransportError subclass names to a stable error_code
+# string used in GraphAPIError + observability spans. Module-scoped so
+# both _send_with_auth_retry and _get_bytes_inner reference the same
+# table — adding a new subclass means one edit, not two.
+_TRANSPORT_ERROR_CODE_MAP: dict[str, str] = {
+    "ConnectError": "connect_error",
+    "ConnectTimeout": "connect_timeout",
+    "ReadTimeout": "read_timeout",
+    "ReadError": "read_error",
+    "WriteTimeout": "write_timeout",
+    "WriteError": "write_error",
+    "CloseError": "close_error",
+    "PoolTimeout": "pool_timeout",
+    "RemoteProtocolError": "protocol_error",
+    "LocalProtocolError": "local_protocol_error",
+    "ProxyError": "proxy_error",
+    "UnsupportedProtocol": "unsupported_protocol",
+}
+
 
 def _redact_upn_local(text: str) -> str:
     """Replace ``<local>@<domain>`` with ``<upn_local>@<domain>``."""
@@ -513,14 +532,7 @@ class GraphClient:
         start_t = time.perf_counter()
         try:
             response = await self._client.send(request)
-        except (
-            httpx.ConnectError,
-            httpx.ConnectTimeout,
-            httpx.ReadTimeout,
-            httpx.WriteTimeout,
-            httpx.PoolTimeout,
-            httpx.RemoteProtocolError,
-        ) as exc:
+        except httpx.TransportError as exc:
             duration_ms = (time.perf_counter() - start_t) * 1000.0
             exc_name = type(exc).__name__
             _emit_graph_call_span(
@@ -536,23 +548,20 @@ class GraphClient:
             )
             # Map all transport-level errors to GraphAPIError so P9's
             # classifier sees a single error type and the caller's
-            # except-clause stays compact. Distinct error_code per class
-            # so dashboards can break down by failure mode.
-            error_code_map = {
-                "ConnectError": "connect_error",
-                "ConnectTimeout": "connect_timeout",
-                "ReadTimeout": "read_timeout",
-                "WriteTimeout": "write_timeout",
-                "PoolTimeout": "pool_timeout",
-                "RemoteProtocolError": "protocol_error",
-            }
+            # except-clause stays compact. ``httpx.TransportError`` is
+            # the base of ConnectError/ReadError/WriteError/Timeouts/
+            # ProtocolErrors/ProxyError/UnsupportedProtocol — the full
+            # transport-tier surface. Distinct error_code per class so
+            # dashboards can break down by failure mode.
             raise GraphAPIError(
                 message=(
                     f"{exc_name} during Graph request "
                     f"({request.method} {request.url.path}): {exc}"
                 ),
                 request=request,
-                error_code=error_code_map.get(exc_name, "transport_error"),
+                error_code=_TRANSPORT_ERROR_CODE_MAP.get(
+                    exc_name, "transport_error"
+                ),
             ) from exc
 
         duration_ms = (time.perf_counter() - start_t) * 1000.0
@@ -823,17 +832,7 @@ class GraphClient:
                         sc = exc.status_code
                         if sc in (408, 425, 429, 500, 502, 503, 504):
                             await self._breaker.record_failure(exc)
-                    elif isinstance(
-                        exc,
-                        (
-                            httpx.ConnectError,
-                            httpx.ConnectTimeout,
-                            httpx.ReadTimeout,
-                            httpx.WriteTimeout,
-                            httpx.PoolTimeout,
-                            httpx.RemoteProtocolError,
-                        ),
-                    ):
+                    elif isinstance(exc, httpx.TransportError):
                         await self._breaker.record_failure(exc)
                     raise
                 # Success: record so a HALF_OPEN breaker can close (the
@@ -1043,8 +1042,21 @@ class GraphClient:
                     )
                     emitted_path = response.request.url.path
 
-                    # 401 invalid_token → exactly one force_refresh retry
-                    if response.status_code == 401 and auth_refreshes == 0:
+                    # 401 invalid_token → exactly one force_refresh retry.
+                    # Only allowed BEFORE a redirect: after we follow a
+                    # 302/307 we have stripped Authorization (the
+                    # pre-signed URL embeds its own auth in URL params).
+                    # A 401 from the redirect target does NOT mean our
+                    # Graph bearer is stale; force-refreshing and
+                    # re-attaching the Graph bearer to a non-Graph host
+                    # would leak the token (same D4 principle that
+                    # motivates the strip-Authorization step on
+                    # redirect).
+                    if (
+                        response.status_code == 401
+                        and auth_refreshes == 0
+                        and redirect_follows == 0
+                    ):
                         www_auth = response.headers.get("WWW-Authenticate", "")
                         if 'error="invalid_token"' in www_auth:
                             duration_ms = (time.perf_counter() - start_t) * 1000.0
@@ -1056,7 +1068,11 @@ class GraphClient:
                                 duration_ms=duration_ms,
                                 breaker_key=self._breaker_key,
                                 request_id=request_id,
-                                retry_attempt=base_attempt + auth_refreshes,
+                                retry_attempt=(
+                                    base_attempt
+                                    + auth_refreshes
+                                    + redirect_follows
+                                ),
                                 bytes_streamed=0,
                                 error="GraphAPIError",
                             )
@@ -1079,7 +1095,11 @@ class GraphClient:
                                     ) * 1000.0,
                                     breaker_key=self._breaker_key,
                                     request_id=None,
-                                    retry_attempt=base_attempt + auth_refreshes,
+                                    retry_attempt=(
+                                        base_attempt
+                                        + auth_refreshes
+                                        + redirect_follows
+                                    ),
                                     error=type(exc).__name__,
                                 )
                                 raise
@@ -1093,6 +1113,23 @@ class GraphClient:
                     ):
                         location = response.headers.get("Location", "")
                         if not location.startswith("https://"):
+                            duration_ms = (time.perf_counter() - start_t) * 1000.0
+                            _emit_graph_call_span(
+                                extension_name=self.extension_name,
+                                method=method,
+                                path=emitted_path,
+                                status_code=response.status_code,
+                                duration_ms=duration_ms,
+                                breaker_key=self._breaker_key,
+                                request_id=request_id,
+                                retry_attempt=(
+                                    base_attempt
+                                    + auth_refreshes
+                                    + redirect_follows
+                                ),
+                                bytes_streamed=0,
+                                error="GraphAPIError",
+                            )
                             raise GraphAPIError(
                                 message=(
                                     f"download redirect Location must be "
@@ -1112,7 +1149,11 @@ class GraphClient:
                             duration_ms=duration_ms,
                             breaker_key=self._breaker_key,
                             request_id=request_id,
-                            retry_attempt=base_attempt + auth_refreshes,
+                            retry_attempt=(
+                                base_attempt
+                                + auth_refreshes
+                                + redirect_follows
+                            ),
                             bytes_streamed=0,
                             error=None,
                         )
@@ -1135,7 +1176,11 @@ class GraphClient:
                             duration_ms=duration_ms,
                             breaker_key=self._breaker_key,
                             request_id=request_id,
-                            retry_attempt=base_attempt + auth_refreshes,
+                            retry_attempt=(
+                                base_attempt
+                                + auth_refreshes
+                                + redirect_follows
+                            ),
                             bytes_streamed=0,
                             error="GraphAPIError",
                         )
@@ -1164,7 +1209,11 @@ class GraphClient:
                                     duration_ms=duration_ms,
                                     breaker_key=self._breaker_key,
                                     request_id=request_id,
-                                    retry_attempt=base_attempt + auth_refreshes,
+                                    retry_attempt=(
+                                        base_attempt
+                                        + auth_refreshes
+                                        + redirect_follows
+                                    ),
                                     bytes_streamed=cumulative,
                                     error="GraphAPIError",
                                 )
@@ -1190,7 +1239,11 @@ class GraphClient:
                         duration_ms=duration_ms,
                         breaker_key=self._breaker_key,
                         request_id=request_id,
-                        retry_attempt=base_attempt + auth_refreshes,
+                        retry_attempt=(
+                            base_attempt
+                            + auth_refreshes
+                            + redirect_follows
+                        ),
                         bytes_streamed=cumulative,
                         error=None,
                     )
@@ -1200,6 +1253,42 @@ class GraphClient:
                         "content_type": content_type,
                         "request_id": request_id,
                     }
+        except httpx.TransportError as exc:
+            # Connect/read/write/protocol failure during the streaming
+            # round-trip OR during context-manager entry. Emit a span
+            # before mapping to GraphAPIError so the failure is visible
+            # in dashboards — same observability shape as
+            # _send_with_auth_retry's transport-error handler.
+            duration_ms = (time.perf_counter() - start_t) * 1000.0
+            exc_name = type(exc).__name__
+            _emit_graph_call_span(
+                extension_name=self.extension_name,
+                method=method,
+                path=emitted_path,
+                status_code=None,
+                duration_ms=duration_ms,
+                breaker_key=self._breaker_key,
+                request_id=None,
+                retry_attempt=(
+                    base_attempt + auth_refreshes + redirect_follows
+                ),
+                bytes_streamed=cumulative,
+                error=exc_name,
+            )
+            try:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise GraphAPIError(
+                message=(
+                    f"{exc_name} during get_bytes "
+                    f"({method} {emitted_path}): {exc}"
+                ),
+                error_code=_TRANSPORT_ERROR_CODE_MAP.get(
+                    exc_name, "transport_error"
+                ),
+            ) from exc
         except GraphAPIError:
             try:
                 if cumulative == 0 and os.path.exists(tmp_path):
