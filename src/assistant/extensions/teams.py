@@ -79,7 +79,7 @@ _DEFAULT_PAGE_CEILING: int = 100
 # ─────────────────────────────────────────────────────────────────────
 
 
-def _validate_id_segment(name: str, value: str) -> str:
+def _validate_path_segment(name: str, value: str) -> str:
     """Reject IDs with path separators / control characters / backslashes.
 
     Returns the URL-encoded path segment on success. Raises
@@ -371,8 +371,8 @@ class TeamsExtension:
         call, page_ceiling ``100``.
         """
         await self._raise_if_breaker_open()
-        team_seg = _validate_id_segment("team_id", team_id)
-        channel_seg = _validate_id_segment("channel_id", channel_id)
+        team_seg = _validate_path_segment("team_id", team_id)
+        channel_seg = _validate_path_segment("channel_id", channel_id)
         path = f"/teams/{team_seg}/channels/{channel_seg}/messages"
         out: list[dict[str, Any]] = []
         async for page in self._client.paginate(path, params={"$top": top}):
@@ -392,8 +392,8 @@ class TeamsExtension:
         both IDs URL-encoded as path segments (D23).
         """
         await self._raise_if_breaker_open()
-        chat_seg = _validate_id_segment("chat_id", chat_id)
-        msg_seg = _validate_id_segment("message_id", message_id)
+        chat_seg = _validate_path_segment("chat_id", chat_id)
+        msg_seg = _validate_path_segment("message_id", message_id)
         return await self._client.get(
             f"/chats/{chat_seg}/messages/{msg_seg}"
         )
@@ -416,7 +416,7 @@ class TeamsExtension:
         suppressed.
         """
         await self._raise_if_breaker_open()
-        chat_seg = _validate_id_segment("chat_id", chat_id)
+        chat_seg = _validate_path_segment("chat_id", chat_id)
         body = {"body": {"content": content, "contentType": "text"}}
         return await self._client.post(
             f"/chats/{chat_seg}/messages",

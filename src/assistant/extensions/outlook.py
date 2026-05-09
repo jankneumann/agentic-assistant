@@ -14,7 +14,10 @@ Design references:
 - D18 — per-method retry safety control. ``_send_email`` MUST pass
   ``retry_safe=False`` to ``client.post`` so a transient 5xx never
   duplicates the message.
-- D23 — tool input URL-encoding and validation (``_safe_segment``).
+- D23 — tool input URL-encoding and validation
+  (``_validate_path_segment``; same name across outlook/teams/sharepoint
+  for cognitive consistency, though signatures differ slightly per
+  extension).
 - D24 — scope override semantics: REPLACE.
 - D25 — OPEN-breaker tool invocation raises
   ``GraphAPIError(error_code="breaker_open")``.
@@ -71,7 +74,7 @@ DEFAULT_PAGE_CEILING: int = 100
 # ---------------------------------------------------------------------------
 
 
-def _safe_segment(value: str, *, parameter: str) -> str:
+def _validate_path_segment(value: str, *, parameter: str) -> str:
     """Validate and URL-encode a single Graph API path segment.
 
     Rejects values containing ``/``, ``\\``, or ASCII control chars
@@ -495,7 +498,7 @@ class OutlookExtension:
     @_guard_open_breaker
     async def _read_message(self, message_id: str) -> dict[str, Any]:
         """Read a single message by id."""
-        encoded = _safe_segment(message_id, parameter="message_id")
+        encoded = _validate_path_segment(message_id, parameter="message_id")
         return await self._client.get(f"/me/messages/{encoded}")
 
     @_guard_open_breaker

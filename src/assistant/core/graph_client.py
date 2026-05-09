@@ -340,6 +340,7 @@ class GraphClient:
         timeout: httpx.Timeout | None = None,
         page_ceiling: int = DEFAULT_PAGE_CEILING,
         trusted_hosts: list[str] | None = None,
+        max_retry_after_seconds: float = 60.0,
     ) -> None:
         self.extension_name = extension_name
         self._strategy = strategy
@@ -350,6 +351,12 @@ class GraphClient:
         self._trusted_hosts: tuple[str, ...] = (
             tuple(trusted_hosts) if trusted_hosts else DEFAULT_TRUSTED_HOSTS
         )
+        # Upper bound on Retry-After waits. Prevents a malicious or
+        # mis-configured upstream from pinning the event loop on a
+        # large header value while still letting persona configs
+        # raise the bound for high-traffic accounts that hit
+        # legitimate multi-minute throttle responses.
+        self._max_retry_after_seconds = max_retry_after_seconds
         self._breaker_key = f"graph:{extension_name}"
         # P9 registry returns the same breaker on second lookup, so
         # multiple GraphClient(extension_name=X) share state.
@@ -386,8 +393,27 @@ class GraphClient:
         )
 
     def _full_url(self, path: str) -> str:
-        if path.startswith("http://") or path.startswith("https://"):
+        """Resolve ``path`` to an absolute Graph URL.
+
+        Two accepted shapes:
+
+        - Absolute https URL (any scheme starting with ``http://`` or
+          ``https://``) — returned verbatim. ``paginate`` uses this for
+          ``@odata.nextLink`` continuation, which is already validated
+          against ``_trusted_hosts`` before reaching here.
+        - Relative path — prepended to ``self._base_url``. Must NOT
+          contain ``..`` segments; relative parent traversal would
+          allow a caller to escape the Graph version prefix
+          (``/v1.0``) and is rejected with ``ValueError`` before any
+          HTTP call.
+        """
+        if path.startswith(("http://", "https://")):
             return path
+        if ".." in path.split("/"):
+            raise ValueError(
+                f"graph_client: relative path {path!r} contains '..' "
+                "segment; parent-directory traversal is not permitted"
+            )
         if not path.startswith("/"):
             path = "/" + path
         return f"{self._base_url}{path}"
@@ -626,8 +652,10 @@ class GraphClient:
         if wait_s is None or wait_s <= 0:
             return
         # Cap the wait to a sane bound so a malicious Retry-After:
-        # 1000000 doesn't pin the event loop.
-        bounded = min(wait_s, 60.0)
+        # 1000000 doesn't pin the event loop. The cap is configurable
+        # via GraphClient(max_retry_after_seconds=...) for personas
+        # that legitimately need to honor longer throttles.
+        bounded = min(wait_s, self._max_retry_after_seconds)
         await asyncio.sleep(bounded)
 
     # ── Transport methods ──────────────────────────────────────────
