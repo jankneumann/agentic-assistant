@@ -72,8 +72,28 @@ Cross-package consistency check (via `scope_checker.check_scope_compliance`):
 
 Across all rounds: **22 candidate findings raised, 17 verified as real bugs and fixed, 5 rejected as false positives.**
 
+## Smoke Tests
+
+**Status**: skipped
+
+Smoke tests are designed to validate live HTTP services. The agentic-assistant repository builds a Python library plus CLI; there is no docker-compose.yml and no HTTP API surface to smoke-test. The phase precondition fails cleanly per the validate-feature skill design (`Skip if no docker-compose.yml found`).
+
+## Security
+
+**Status**: pass
+
+OWASP Dependency-Check parsed 0 findings against Python dependencies. ZAP DAST scan was correctly skipped because no DAST-capable profile was detected (no live HTTP target). Decision: PASS, 0 triggered findings, fail-on threshold `high`. Reports written to `docs/security-review/security-review-report.json` and `docs/security-review/security-review-report.md`. A copy of the per-change summary lives at `openspec/changes/ms-graph-extension/security-review-report.md`.
+
+## E2E Tests
+
+**Status**: skipped
+
+E2E tests require a `tests/e2e/` directory with Playwright fixtures. This repository does not maintain an E2E suite — extension tests use `respx`/`httpx_mock` against the Microsoft Graph API surface in `tests/test_extensions_*.py` and `tests/test_graph_client.py`. The phase precondition fails cleanly per the validate-feature skill design (`Skip if no tests/e2e/ directory`).
+
 ## Result
 
-**PASS** — Ready for `/cleanup-feature ms-graph-extension`
+**PASS** (with two phases skipped per inapplicable preconditions) — Ready for `/cleanup-feature ms-graph-extension`.
 
-All gates green, all phases that apply to a library project completed cleanly. Notes from the evidence phase are advisory (low severity, no blocker).
+The pre-merge gate's `REQUIRED_PHASES` set (`Smoke Tests`, `Security`, `E2E Tests`) is designed for service-style projects; for a library-shaped change like this one, Smoke and E2E phases will report `skipped` and the gate will halt without `--force`. The skipped-phase rationales above document why this is the correct end-state, not a coverage gap.
+
+All other gates are green: 763 pytest tests passing, ruff + mypy + openspec validate --strict clean, CI on PR #24 green, security PASS with 0 findings, spec compliance 51 requirements with 0 gaps. The 7 evidence-phase scope notes are advisory (low severity, no blocker).
