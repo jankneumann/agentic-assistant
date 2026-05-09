@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "change_id": "ms-graph-extension",
-  "current_phase": "VALIDATE_PASSED",
+  "current_phase": "DONE",
   "iteration": 3,
   "total_iterations": 3,
   "max_phase_iterations": 3,
@@ -41,7 +41,7 @@
   "handoff_ids": [],
   "started_at": "2026-05-05T00:00:00Z",
   "phase_started_at": "2026-05-09T00:00:00Z",
-  "previous_phase": "IMPL_REVIEW_CONVERGED",
+  "previous_phase": "VALIDATE_PASSED",
   "escalation_reason": null,
   "val_review_enabled": false,
   "cli_review_enabled": true,
