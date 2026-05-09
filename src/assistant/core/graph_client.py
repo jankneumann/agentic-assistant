@@ -206,9 +206,25 @@ class GraphAPIError(httpx.HTTPStatusError):
             "size_exceeded",
             "breaker_open",
             "invalid_redirect",
-            "read_timeout",
+            "redirect_invalid",
             "page_ceiling_exceeded",
+            "transport_error",
+            # All values from _TRANSPORT_ERROR_CODE_MAP (kept in sync
+            # so consumers see status_code=None for any transport-tier
+            # mapped error rather than a synthetic 599 for some and
+            # None for others).
             "connect_error",
+            "connect_timeout",
+            "read_timeout",
+            "read_error",
+            "write_timeout",
+            "write_error",
+            "close_error",
+            "pool_timeout",
+            "protocol_error",
+            "local_protocol_error",
+            "proxy_error",
+            "unsupported_protocol",
         }
         if self.error_code in transport_only:
             return None
@@ -412,6 +428,33 @@ class GraphClient:
             force_refresh=force_refresh,
         )
 
+    @staticmethod
+    def _wrap_transport_error(
+        exc: httpx.TransportError, *, where: str
+    ) -> GraphAPIError:
+        """Convert a raw ``httpx.TransportError`` to ``GraphAPIError``.
+
+        Used at the resilient_http boundary AFTER retries are
+        exhausted: the inner code (_send_with_auth_retry,
+        _get_bytes_inner) re-raises the raw exception so the
+        @resilient_http retry classifier (which matches by exception
+        type, not by GraphAPIError's synthetic 599 response) recognizes
+        and retries it. Once retries are spent, this helper wraps the
+        exception once at the boundary so callers see a uniform
+        GraphAPIError regardless of which transport-error subclass
+        actually fired.
+
+        ``where`` identifies the call-site for log readability
+        (``"GET"``, ``"POST"``, ``"paginate page"``, ``"get_bytes"``).
+        """
+        exc_name = type(exc).__name__
+        return GraphAPIError(
+            message=f"{exc_name} during {where}: {exc}",
+            error_code=_TRANSPORT_ERROR_CODE_MAP.get(
+                exc_name, "transport_error"
+            ),
+        )
+
     def _full_url(self, path: str) -> str:
         """Resolve ``path`` to an absolute Graph URL.
 
@@ -533,8 +576,16 @@ class GraphClient:
         try:
             response = await self._client.send(request)
         except httpx.TransportError as exc:
+            # Emit the per-attempt observability span on transport
+            # failure, then re-raise the RAW httpx exception so the
+            # @resilient_http retry classifier (which matches by
+            # exception type, not by GraphAPIError's synthetic 599
+            # response) recognizes it as a retryable transport error
+            # and applies the configured retry policy. The wrap to
+            # GraphAPIError happens at the outer resilient_http
+            # boundary AFTER retries are exhausted (see _get_impl /
+            # _post_retrying / get_bytes / _paginate_one_page).
             duration_ms = (time.perf_counter() - start_t) * 1000.0
-            exc_name = type(exc).__name__
             _emit_graph_call_span(
                 extension_name=self.extension_name,
                 method=request.method,
@@ -544,25 +595,9 @@ class GraphClient:
                 breaker_key=self._breaker_key,
                 request_id=None,
                 retry_attempt=retry_attempt,
-                error=exc_name,
+                error=type(exc).__name__,
             )
-            # Map all transport-level errors to GraphAPIError so P9's
-            # classifier sees a single error type and the caller's
-            # except-clause stays compact. ``httpx.TransportError`` is
-            # the base of ConnectError/ReadError/WriteError/Timeouts/
-            # ProtocolErrors/ProxyError/UnsupportedProtocol — the full
-            # transport-tier surface. Distinct error_code per class so
-            # dashboards can break down by failure mode.
-            raise GraphAPIError(
-                message=(
-                    f"{exc_name} during Graph request "
-                    f"({request.method} {request.url.path}): {exc}"
-                ),
-                request=request,
-                error_code=_TRANSPORT_ERROR_CODE_MAP.get(
-                    exc_name, "transport_error"
-                ),
-            ) from exc
+            raise
 
         duration_ms = (time.perf_counter() - start_t) * 1000.0
         request_id = self._request_id_of(response)
@@ -767,6 +802,13 @@ class GraphClient:
                 message=f"breaker {self._breaker_key} is open: {exc}",
                 error_code="breaker_open",
             ) from exc
+        except httpx.TransportError as exc:
+            # Resilient_http exhausted retries on a transport-level
+            # failure. Wrap to GraphAPIError here at the boundary so
+            # callers see a uniform error type — the inner
+            # _send_with_auth_retry re-raised raw so resilient_http
+            # could recognize and retry the exception.
+            raise self._wrap_transport_error(exc, where="GET") from exc
 
     async def post(
         self,
@@ -802,6 +844,10 @@ class GraphClient:
                 message=f"breaker {self._breaker_key} is open: {exc}",
                 error_code="breaker_open",
             ) from exc
+        except httpx.TransportError as exc:
+            # Resilient_http exhausted retries on a transport error;
+            # wrap at the boundary (see _get_impl).
+            raise self._wrap_transport_error(exc, where="POST") from exc
 
     async def _post_no_retry(
         self,
@@ -847,6 +893,17 @@ class GraphClient:
             raise GraphAPIError(
                 message=f"breaker {self._breaker_key} is open: {exc}",
                 error_code="breaker_open",
+            ) from exc
+        except httpx.TransportError as exc:
+            # _post_no_retry does NOT go through resilient_http (D18 —
+            # retry_safe=False writes opt out of the retry layer). The
+            # raw httpx exception escaped from _post_inner via
+            # _send_with_auth_retry; breaker failure was already
+            # recorded inside the breaker block. Wrap at this boundary
+            # for consumer uniformity (post()'s callers see GraphAPIError
+            # regardless of retry mode).
+            raise self._wrap_transport_error(
+                exc, where="POST (retry_safe=False)"
             ) from exc
 
     async def _post_inner(
@@ -935,6 +992,10 @@ class GraphClient:
                 message=f"breaker {self._breaker_key} is open: {exc}",
                 error_code="breaker_open",
             ) from exc
+        except httpx.TransportError as exc:
+            raise self._wrap_transport_error(
+                exc, where="paginate page"
+            ) from exc
 
     async def get_bytes(
         self,
@@ -965,6 +1026,10 @@ class GraphClient:
             raise GraphAPIError(
                 message=f"breaker {self._breaker_key} is open: {exc}",
                 error_code="breaker_open",
+            ) from exc
+        except httpx.TransportError as exc:
+            raise self._wrap_transport_error(
+                exc, where="get_bytes"
             ) from exc
 
     async def _get_bytes_inner(
@@ -1255,12 +1320,15 @@ class GraphClient:
                     }
         except httpx.TransportError as exc:
             # Connect/read/write/protocol failure during the streaming
-            # round-trip OR during context-manager entry. Emit a span
-            # before mapping to GraphAPIError so the failure is visible
-            # in dashboards — same observability shape as
-            # _send_with_auth_retry's transport-error handler.
+            # round-trip OR during context-manager entry. Emit a span +
+            # clean up the tmpfile, then re-raise the RAW httpx
+            # exception so resilient_http's retry classifier can
+            # recognize it (the wrap to GraphAPIError happens once at
+            # the outer boundary in `get_bytes` AFTER retries are
+            # exhausted). Wrapping here would convert the exception to
+            # HTTPStatusError-with-synthetic-599, breaking retry
+            # eligibility.
             duration_ms = (time.perf_counter() - start_t) * 1000.0
-            exc_name = type(exc).__name__
             _emit_graph_call_span(
                 extension_name=self.extension_name,
                 method=method,
@@ -1273,22 +1341,14 @@ class GraphClient:
                     base_attempt + auth_refreshes + redirect_follows
                 ),
                 bytes_streamed=cumulative,
-                error=exc_name,
+                error=type(exc).__name__,
             )
             try:
                 if os.path.exists(tmp_path):
                     os.unlink(tmp_path)
             except OSError:
                 pass
-            raise GraphAPIError(
-                message=(
-                    f"{exc_name} during get_bytes "
-                    f"({method} {emitted_path}): {exc}"
-                ),
-                error_code=_TRANSPORT_ERROR_CODE_MAP.get(
-                    exc_name, "transport_error"
-                ),
-            ) from exc
+            raise
         except GraphAPIError:
             try:
                 if cumulative == 0 and os.path.exists(tmp_path):

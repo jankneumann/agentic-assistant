@@ -355,3 +355,35 @@ Eight findings from IMPL_REVIEW round 1 addressed across five files. R1 plus R2:
 ### Context
 
 Six round-2 findings addressed: auth-after-redirect leak (codex#1, was self-caught and pre-emptively fixed in working tree before dispatch); broader transport-error catch in _send_with_auth_retry via httpx.TransportError base (codex#2); ContextVar token-and-reset in resilient_http retry loop (codex#3); trace span emitted before raising redirect_invalid GraphAPIError (codex#4); per-hop unique retry_attempt by adding redirect_follows to span emissions (gemini#1); httpx.TransportError handler in _get_bytes_inner with span emission and GraphAPIError mapping (gemini#2 + gemini#3). All four quality gates green: pytest 763 passed (+0/-0), mypy clean, ruff clean.
+
+---
+
+## Phase: Implementation Iteration 5 (2026-05-08)
+
+**Agent**: claude-opus-4-7 orchestrator | **Session**: autopilot ms-graph-extension resume
+
+### Decisions
+
+1. Per user direction took Option A: refactor exception flow so transport errors propagate raw through resilient_http and are wrapped to GraphAPIError once at the boundary, AFTER retries are exhausted. Rejected Option B (modifying P9 classifier to recognize GraphAPIError-with-transport-only-error_code as retryable) because it would couple P9 semantics to GraphClient. Rejected Option C (accept the regression) because the regression silently disabled retries on a load-bearing resilience guarantee.
+2. Centralized the wrap into a static helper GraphClient._wrap_transport_error so the five outer boundaries (_get_impl, _post_retrying, _post_no_retry, get_bytes, _paginate_one_page) share the same conversion logic.
+3. Extended GraphAPIError.status_code transport_only set to include all error_codes from _TRANSPORT_ERROR_CODE_MAP. Without this update the status_code property would return synthetic 599 for some transport errors and None for others; uniform None is what consumers expect.
+
+### Alternatives Considered
+
+- Option B (update P9 classifier to recognize GraphAPIError transport error_codes): rejected for coupling reasons noted above.
+- Option C (accept the regression and defer to P5b): rejected per user instruction to fix.
+- Wrap transport errors only at the public method level rather than at each retry boundary: would require post() to wrap separately from _post_retrying; the current shape (wrap at every resilient_http boundary including _post_no_retry) is more uniform.
+
+### Trade-offs
+
+- Accepted that _send_with_auth_retry now raises raw httpx.TransportError instead of GraphAPIError. This is observable to any direct caller that bypassed resilient_http; in practice all in-tree callers go through resilient_http or _post_no_retry, both of which wrap.
+- Accepted that the wrap helper takes a where=str argument rather than auto-detecting the call site. Explicit is more readable than inspect-based introspection and the four call sites are stable.
+- Accepted broadening the transport_only set to include every code from the error_code map. Some of these (eg local_protocol_error) should never be transient retries in practice but are covered for forward-compatibility.
+
+### Open Questions
+
+- None for iteration 5. Round 4 dispatched to confirm convergence.
+
+### Context
+
+R3.1 fixed by refactoring exception flow per Option A: _send_with_auth_retry and _get_bytes_inner now emit observability spans on httpx.TransportError but re-raise the raw exception so resilient_http's retry classifier recognizes and retries it. Five outer boundaries (_get_impl, _post_retrying, _post_no_retry, get_bytes, _paginate_one_page) catch the raw httpx.TransportError after retries are exhausted and wrap to GraphAPIError via the new _wrap_transport_error static helper. R3.2 fixed by adding all transport-error error_codes to GraphAPIError.status_code's transport_only set so consumers see status_code=None uniformly for any transport-tier failure. All four quality gates green: pytest 763 passed (+0/-0), mypy clean, ruff clean.

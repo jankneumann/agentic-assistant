@@ -1,0 +1,16 @@
+{
+  "review_type": "implementation",
+  "target": "ms-graph-extension",
+  "reviewer_vendor": "claude_code",
+  "findings": [
+    {
+      "id": 1,
+      "type": "style",
+      "criticality": "low",
+      "description": "src/assistant/core/resilience.py: the ContextVar reset relies on _emit_attempt_span not raising. If _emit_attempt_span itself raised mid-block, the reset would be skipped and the var would carry the in-loop attempt index across the boundary. _emit_attempt_span is observability-only and shouldn't raise (it has its own swallow), but a try/finally around the per-attempt body would be marginally more defensive.",
+      "resolution": "Optional hardening: wrap the per-attempt body in try/finally so reset always runs even if span emission throws. Current implementation matches the surrounding pattern and is acceptable; defer to follow-up if at all.",
+      "disposition": "accept",
+      "package_id": "whole-branch"
+    }
+  ]
+}
