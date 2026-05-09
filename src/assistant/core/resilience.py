@@ -19,6 +19,12 @@ from typing import TYPE_CHECKING, Any
 import httpx
 import tenacity
 
+from assistant.telemetry.providers.base import ObservabilityProvider
+from assistant.telemetry.sanitize import sanitize
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Awaitable, Callable
+
 # ContextVar carrying the 0-indexed retry attempt number within the
 # currently-active ``resilient_http`` retry loop. Consumers (e.g.,
 # GraphClient's per-request trace emitter) can read this to attribute
@@ -28,12 +34,6 @@ import tenacity
 current_retry_attempt: contextvars.ContextVar[int] = contextvars.ContextVar(
     "resilience_current_retry_attempt", default=0
 )
-
-from assistant.telemetry.providers.base import ObservabilityProvider
-from assistant.telemetry.sanitize import sanitize
-
-if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable
 
 logger = logging.getLogger("assistant.resilience")
 
