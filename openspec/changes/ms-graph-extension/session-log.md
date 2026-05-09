@@ -422,3 +422,35 @@ Convergence trajectory across IMPL_REVIEW phase:
 - Round 4: 0 findings across all three reviewers.
 
 Across the four rounds: 21 candidate findings raised; 16 verified as real bugs and fixed; 5 rejected on verification (round-1 false positives). Multi-vendor convergence loop yielded approximately 16 production-relevant fixes that single-vendor review would have missed.
+
+---
+
+## Phase: Validation (2026-05-09)
+
+**Agent**: claude-opus-4-7 orchestrator | **Session**: autopilot ms-graph-extension validation pass
+
+### Decisions
+
+1. Ran the full validate-feature sweep at user direction. Library-project preconditions caused six phases to skip cleanly (deploy, smoke, gen-eval, e2e, architecture, logs) and four phases to run (security, spec compliance, evidence, ci). Local quality gates (pytest, ruff, mypy, openspec validate strict) ran alongside.
+2. Fixed one CI-blocking finding inline rather than re-entering IMPL_ITERATE: a Ruff E402 in src/assistant/core/resilience.py introduced during iteration 4. The current_retry_attempt ContextVar declaration sat between two import blocks, which violates module level import not at top of file. Pure relocation, no behavior change.
+3. Generated change-context.md via dispatched general-purpose Agent. The Agent extracted 51 SHALL/MUST clauses across 7 spec deltas totaling 1917 lines and produced a Requirement Traceability Matrix with zero gaps.
+
+### Alternatives Considered
+
+- Re-enter formal IMPL_ITERATE for the E402 fix instead of fixing in VALIDATE. Rejected because the fix was a 6-line reorder with no behavior change, and the validate-feature skill explicitly authorizes mid-validation fixes followed by re-validation.
+
+### Trade-offs
+
+- Skipped per-row Evidence column updates in change-context.md (would have been 51 mechanical edits stamping pass at the same SHA). The validation report consolidates the evidence at the suite level: 763 pytest tests passing covers all 51 requirements via their cited test files. A future enhancement would have the test runner annotate per-requirement coverage automatically, removing the manual matrix-stamping step.
+
+### Open Questions
+
+- Work-packages.yaml write_allow patterns were drafted narrowly at plan time. Seven cross-cutting test and capability files were modified outside any package scope. None caused harm because the integration step picked them up. For future P5-style multi-package proposals, plan-time scope discipline could include explicit cross-cutting carve-outs and read_allow declarations for files owned by archived changes.
+
+### Context
+
+Validation surfaced one real CI-blocker (Ruff E402) that the four IMPL_REVIEW convergence rounds missed. Root cause: every iteration ran the ruff gate as `ruff check src tests | tail -5` where the dollar-question-mark variable after the pipe captures tail exit zero rather than ruff exit one. Set-pipefail or PIPESTATUS would have caught it locally. CI runs ruff without a pipe and rejected at the lint step.
+
+After the E402 fix shipped as commit ea1fe7b, the PR-24 lint-typecheck-test job re-ran green. Security review passed with zero triggered findings (dependency-check parsed zero findings, ZAP appropriately skipped without a DAST target). Spec compliance produced a 51-row matrix with zero gaps. Evidence phase confirmed zero multi-owned files across the eight work packages, with seven low-severity scope-discipline notes captured for future plan-time guidance.
+
+Final result: PASS. Ready for cleanup-feature.
