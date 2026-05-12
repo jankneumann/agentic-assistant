@@ -1,0 +1,43 @@
+{
+  "review_type": "plan",
+  "target": "ms-graph-extension",
+  "reviewer_vendor": "gemini",
+  "findings": [
+    {
+      "id": 1,
+      "type": "resilience",
+      "criticality": "medium",
+      "description": "GraphClient lacks an explicit requirement to handle HTTP 429 (Too Many Requests) by parsing and respecting the 'Retry-After' header. While P9 @resilient_http provides generic retry/backoff, Microsoft Graph best practices mandate following Retry-After to avoid escalating service-level blocks.",
+      "resolution": "Update openspec/changes/ms-graph-extension/specs/graph-client/spec.md to include a requirement for parsing the 'Retry-After' header on 429 and 503 responses, ensuring the retry loop pauses for the specified duration before re-attempting.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/graph-client/spec.md"
+    },
+    {
+      "id": 2,
+      "type": "performance",
+      "criticality": "medium",
+      "description": "GraphClient does not specify a request timeout configuration. The default httpx timeout (5s) is likely insufficient for heavy Microsoft Graph operations such as searching large mailboxes (Outlook) or deep profile searches (People), while an unbounded timeout poses a risk of hanging the agent session.",
+      "resolution": "Add a requirement to the GraphClient spec defining a non-default timeout (e.g. 30s) for outbound calls, and ensure it is overridable via the persona extension configuration.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/graph-client/spec.md"
+    },
+    {
+      "id": 3,
+      "type": "observability",
+      "criticality": "low",
+      "description": "The GraphClient spec does not require capturing the 'request-id' response header on successful calls. These IDs are the primary key for correlating client-side telemetry with Microsoft's internal Entra ID and Graph API audit logs during troubleshooting.",
+      "resolution": "Modify the GraphClient spec to require extraction of the 'request-id' header from all Graph responses and its inclusion in the metadata of tool-call observability spans.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/graph-client/spec.md"
+    },
+    {
+      "id": 4,
+      "type": "correctness",
+      "criticality": "low",
+      "description": "The contract for 'sharepoint.download_document' return value is unspecified. Since tool outputs are consumed by LLMs, returning binary data or a raw file stream will cause serialization failures in both LangChain and MSAF harnesses.",
+      "resolution": "Clarify in the sharepoint spec (ms-extensions/spec.md) whether download_document returns a temporary local file path, a base64-encoded string, or a text/markdown preview suitable for LLM context.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/ms-extensions/spec.md"
+    }
+  ]
+}

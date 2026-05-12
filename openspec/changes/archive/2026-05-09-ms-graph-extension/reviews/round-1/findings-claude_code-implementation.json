@@ -1,0 +1,52 @@
+{
+  "review_type": "implementation",
+  "target": "ms-graph-extension",
+  "reviewer_vendor": "claude_code",
+  "findings": [
+    {
+      "id": 1,
+      "type": "edge-case",
+      "criticality": "low",
+      "description": "src/assistant/core/graph_client.py:_full_url rejects raw '..' segments but not URL-encoded '%2e%2e'. Extensions URL-encode via urllib.parse.quote(safe='') before interpolation, so user-controlled IDs cannot slip '..' through. Internal callers use literal path constants; risk surface is bounded to developer error rather than user input.",
+      "resolution": "If hardening is desired, also reject '%2e%2e' and '%2E%2E' in the relative path before resolution. Otherwise document that _full_url validation assumes upstream URL-encoding (which it does — every interpolated user-supplied id goes through quote(safe='')). Recommend: accept as-is; the validation layer is layered correctly.",
+      "disposition": "accept",
+      "package_id": "whole-branch"
+    },
+    {
+      "id": 2,
+      "type": "architecture",
+      "criticality": "low",
+      "description": "src/assistant/core/graph_client.py:max_retry_after_seconds is a GraphClient constructor kwarg but personas configure their extensions through YAML; there is no current path for a persona to override the cap from configuration. The default 60.0 matches prior hardcoded behavior so existing personas are unaffected, but the new knob is effectively code-only.",
+      "resolution": "Future P5b: wire persona.extensions.<name>.config.max_retry_after_seconds through to GraphClient construction in the four extension factories. Or accept that this is a code-only knob until a persona has an actual reason to set it differently.",
+      "disposition": "accept",
+      "package_id": "whole-branch"
+    },
+    {
+      "id": 3,
+      "type": "style",
+      "criticality": "low",
+      "description": "src/assistant/extensions/outlook.py + teams.py + sharepoint.py: _validate_path_segment is now a shared name across all four real extensions but signatures differ (outlook: value first with kwarg parameter; teams: name first then value; sharepoint: name first then value, no encoding return). The outlook docstring flags this asymmetry but a future engineer grepping for the function across extensions may not notice the signature differences immediately.",
+      "resolution": "Future P5b cleanup: normalize signatures. Either: (a) all three return the encoded segment; or (b) all three are validation-only and a separate _quote_segment does encoding. Out of scope for this change since shipping happens first.",
+      "disposition": "accept",
+      "package_id": "whole-branch"
+    },
+    {
+      "id": 4,
+      "type": "observability",
+      "criticality": "low",
+      "description": "src/assistant/extensions/outlook.py:_send_email now raises ValueError on empty 'to' list (added in iteration 1 fix EXT-1). No test exercises this edge case — the existing send_email tests all pass non-empty lists.",
+      "resolution": "Add test_send_email_rejects_empty_to_list to tests/test_extensions_outlook.py asserting ValueError when to=[]. Trivial follow-up; not blocking.",
+      "disposition": "accept",
+      "package_id": "whole-branch"
+    },
+    {
+      "id": 5,
+      "type": "style",
+      "criticality": "low",
+      "description": "src/assistant/harnesses/sdk/ms_agent_fw.py:_agent_framework_install_error returns RuntimeError. Python convention is that import-related failures raise ImportError; RuntimeError reads as 'you cannot run this code right now' rather than 'you cannot import this module'. Tests exercise the path and pass.",
+      "resolution": "Consider raising a custom subclass of ImportError so callers handling ImportError catch the helpful message. Or accept RuntimeError as 'lazy import attempted at invocation time, not module load time' (which is true here). Either is defensible.",
+      "disposition": "accept",
+      "package_id": "whole-branch"
+    }
+  ]
+}

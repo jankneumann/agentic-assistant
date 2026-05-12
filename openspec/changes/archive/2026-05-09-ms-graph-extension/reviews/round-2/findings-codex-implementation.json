@@ -1,0 +1,43 @@
+{
+  "review_type": "implementation",
+  "target": "ms-graph-extension",
+  "reviewer_vendor": "gpt-5-codex",
+  "findings": [
+    {
+      "id": 1,
+      "type": "security",
+      "criticality": "high",
+      "description": "src/assistant/core/graph_client.py:1047 re-enters the 401 invalid_token force-refresh branch after a 302/307 download redirect; line 1086 then re-adds Authorization to the current redirected URL, so a redirected HTTPS host that returns WWW-Authenticate: invalid_token can receive the Graph bearer token.",
+      "resolution": "Gate the force-refresh branch to pre-redirect Graph requests only, for example require redirect_follows == 0 or a trusted Graph host before refreshing/re-attaching Authorization. After a redirect, treat 401 as a normal download failure and add a regression test asserting no bearer is sent to the redirected host.",
+      "disposition": "fix",
+      "package_id": "whole-branch"
+    },
+    {
+      "id": 2,
+      "type": "resilience",
+      "criticality": "medium",
+      "description": "src/assistant/core/graph_client.py:516 still catches only selected httpx transport errors, not all httpx.TransportError subclasses; ReadError, WriteError, CloseError, LocalProtocolError, ProxyError, and UnsupportedProtocol can still escape raw, so R6 is not fully addressed.",
+      "resolution": "Catch httpx.TransportError in _send_with_auth_retry, emit trace_graph_call for every subclass, and map known subclasses to distinct error_code values with a transport_error fallback.",
+      "disposition": "fix",
+      "package_id": "whole-branch"
+    },
+    {
+      "id": 3,
+      "type": "observability",
+      "criticality": "medium",
+      "description": "src/assistant/core/resilience.py:589 sets current_retry_attempt without resetting it; after a retried call completes, later non-retrying POSTs in the same task read a stale retry_attempt via src/assistant/core/graph_client.py:509.",
+      "resolution": "Store the ContextVar token returned by current_retry_attempt.set(...) and reset it in a finally block around each attempt, or otherwise restore the previous value before resilient_http returns or raises.",
+      "disposition": "fix",
+      "package_id": "whole-branch"
+    },
+    {
+      "id": 4,
+      "type": "observability",
+      "criticality": "medium",
+      "description": "src/assistant/core/graph_client.py:1095 raises GraphAPIError for an invalid download redirect before emitting trace_graph_call, leaving the redirect-rejection path without a per-request span.",
+      "resolution": "Emit trace_graph_call with status_code=response.status_code, bytes_streamed=0, and error=\"GraphAPIError\" before raising the redirect rejection error.",
+      "disposition": "fix",
+      "package_id": "whole-branch"
+    }
+  ]
+}

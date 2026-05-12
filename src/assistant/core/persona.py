@@ -152,13 +152,16 @@ class PersonaRegistry:
             private_path = config.extensions_dir / f"{module_name}.py"
             if private_path.exists():
                 ext = _load_private_extension(
-                    config.name, module_name, private_path, ext_def.get("config") or {}
+                    config.name,
+                    module_name,
+                    private_path,
+                    ext_def.get("config") or {},
+                    persona=config,
                 )
 
             if ext is None:
                 try:
                     mod = import_module(f"assistant.extensions.{module_name}")
-                    ext = mod.create_extension(ext_def.get("config") or {})
                 except ImportError as e:
                     logger.warning(
                         "Extension %r not found (public or private): %s",
@@ -166,6 +169,9 @@ class PersonaRegistry:
                         e,
                     )
                     continue
+                ext = _call_create_extension(
+                    mod, module_name, ext_def.get("config") or {}, persona=config
+                )
 
             # P9 error-resilience D11: install a one-shot runtime guard so
             # the first call to health_check() validates the return type
@@ -181,6 +187,8 @@ def _load_private_extension(
     module_name: str,
     path: Path,
     config: dict[str, Any],
+    *,
+    persona: PersonaConfig,
 ) -> Any:
     # Defense in depth: reject path-traversal-y module names even though the
     # private repo is trusted — cheap guard, avoids loading from outside
@@ -201,7 +209,55 @@ def _load_private_extension(
         # Don't leave a partially-initialized module shadowing future imports
         sys.modules.pop(mod_key, None)
         raise
-    return mod.create_extension(config)
+    return _call_create_extension(mod, module_name, config, persona=persona)
+
+
+def _call_create_extension(
+    mod: Any,
+    module_name: str,
+    config: dict[str, Any],
+    *,
+    persona: PersonaConfig,
+) -> Any:
+    """Invoke an extension's ``create_extension`` factory with the persona kwarg.
+
+    Per ms-graph-extension extension-registry MODIFIED: the factory
+    contract is ``create_extension(config, *, persona)``. Stubs accept
+    and ignore; real factories use ``persona`` to construct their MSAL
+    strategy and per-extension GraphClient. Legacy out-of-tree factories
+    that do NOT accept ``persona`` MUST surface as an actionable
+    ``TypeError`` at load time so the operator can migrate the third-
+    party extension rather than discovering the breakage at first
+    Graph call.
+    """
+    factory = getattr(mod, "create_extension", None)
+    if factory is None:
+        raise ImportError(
+            f"Extension module {module_name!r} does not define "
+            f"create_extension(config, *, persona)."
+        )
+    try:
+        return factory(config, persona=persona)
+    except TypeError as exc:
+        msg = str(exc)
+        legacy_signal = (
+            "unexpected keyword argument 'persona'" in msg
+            or "got an unexpected keyword argument 'persona'" in msg
+            or "takes 1 positional argument" in msg
+            or "takes no keyword arguments" in msg
+        )
+        if legacy_signal:
+            raise TypeError(
+                f"Extension {module_name!r}: legacy create_extension "
+                "signature does not accept the 'persona' keyword argument. "
+                "Migration: change the factory to "
+                "`def create_extension(config: dict[str, Any], *, persona: "
+                "PersonaConfig | None = None) -> Extension:`. Stubs may "
+                "accept and ignore `persona`; real Microsoft 365 factories "
+                "use `persona` to construct an MSALStrategy + GraphClient. "
+                "See docs/gotchas.md for the migration recipe."
+            ) from exc
+        raise
 
 
 def _install_health_check_conformance_guard(ext: Any) -> None:

@@ -15,10 +15,13 @@ import pytest
 from assistant.extensions.base import Extension
 
 STUB_NAMES = [
-    "ms_graph",
-    "teams",
-    "sharepoint",
-    "outlook",
+    # ``ms_graph``/``teams``/``sharepoint``/``outlook`` removed per
+    # ms-graph-extension extension-registry MODIFIED — those four are
+    # now real implementations under
+    # ``tests/test_extensions_<name>.py``. The three remaining stubs
+    # (``gmail``/``gcal``/``gdrive``) become real in P14
+    # google-extensions; until then they keep returning empty tool
+    # lists and ``HealthState.UNKNOWN`` per the modified contract.
     "gmail",
     "gcal",
     "gdrive",

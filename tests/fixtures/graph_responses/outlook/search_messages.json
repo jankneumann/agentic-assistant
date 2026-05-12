@@ -1,0 +1,17 @@
+{
+  "_comment": "// FIXTURE_GRAPH_RESPONSE_v1 — synthetic only (CLAUDE.md G6)",
+  "value": [
+    {
+      "id": "FIXTURE_SEARCH_HIT_1",
+      "subject": "FIXTURE_SEARCHED_SUBJECT",
+      "from": {
+        "emailAddress": {
+          "name": "FIXTURE_SENDER_NAME",
+          "address": "fixture-sender@example.invalid"
+        }
+      },
+      "receivedDateTime": "2026-05-06T09:00:00Z",
+      "bodyPreview": "FIXTURE_SEARCH_HIT_PREVIEW"
+    }
+  ]
+}

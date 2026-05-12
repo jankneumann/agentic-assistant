@@ -1,0 +1,30 @@
+{
+  "review_type": "implementation",
+  "target": "cli-dispatch",
+  "dispatches": [
+    {
+      "vendor": "codex",
+      "success": true,
+      "model_used": "gpt-5.5",
+      "models_attempted": [
+        "gpt-5.5"
+      ],
+      "elapsed_seconds": 215.13215600000694,
+      "error": null,
+      "error_class": null
+    },
+    {
+      "vendor": "gemini",
+      "success": true,
+      "model_used": "auto",
+      "models_attempted": [
+        "auto"
+      ],
+      "elapsed_seconds": 151.63328499998897,
+      "error": null,
+      "error_class": null
+    }
+  ],
+  "quorum_requested": 2,
+  "quorum_received": 2
+}

@@ -245,6 +245,58 @@ class LangfuseProvider:
         )
         return None
 
+    def trace_graph_call(
+        self,
+        *,
+        extension_name: str,
+        method: str,
+        path: str,
+        status_code: int | None,
+        duration_ms: float,
+        breaker_key: str,
+        request_id: str | None = None,
+        retry_attempt: int = 0,
+        bytes_streamed: int | None = None,
+        error: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Emit a per-HTTP-request span for ``CloudGraphClient`` traffic.
+
+        Mirrors ``trace_tool_call``'s shape but carries the transport-
+        level fields the dashboards need (request_id for Entra/Graph
+        audit correlation, retry_attempt to spot retry storms, bytes_
+        streamed to flag get_bytes downloads). The span attribute
+        ``tool_kind`` is fixed to ``"graph"`` so existing dashboards
+        filtering on ``tool_kind`` continue to work unmodified.
+        """
+        if self._client is None:
+            return None
+        md = self._sanitise_md(metadata)
+        md.update(
+            {
+                "tool_kind": "graph",
+                "extension_name": extension_name,
+                "method": method,
+                "path": path,
+                "status_code": status_code,
+                "duration_ms": duration_ms,
+                "breaker_key": breaker_key,
+                "retry_attempt": retry_attempt,
+            }
+        )
+        if request_id is not None:
+            md["request_id"] = request_id
+        if bytes_streamed is not None:
+            md["bytes_streamed"] = bytes_streamed
+        if error:
+            md["error"] = error
+        self._emit_observation(
+            name="graph_call",
+            as_type="tool",
+            metadata=md,
+        )
+        return None
+
     def trace_memory_op(
         self,
         *,

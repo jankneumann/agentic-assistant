@@ -1,0 +1,34 @@
+{
+  "review_type": "implementation",
+  "target": "ms-graph-extension",
+  "reviewer_vendor": "gemini-2.0-flash",
+  "findings": [
+    {
+      "id": 1,
+      "type": "observability",
+      "criticality": "low",
+      "description": "src/assistant/core/graph_client.py:_get_bytes_inner: Span retry_attempt attribute does not account for redirect_follows, leading to duplicate attempt indices in dashboards when both auth-refresh and redirects occur in a single logical operation.",
+      "resolution": "Update all span emissions in _get_bytes_inner to use retry_attempt=base_attempt + auth_refreshes + redirect_follows to ensure unique indices per HTTP hop.",
+      "disposition": "fix",
+      "package_id": "whole-branch"
+    },
+    {
+      "id": 2,
+      "type": "observability",
+      "criticality": "medium",
+      "description": "src/assistant/core/graph_client.py:_get_bytes_inner: Missing graph_call spans for transport-level failures (e.g., ReadTimeout) during streaming, causing a visibility gap compared to _send_with_auth_retry which correctly emits status_code=None spans for such errors.",
+      "resolution": "Wrap the streaming loop and initial request in a try/except block for httpx transport errors and emit a graph_call span with status_code=None and the appropriate error label before re-raising.",
+      "disposition": "fix",
+      "package_id": "whole-branch"
+    },
+    {
+      "id": 3,
+      "type": "compatibility",
+      "criticality": "medium",
+      "description": "src/assistant/core/graph_client.py:_get_bytes_inner: Transport errors (httpx subclasses) are not mapped to GraphAPIError, breaking consistency with the R6 remediation in _send_with_auth_retry and forcing callers (like SharePointExtension) to handle transport-specific exceptions instead of a unified API error type.",
+      "resolution": "Implement the same error_code_map and GraphAPIError wrapping in the exception handlers of _get_bytes_inner as used in _send_with_auth_retry.",
+      "disposition": "fix",
+      "package_id": "whole-branch"
+    }
+  ]
+}
