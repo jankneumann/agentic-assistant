@@ -1,0 +1,106 @@
+{
+  "review_type": "plan",
+  "target": "ms-graph-extension",
+  "reviewer_vendor": "codex",
+  "findings": [
+    {
+      "id": 1,
+      "type": "architecture",
+      "criticality": "high",
+      "description": "The plan requires real MS extensions to accept an injected GraphClient, and scenarios call create_extension(config={}, client=mock_client), but the existing PersonaRegistry.load_extensions path still calls mod.create_extension(config) and no spec/task updates the registry or capability resolver to create an MSALStrategy and per-extension GraphClient. This leaves the real extensions unconstructable through the production extension-loading path.",
+      "resolution": "Add normative requirements and tasks for extension registry/resolver wiring: detect MS extensions, create the persona-scoped MSALStrategy, construct GraphClient with the extension's scopes and name, and call the real factory with the client. Update factory signatures or provide backward-compatible overloads explicitly.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/extension-registry/spec.md"
+    },
+    {
+      "id": 2,
+      "type": "contract_mismatch",
+      "criticality": "high",
+      "description": "CloudGraphClient only supports JSON dict GET/POST responses, but ms-extensions declares sharepoint.download_document. A real SharePoint/Drive content download needs bytes, streaming, or a redirect/content endpoint contract; it cannot be represented safely by get() -> dict[str, Any].",
+      "resolution": "Either defer download_document from P5 or extend CloudGraphClient with a bounded get_bytes/download method, content-type handling, max-size limits, and tests for binary/large-file behavior.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/graph-client/spec.md"
+    },
+    {
+      "id": 3,
+      "type": "correctness",
+      "criticality": "high",
+      "description": "GraphClient POST is specified to return a parsed dict for every 2xx response, but outlook.send_email posts to /me/sendMail, which commonly returns a successful empty 202 response. A mandatory JSON parse will fail on the planned write tool's success path.",
+      "resolution": "Specify empty-body handling for 202/204 responses, for example returning {} or a typed success object, and add a send_email test covering the empty 202 response.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/graph-client/spec.md"
+    },
+    {
+      "id": 4,
+      "type": "resilience",
+      "criticality": "high",
+      "description": "D4 and the graph-client spec say every GraphClient HTTP call is wrapped with P9 resilient_http, but GraphAPIError is the required exception for non-2xx responses. Existing resilient_http retries httpx.HTTPStatusError/status-coded httpx failures, not an arbitrary custom GraphAPIError, so 429/5xx Graph responses may never retry or trip the breaker as intended.",
+      "resolution": "Specify the exact integration contract: either GraphAPIError subclasses or wraps httpx.HTTPStatusError in a way resilient_http classifies, or P9 retry policy is extended to recognize GraphAPIError.status_code. Add tests for 429, 500, breaker accounting, and non-retry 401/403.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/graph-client/spec.md"
+    },
+    {
+      "id": 5,
+      "type": "resilience",
+      "criticality": "high",
+      "description": "The plan applies the same retry layer to all outbound Graph calls, including non-idempotent POST writes send_email and post_chat_message. Retrying those after a timeout, 429, or 5xx can send duplicate emails or chat messages because no idempotency key, retry classification, or write-specific policy is specified.",
+      "resolution": "Add write-specific resilience requirements: do not automatically retry non-idempotent POSTs unless a Graph-supported idempotency mechanism is available, or split GraphClient policies by method/tool. Add tests proving send_email and post_chat_message are not duplicated on retryable failures.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/ms-extensions/spec.md"
+    },
+    {
+      "id": 6,
+      "type": "resilience",
+      "criticality": "medium",
+      "description": "The specs mention 429 through P9 resilience but do not require Microsoft Graph Retry-After handling. Default exponential backoff can violate Graph throttling guidance and amplify rate-limit failures.",
+      "resolution": "Add a GraphClient requirement to honor Retry-After on 429/503 before generic backoff, including date and delta-seconds forms where supported, with tests using respx.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/graph-client/spec.md"
+    },
+    {
+      "id": 7,
+      "type": "performance",
+      "criticality": "medium",
+      "description": "MSAL's Python token acquisition APIs are synchronous, while MSALStrategy exposes async acquire_token. The specs do not require blocking MSAL calls, including interactive/device-code/client-credentials flows, to be run off the event loop.",
+      "resolution": "Specify that synchronous MSAL calls must be isolated with asyncio.to_thread or another bounded executor strategy, and add async tests proving concurrent Graph calls are not blocked by a slow MSAL mock.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/msal-auth/spec.md"
+    },
+    {
+      "id": 8,
+      "type": "security",
+      "criticality": "medium",
+      "description": "Token Cache File Discipline requires the final cache file to be 0o600, but does not require the temporary msal_token_cache.json.tmp file to be created with restrictive permissions before secret material is written. On a permissive umask, the temp file can be briefly group/world readable.",
+      "resolution": "Require opening the tmp file with mode 0o600 before writing token cache contents, audit tmp-file permissions, and add a test that the tmp path is never created with group/other bits.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/msal-auth/spec.md"
+    },
+    {
+      "id": 9,
+      "type": "security",
+      "criticality": "medium",
+      "description": "Tool inputs such as message_id, chat_id, site/document identifiers, and OData search strings are interpolated into Graph paths/params, but ms-extensions does not specify path-segment escaping, allowlisting, or input validation. Malformed IDs could alter paths or query semantics before reaching GraphClient.",
+      "resolution": "Add per-tool validation requirements: path parameters must be URL-encoded as path segments or rejected if they contain separators/control characters, query strings must be passed only through params, and tests should cover injection-like IDs.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/ms-extensions/spec.md"
+    },
+    {
+      "id": 10,
+      "type": "observability",
+      "criticality": "medium",
+      "description": "Observability requirements preserve trace_tool_call and trace_llm_call, but there is no normative transport-level Graph span/log requirement for method, sanitized path, status_code, request_id/client-request-id, retry count, or throttling. Resilience spans alone do not identify which Graph operation failed.",
+      "resolution": "Add GraphClient observability requirements for one sanitized HTTP-call span per outbound Graph request attempt or logical call, including extension_name, method, normalized path, status_code, request_id, retry/refresh outcome, and no tokens or PII-bearing query values.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/graph-client/spec.md"
+    },
+    {
+      "id": 11,
+      "type": "contract_mismatch",
+      "criticality": "medium",
+      "description": "Strategy Selection by Persona Configuration references persona.auth.ms.flow and D8 shows auth.ms YAML, but the current PersonaConfig exposes auth_provider/auth_config plus raw, and core/persona.py currently resolves auth.config rather than an auth.ms subtree. The plan does not specify whether PersonaConfig changes, raw access, or a parser migration owns this schema.",
+      "resolution": "Add a concrete persona schema compatibility requirement and task: either extend PersonaConfig with auth.ms fields, document create_msal_strategy reading persona.raw['auth']['ms'], or align D8 with the existing auth.config pattern. Include backward-compatible tests around _env lookup.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/msal-auth/spec.md"
+    }
+  ]
+}

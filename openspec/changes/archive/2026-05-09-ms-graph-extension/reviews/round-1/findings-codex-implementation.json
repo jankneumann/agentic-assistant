@@ -1,0 +1,61 @@
+{
+  "review_type": "implementation",
+  "target": "ms-graph-extension",
+  "reviewer_vendor": "gpt-5-codex",
+  "findings": [
+    {
+      "id": 1,
+      "type": "observability",
+      "criticality": "medium",
+      "description": "P9 retries do not increment trace_graph_call retry_attempt: src/assistant/core/graph_client.py:489-638 defaults retry_attempt to 0, while wrappers at src/assistant/core/graph_client.py:722, src/assistant/core/graph_client.py:757, and src/assistant/core/graph_client.py:892 re-invoke through @resilient_http without passing the actual P9 attempt number, so a 503-then-200 retry emits spans with retry_attempt=0 twice, violating the observability spec and D15.",
+      "resolution": "Propagate the resilience attempt number into GraphClient request execution, for example with a ContextVar set by resilient_http or a retry-attempt callback, and pass it to _send_with_auth_retry/_emit_graph_call_span for get/post/paginate/get_bytes.",
+      "disposition": "fix",
+      "package_id": "whole-branch"
+    },
+    {
+      "id": 2,
+      "type": "correctness",
+      "criticality": "high",
+      "description": "get_bytes bypasses the 401 invalid_token refresh path: src/assistant/core/graph_client.py:940-991 acquires one token, streams once, and raises GraphAPIError for non-success responses without checking WWW-Authenticate or calling acquire_token(force_refresh=True), violating the graph-client Authentication Token Refresh on 401 requirement for binary downloads.",
+      "resolution": "Route get_bytes through the same authenticated request helper as get/post, or implement an equivalent single force_refresh replay around the streaming request before raising on a second 401.",
+      "disposition": "fix",
+      "package_id": "whole-branch"
+    },
+    {
+      "id": 3,
+      "type": "resilience",
+      "criticality": "high",
+      "description": "retry_safe=False POSTs can leave the graph breaker stuck half-open: src/assistant/core/graph_client.py:780-807 records failures for non-retrying POSTs but never records success, and CircuitBreaker.acquire_admission only clears the probe flag in src/assistant/core/resilience.py:271-279, so a successful half-open send_email/post_chat_message leaves state='half_open' and future calls short-circuit.",
+      "resolution": "In _post_no_retry, capture the _post_inner result, call await self._breaker.record_success() on success, then return the result; keep the existing failure accounting path unchanged.",
+      "disposition": "fix",
+      "package_id": "whole-branch"
+    },
+    {
+      "id": 4,
+      "type": "contract_mismatch",
+      "criticality": "medium",
+      "description": "teams.post_chat_message does not match the spec contract: src/assistant/extensions/teams.py:227-238 exposes a content argument, but the spec scenario calls text='hello'; src/assistant/extensions/teams.py:401-425 also sends {'body': {'content': content, 'contentType': 'text'}} while the spec requires exactly {'body': {'content': 'hello'}}.",
+      "resolution": "Rename the tool parameter to text or accept text as a backward-compatible alias, and align the POST payload with the specified body shape unless the spec is intentionally revised.",
+      "disposition": "fix",
+      "package_id": "whole-branch"
+    },
+    {
+      "id": 5,
+      "type": "spec_gap",
+      "criticality": "medium",
+      "description": "MSAgentFrameworkHarness does not consume ContextProvider despite D10/Capability Consumption: src/assistant/harnesses/sdk/ms_agent_fw.py:155-175 calls compose_system_prompt directly and the harness constructor has no context_provider injection path, so custom CapabilityResolver context providers are ignored.",
+      "resolution": "Resolve the CapabilitySet once for create_agent and use capability_set.context.compose_system_prompt(persona, role) when present, with compose_system_prompt only as the default provider implementation; add a test with an injected custom ContextProvider.",
+      "disposition": "fix",
+      "package_id": "whole-branch"
+    },
+    {
+      "id": 6,
+      "type": "resilience",
+      "criticality": "medium",
+      "description": "Timeout errors are not consistently mapped to GraphAPIError as required: src/assistant/core/graph_client.py:506-525 catches only httpx.ReadTimeout, so ConnectTimeout, WriteTimeout, and PoolTimeout propagate as raw httpx exceptions; get_bytes at src/assistant/core/graph_client.py:957-1037 has no timeout-to-GraphAPIError mapping at all.",
+      "resolution": "Catch httpx.TimeoutException subclasses in all request paths, map them to GraphAPIError(status_code=None) with distinct error_code/message values, and still emit trace_graph_call before propagating.",
+      "disposition": "fix",
+      "package_id": "whole-branch"
+    }
+  ]
+}

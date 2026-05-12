@@ -7,6 +7,7 @@ Per OpenSpec change ``error-resilience`` (P9). Design decisions D1-D15.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import enum
 import logging
 import random
@@ -23,6 +24,16 @@ from assistant.telemetry.sanitize import sanitize
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
+
+# ContextVar carrying the 0-indexed retry attempt number within the
+# currently-active ``resilient_http`` retry loop. Consumers (e.g.,
+# GraphClient's per-request trace emitter) can read this to attribute
+# their per-call observability spans to the correct retry attempt.
+# Defaults to 0 outside any retry loop. Purely additive — wrapped
+# functions that ignore this var see no behavior change.
+current_retry_attempt: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "resilience_current_retry_attempt", default=0
+)
 
 logger = logging.getLogger("assistant.resilience")
 
@@ -570,6 +581,18 @@ async def _run_with_retry(
         ):
             with attempt:
                 attempt_number = attempt.retry_state.attempt_number
+                # Expose the 0-indexed attempt number to the wrapped
+                # function's call-stack via ContextVar so per-request
+                # observability spans (e.g., GraphClient.trace_graph_call)
+                # attribute correctly to the retry attempt rather than
+                # always emitting attempt=0. Capture the token so we
+                # can reset on exit — without reset, a subsequent call
+                # in the same task that does NOT go through
+                # resilient_http (e.g., GraphClient._post_no_retry)
+                # would read the stale last-attempt value.
+                _retry_attempt_token = current_retry_attempt.set(
+                    attempt_number - 1
+                )
                 this_attempt_error: str | None = None
                 try:
                     result = await fn(*args, **kwargs)
@@ -592,6 +615,7 @@ async def _run_with_retry(
                         ),
                         error_type=this_attempt_error,
                     )
+                    current_retry_attempt.reset(_retry_attempt_token)
                     raise
                 # Successful attempt — emit span with error_type=None.
                 _emit_attempt_span(
@@ -602,6 +626,7 @@ async def _run_with_retry(
                     ),
                     error_type=None,
                 )
+                current_retry_attempt.reset(_retry_attempt_token)
         await breaker.record_success()
         return result
     except Exception as exc:

@@ -1,0 +1,896 @@
+## Context
+
+Phase P5 lights up Microsoft 365 access for the agentic-assistant. With
+foundations P3 (`http-tools-layer`), P1.8 (`capability-protocols`), and
+P9 (`error-resilience`) all archived, the prerequisites for a real MS
+Graph integration are in place. Today, the four target extensions are
+11-line shims (`StubExtension`-returning factories) and the MS Agent
+Framework harness raises `NotImplementedError`. The work persona — not
+yet built — is the primary consumer; the personal persona will continue
+to use Google Workspace (P14) for personal work.
+
+The proposal selected **Approach A.2** (Transport-interface Protocol +
+custom MS implementation). This document captures the technical
+decisions that A.2 needs to land cleanly across one foundation
+work-package, four extension work-packages, and one harness
+work-package.
+
+Discovery decisions already locked:
+
+- **MSAL flow**: `acquire_token_interactive()` + `acquire_token_silent()`
+  for delegated; `client_credentials` for unattended. Pluggable
+  strategies. Device-code as headless fallback.
+- **MSAF SDK**: confirmed via Context7 as `agent-framework` (PyPI
+  package `agent-framework`, GitHub `microsoft/agent-framework`).
+- **API surface**: read-heavy MVP + send Outlook email + post Teams
+  chat. SharePoint write-side, calendar create, Teams meeting create
+  deferred to P5b.
+- **Test strategy**: `respx` + typed `MockGraphClient` + opt-in
+  `RUN_GRAPH_TESTS=1` integration suite.
+- **Persona default**: personal persona stays opted out (P5 ships code
+  only).
+- **Broker target**: web-interactive everywhere (no `msal[broker]`).
+
+## Goals / Non-Goals
+
+**Goals:**
+
+- Deliver four real MS 365 extensions wired end-to-end through the
+  existing capability resolver, tool policy, and resilience layers.
+- Deliver a fully implemented `MSAgentFrameworkHarness` (replacing the
+  `NotImplementedError` stub) using `agent-framework` as the SDK,
+  satisfying `SdkHarnessAdapter`'s contract (create_agent, invoke,
+  spawn_sub_agent).
+- Establish reusable foundation modules (`core/cloud_client.py`,
+  `core/msal_auth.py`, `core/graph_client.py`) so that P14
+  google-extensions can either implement the same Protocol with custom
+  code or with a vendor SDK adapter.
+- Maintain zero regressions: existing `extension-registry`,
+  `harness-adapter`, and `error-resilience` requirements that don't
+  change MUST keep passing. Stub behavior for `gmail`/`gcal`/`gdrive`
+  (P14 territory) is preserved verbatim.
+
+**Non-Goals:**
+
+- Personal persona enabling MS extensions in P5. (Deferred to P15
+  `work-persona-config` for the work persona, never for personal.)
+- Windows token broker (`msal[broker]` / PyWAM) integration.
+- SharePoint writes, Outlook calendar event creation, Teams meeting
+  creation/management.
+- Wrapping or adopting `msgraph-sdk`. The Protocol shape allows a
+  future drop-in adapter, but P5 ships custom httpx only.
+- Cross-tenant or multi-account auth. One persona = one tenant + one
+  identity.
+- Performance optimization of paginated reads beyond what
+  `@odata.nextLink` chasing naturally provides.
+
+## Decisions
+
+### D1 — Two pluggable MSAL strategies
+
+The auth foundation exposes a `MSALStrategy` Protocol with a single
+async method `acquire_token(scopes: list[str]) -> str`. Two concrete
+implementations land in P5:
+
+- **`InteractiveDelegatedStrategy`** — uses
+  `msal.PublicClientApplication` with `acquire_token_interactive()` for
+  first-run consent (opens system browser; honors Entra ID SSO,
+  conditional access, MFA). On subsequent calls, prefers
+  `acquire_token_silent()` from a serialized token cache. If silent
+  acquisition fails (e.g., refresh token expired), falls back to
+  interactive.
+- **`ClientCredentialsStrategy`** — uses
+  `msal.ConfidentialClientApplication.acquire_token_for_client()` with
+  `tenant_id`, `client_id`, `client_secret`. No user identity, no
+  refresh token, no cache. Token TTL is the only state.
+
+Selection is persona-driven via `auth.flow:
+interactive | client_credentials` in `persona.yaml`. The factory
+`create_msal_strategy(persona)` returns the appropriate instance.
+
+**Why two strategies, not one:** The work persona's day-to-day usage
+needs delegated identity (the agent acts "as the user" — sending mail
+as them, reading their inbox). But P7 scheduler, P6 a2a-server, and P17
+mcp-server-exposure will need unattended auth for jobs that act without
+a user present. Both flows are first-class in Entra ID, and bundling
+them in one strategy class would couple unrelated configuration paths.
+
+**Alternatives considered:**
+
+- *Single unified strategy with a flow enum*: rejected because the
+  initialization parameters differ enough that the class would be a
+  switchboard with mostly-disjoint code paths.
+- *Device code as a strategy class*: rejected because device code is a
+  fallback-when-headless concern, not a deployment target. Operators
+  who need it set `MSAL_FALLBACK_DEVICE_CODE=1`, which the
+  `InteractiveDelegatedStrategy` honors at runtime by switching
+  `acquire_token_interactive()` to `initiate_device_flow()`.
+
+### D2 — Per-persona token cache file with restrictive permissions
+
+Token cache lives at
+`personas/<persona_name>/.cache/msal_token_cache.json`. The directory
+is created on first run with mode `0o700`; the file is written with
+mode `0o600`. The cache uses MSAL's `SerializableTokenCache`
+(documented round-tripping API).
+
+Atomicity: writes go to `msal_token_cache.json.tmp` then `os.rename()`
+onto the final path. On read, missing-file is silently treated as
+"empty cache" so first runs don't error.
+
+**Why per-persona, not per-account:** The persona is the auth boundary
+in this project (CLAUDE.md "Persona = execution boundary"). Two
+personas share zero auth state.
+
+**Why JSON cache and not OS keychain:** `msal[broker]` and OS-keychain
+integration are deferred (Q6 broker decision). JSON in
+`personas/<name>/.cache/` is gitignore-able by the persona submodule
+template. P5 amends `personas/_template/.gitignore` to exclude
+`.cache/` so it's never committed by accident.
+
+**Alternatives considered:**
+
+- *Single global cache at `~/.cache/agentic-assistant/`*: rejected
+  because it crosses persona boundaries (a `personal`-tenant token
+  could end up readable to a `work` persona session).
+- *No cache (re-auth every run)*: rejected because interactive flows
+  would prompt every CLI invocation — unusable.
+
+### D3 — `CloudGraphClient` Protocol shape
+
+A new module `core/cloud_client.py` declares:
+
+```python
+@runtime_checkable
+class CloudGraphClient(Protocol):
+    """Transport-level interface for cloud-graph-shaped APIs."""
+
+    async def get(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]: ...
+
+    async def post(
+        self,
+        path: str,
+        *,
+        json: dict[str, Any],
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]: ...
+
+    async def paginate(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]: ...
+
+    async def get_bytes(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        max_bytes: int = 50 * 1024 * 1024,
+    ) -> dict[str, Any]: ...
+    # ^ returns metadata dict with keys: path, size_bytes,
+    #   content_type, request_id (per D19 / graph-client spec).
+    #   Streaming the bytes body to a tempfile and returning a
+    #   handle/metadata avoids LLM context overflow on large
+    #   downloads.
+
+    async def health_check(self) -> HealthStatus: ...
+
+    # Lifecycle — also available on the Protocol so type-checked
+    # consumers (tests, future P14 extensions) can use a uniform
+    # async-context-manager pattern.
+    async def __aenter__(self) -> "CloudGraphClient": ...
+    async def __aexit__(self, *exc: Any) -> None: ...
+    async def aclose(self) -> None: ...
+```
+
+`paginate` chases `@odata.nextLink` by default; for Google APIs (P14)
+the same Protocol can chase `nextPageToken` in its concrete
+implementation — neither convention bleeds through the Protocol.
+
+**Why exactly these five methods:** They cover 100% of the call shapes
+the four MS extensions need: list (`get` + `paginate`), read (`get`),
+binary download for documents/attachments (`get_bytes`, see D19),
+write (`post`), and report-self-health (`health_check`). PUT/PATCH/DELETE
+are deferred to P5b.
+
+**Alternatives considered:**
+
+- *Expose the underlying httpx Client directly*: rejected because that
+  binds extensions to httpx and makes a future SDK swap leak.
+- *Generate the Protocol from OpenAPI*: rejected because Graph's
+  OpenAPI is enormous and the project already chose hand-curated
+  scopes.
+
+### D4 — `GraphClient` implementation = httpx + MSAL strategy + resilience
+
+`core/graph_client.py` provides `GraphClient` — the custom MS
+implementation of `CloudGraphClient`. Key properties:
+
+- **Single shared `httpx.AsyncClient`** per persona (lifespan-managed
+  through the P10 extension lifecycle when that lands; P5 builds with
+  a context-manager pattern in the meantime). Configured with
+  `follow_redirects=False` to prevent any 3xx response from carrying
+  the bearer token to a non-Graph host.
+- **Trusted-hosts validation**: `GraphClient` accepts a
+  `trusted_hosts: list[str] | None = None` constructor argument
+  defaulting to the three currently-active Graph hosts
+  (`graph.microsoft.com`, `graph.microsoft.us`,
+  `microsoftgraph.chinacloudapi.cn`). Any `@odata.nextLink` whose
+  scheme is not `https` or whose host is not in this list is
+  rejected with `GraphAPIError(error_code="invalid_redirect")`
+  before the bearer is attached. (graph-client spec:
+  "Cross-Domain Redirect Rejection".)
+- **MSAL token plumbing**: every request fetches a fresh token via the
+  configured strategy's `acquire_token(scopes)`. Token caching is the
+  strategy's responsibility, not the client's.
+- **Resilience integration**: every method wraps with
+  `@resilient_http(breaker_key=f"graph:{extension_name}")` from P9.
+  Breaker keys are namespaced per extension so one extension's
+  unavailability doesn't trip another's calls. The `extension_name` is
+  passed at `GraphClient` construction.
+- **`paginate()` semantics**: yields each full page response (a dict
+  with `value`, `@odata.nextLink`, and other top-level keys), not
+  individual records or just the `value` array. Caller decides
+  whether to flatten. Hard ceiling at 100 pages (configurable via
+  constructor arg) — when reached, paginate raises `GraphAPIError
+  (error_code="page_ceiling_exceeded")` rather than truncating
+  silently, so callers cannot mistake a truncated result for a
+  complete one.
+- **Error sanitization**: on any non-2xx, raises a custom
+  `GraphAPIError` whose `__str__` is run through `_sanitize_error_string`
+  (P9) so logged errors never contain access tokens.
+
+**Why pass `extension_name` at construction:** Each extension owns
+its own `GraphClient` instance, scoped to its own breaker key. This
+lets observability dashboards (P4) attribute Graph failures to the
+right extension, and lets a flapping extension's circuit open
+without cascading.
+
+### D5 — MSAF SDK is `agent-framework`; harness uses `OpenAIChatClient`
+
+Per Context7 confirmation: `agent-framework` (PyPI: `agent-framework`,
+repo: `github.com/microsoft/agent-framework`) is the canonical
+"Microsoft Agent Framework" Python package.
+
+**Pinned version (resolved 2026-05-05 via Context7):**
+`agent-framework>=1.0.0,<2.0.0`. The plan pins this version range
+*now*, at PLAN_ITERATE time, rather than re-resolving via Context7
+during implementation. This eliminates a parallel-execution race
+where wp-msaf-harness could otherwise start before the version is
+agreed, and keeps the foundation/harness merge train deterministic.
+If the resolved version turns out to be incompatible at
+implementation time, the implementer SHALL re-run Context7 lookup
+and update the pin in a single foundation-touching commit before
+proceeding (rather than negotiating versions across packages).
+
+The `MSAgentFrameworkHarness` will use:
+
+- `from agent_framework import Agent, ai_function`
+- `from agent_framework.openai import OpenAIChatClient` (when persona
+  uses OpenAI directly) or
+  `from agent_framework.azure_openai import AzureOpenAIChatClient`
+  (when persona uses Azure OpenAI)
+- Construction: `Agent(client=chat_client, instructions=composed_prompt,
+  tools=converted_tool_list)`
+- Invocation: `await agent.run(message)` returns the final response.
+  The harness extracts the response string and returns it from
+  `invoke()`.
+
+**Tool conversion is the central novelty** of this harness. Our
+extensions emit tools via two methods today: `as_langchain_tools()`
+returns LangChain `StructuredTool` instances; `as_ms_agent_tools()`
+already exists in the Extension Protocol (extension-registry spec) but
+was never populated. P5 populates it: each extension's
+`as_ms_agent_tools()` returns a list of `agent-framework`-compatible
+async functions (decorated with `@ai_function` from
+`agent_framework`). The MSAF harness consumes ONLY
+`as_ms_agent_tools()`, never `as_langchain_tools()`. Conversely, the
+DeepAgents harness consumes only `as_langchain_tools()`. The two tool
+formats are siblings, not derived from one another, because the
+function-signature semantics differ enough that adapting after the
+fact is more brittle than authoring twice.
+
+**Sub-agent spawning**: `agent-framework` supports tool-as-agent
+patterns (one agent's `tools` list can include another agent's `run`
+method). `spawn_sub_agent(role, task, tools, extensions)` builds a
+nested `Agent` for the sub-role and calls `await sub_agent.run(task)`
+synchronously, returning the result string. This mirrors how
+`DeepAgentsHarness` does it.
+
+**Alternatives considered:**
+
+- *`semantic-kernel` Python*: rejected because it's broader than we
+  need and its agent abstractions are layered on top of more
+  abstractions (kernel, plugins, planners). MSAF's flat shape fits the
+  HarnessAdapter contract more directly.
+- *`microsoft/agents-for-python` (M365 Agents SDK)*: rejected because
+  it's targeted at building bots that run inside Teams/Copilot Studio,
+  not at building local agents that consume MS Graph data.
+
+### D6 — Extension internal structure
+
+Each extension module follows this shape:
+
+```python
+# src/assistant/extensions/outlook.py
+
+class OutlookExtension:
+    name: str = "outlook"
+
+    def __init__(self, config: dict[str, Any], client: GraphClient) -> None:
+        self.config = config
+        self.scopes = list(config.get("scopes", DEFAULT_SCOPES) or [])
+        self._client = client
+        self._breaker = CircuitBreakerRegistry.get_breaker(f"extension:{self.name}")
+
+    def as_langchain_tools(self) -> list[StructuredTool]:
+        return [
+            _build_langchain_tool("outlook.list_messages", self._list_messages),
+            _build_langchain_tool("outlook.read_message", self._read_message),
+            # ... etc
+        ]
+
+    def as_ms_agent_tools(self) -> list[Callable]:
+        return [
+            ai_function(name="outlook.list_messages")(self._list_messages),
+            ai_function(name="outlook.read_message")(self._read_message),
+            # ... etc
+        ]
+
+    async def health_check(self) -> HealthStatus:
+        return health_status_from_breaker(self._breaker, key=f"extension:{self.name}")
+
+    async def _list_messages(self, top: int = 25, ...) -> list[dict]: ...
+    async def _read_message(self, message_id: str) -> dict: ...
+```
+
+Key points:
+
+- The same private async method (`_list_messages`) is wrapped twice —
+  once for LangChain, once for MSAF — preserving identical behavior at
+  the wire level.
+- `GraphClient` is **injected** at construction, not built inside the
+  extension. This makes testing trivial (`MockGraphClient` substitutes
+  cleanly) and keeps each extension stateless about transport.
+- Default scopes per extension are declared as module-level constants,
+  overridable from `persona.yaml`'s `extensions.<name>.config.scopes`.
+
+### D7 — Test infrastructure
+
+Three layers of testing:
+
+1. **Unit tests with `respx`** — mock httpx at the wire level. Each
+   extension test file (`tests/test_extensions_outlook.py` etc.)
+   loads a fixture JSON (`tests/fixtures/graph_responses/outlook/
+   list_messages.json`), pins respx routes, invokes the extension's
+   tool, asserts the parsed result.
+2. **Extension-level tests with `MockGraphClient`** — substitute the
+   `CloudGraphClient` Protocol entirely. These tests verify extension
+   behavior without HTTP at all: pagination handling, error mapping,
+   scope assembly. `tests/mocks/graph_client.py` exposes
+   `MockGraphClient` with method-level patch hooks.
+3. **Opt-in integration tests** — gated on `RUN_GRAPH_TESTS=1` in env.
+   These exercise real MSAL device-code auth + real Graph endpoints
+   in a `tests/integration/` directory not collected by default. They
+   require `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and a valid
+   refresh-token-bearing test account. CI does NOT run these.
+
+**Privacy boundary preservation:** All test fixtures live under
+`tests/fixtures/graph_responses/`. None contain real names, real email
+addresses, or real chat content. Each fixture has a leading sentinel
+comment `// FIXTURE_GRAPH_RESPONSE_v1` to satisfy the existing privacy
+guard pattern (CLAUDE.md G6).
+
+**MockGraphClient typing:** Implements `CloudGraphClient` Protocol
+exactly. Stub return values are configured per-test via simple
+attribute assignment (`mock.next_get_response = {...}`). No global
+state.
+
+### D8 — Persona auth schema (work persona, future)
+
+The work persona's `personas/work/persona.yaml` (lands in P15) will
+declare:
+
+```yaml
+auth:
+  ms:
+    flow: interactive  # or "client_credentials"
+    tenant_id_env: AZURE_TENANT_ID
+    client_id_env: AZURE_CLIENT_ID
+    # for client_credentials only:
+    client_secret_env: AZURE_CLIENT_SECRET
+    # cache location relative to persona root:
+    token_cache_path: ".cache/msal_token_cache.json"
+
+extensions:
+  ms_graph:
+    enabled: true
+    config:
+      scopes: ["User.Read", "People.Read"]
+  outlook:
+    enabled: true
+    config:
+      scopes: ["Mail.Read", "Mail.Send", "Calendars.Read"]
+  teams:
+    enabled: true
+    config:
+      scopes: ["Chat.Read", "Chat.ReadWrite", "ChannelMessage.Read.All"]
+  sharepoint:
+    enabled: true
+    config:
+      scopes: ["Sites.Read.All", "Files.Read.All"]
+```
+
+The `_env(NAME)` lookup pattern from `core/persona.py` resolves these
+to actual values at config-load time. P5 documents this schema in
+`docs/perso na-auth-schema.md` (or extends an existing doc) so P15 can
+copy it. P5 itself ships ZERO persona YAML changes.
+
+### D9 — Error handling boundaries
+
+Three error layers, each with a clear contract:
+
+| Layer | Errors raised | Sanitization |
+|---|---|---|
+| `MSALStrategy` | `MSALAuthenticationError` (custom) | error message scrubbed of token/secret traces by inheritance from `_sanitize_error_string` |
+| `GraphClient` | `GraphAPIError` with `status_code`, `error_code`, `request_id` | sanitized `__str__`; never includes Authorization header |
+| Extension tool | propagates `GraphAPIError` upward; wraps unexpected Python errors as `ExtensionError` | extension name prepended to error message |
+
+The circuit breaker (P9) sits inside `GraphClient` via `@resilient_http`,
+so transient errors retry-then-trip transparently. Authentication
+errors (`MSALAuthenticationError`) **do not** retry — they propagate
+immediately, because re-trying with the same expired token is
+pointless. The extension's `health_check()` reports
+`HealthState.UNAVAILABLE` when its breaker is OPEN, and
+`HealthState.DEGRADED` when half-open.
+
+### D10 — Capability resolver wiring for MSAF
+
+The MSAF harness consumes the following capabilities via the
+`CapabilityResolver` (P1.8):
+
+- **`ToolPolicy`**: returns the role's allowed extensions; harness
+  calls `as_ms_agent_tools()` on each authorized extension and feeds
+  the union into `Agent(tools=...)`.
+- **`ContextProvider`**: returns the composed system prompt; harness
+  passes as `Agent(instructions=...)`.
+- **`GuardrailProvider`**: invoked by the harness's `spawn_sub_agent`
+  to gate delegation requests, mirroring DeepAgents' integration.
+- **`MemoryPolicy`**: consumed minimally in P5 via instructions
+  prepend — see D27 for the full contract. The harness invokes
+  `MemoryPolicy.get_recent_snippets(persona, role, limit=10)` at
+  `create_agent` time and prepends a `## Recent context` block to
+  the composed system prompt. Full-fidelity memory integration
+  (mid-turn retrieval, structured memory items, write-back) is
+  deferred to P5b pending an `agent-framework` SDK memory hook —
+  see ms-agent-framework-harness/spec.md "Follow-up scope" note.
+  This supersedes the original "deferred entirely" decision; the
+  rationale for the change is in D27.
+- **`SandboxProvider`**: not consumed. Sandbox semantics apply to host
+  harnesses (Claude Code), not SDK harnesses.
+
+### D11 — Extension tool format conversion is per-extension, not central
+
+Each extension authors its tools twice (once as LangChain
+`StructuredTool` for DeepAgents, once as `@ai_function`-decorated async
+methods for MSAF). The extension's `_list_messages` private method is
+the canonical implementation; both wrappers call it.
+
+**Why not a central converter:** A converter that translates
+`StructuredTool → ai_function` (or vice versa) has to introspect
+LangChain's `args_schema` (Pydantic BaseModel) and re-emit it as
+`Annotated[..., Field(description=...)]` parameter declarations. Doing
+this generically requires reflection that hides parameter docs and
+makes tool descriptions less precise. Authoring twice is ~20 lines per
+tool and produces clearer tool descriptions in both ecosystems.
+
+### D12 — Module boundaries summary
+
+```
+src/assistant/core/
+  cloud_client.py         (NEW: CloudGraphClient Protocol)
+  msal_auth.py            (NEW: MSALStrategy + 2 concrete strategies)
+  graph_client.py         (NEW: GraphClient = httpx impl of Protocol)
+  resilience.py           (UNCHANGED: P9)
+  persona.py              (UNCHANGED: _env() pattern)
+
+src/assistant/extensions/
+  base.py                 (UNCHANGED: Extension Protocol)
+  _stub.py                (UNCHANGED: StubExtension for gmail/gcal/gdrive)
+  ms_graph.py             (REPLACE: real impl)
+  outlook.py              (REPLACE: real impl)
+  teams.py                (REPLACE: real impl)
+  sharepoint.py           (REPLACE: real impl)
+  gmail.py                (UNCHANGED: stays stub until P14)
+  gcal.py                 (UNCHANGED: stays stub until P14)
+  gdrive.py               (UNCHANGED: stays stub until P14)
+
+src/assistant/harnesses/
+  base.py                 (UNCHANGED: SdkHarnessAdapter ABC)
+  factory.py              (UNCHANGED: registry already lists MSAF)
+  sdk/
+    deep_agents.py        (UNCHANGED: P1)
+    ms_agent_fw.py        (REPLACE: full impl)
+
+tests/
+  mocks/graph_client.py   (NEW)
+  fixtures/graph_responses/* (NEW per-endpoint JSON)
+  test_msal_auth.py       (NEW)
+  test_graph_client.py    (NEW)
+  test_extensions_ms_graph.py (NEW)
+  test_extensions_outlook.py  (NEW)
+  test_extensions_teams.py    (NEW)
+  test_extensions_sharepoint.py (NEW)
+  test_harness_ms_agent_fw.py (NEW)
+  integration/test_graph_smoke.py (NEW; opt-in)
+```
+
+## Risks / Trade-offs
+
+- **[Risk] `agent-framework` SDK churn** → P5 adopts a new-ish SDK
+  that may have breaking changes between versions. **Mitigation**: pin
+  to a tested version in `pyproject.toml`; add an integration test that
+  exercises the harness's basic invoke flow and runs in CI; document
+  the version in `design.md`'s D5 section so future churn is traceable.
+- **[Risk] MSAL refresh token expiry mid-session** → If a refresh
+  token expires during a long-running agent invocation, the next
+  Graph call will 401. **Mitigation**: `GraphClient` catches 401 +
+  `WWW-Authenticate: Bearer error="invalid_token"`, calls the
+  strategy's `acquire_token()` with `force_refresh=True`, retries
+  once. If that fails, propagates `MSALAuthenticationError` — agent
+  surfaces as "authentication required, please re-run" message.
+- **[Risk] Conditional access policies block headless flows** → Some
+  Entra ID tenants require device compliance / location checks that
+  fail in CI. **Mitigation**: integration tests are explicitly
+  opt-in (`RUN_GRAPH_TESTS=1`) and gated to a dedicated CI account
+  whose conditional access policies are relaxed. CI never runs them.
+- **[Risk] Tool-format duplication drift** → If an extension author
+  updates `as_langchain_tools()` but forgets `as_ms_agent_tools()`,
+  one harness sees stale tools. **Mitigation**: a
+  `tests/test_extensions_dual_format.py` parameterized test asserts
+  the two methods return the same number of tools with the same names
+  for each extension.
+- **[Risk] Token cache file written to a world-readable persona dir
+  by accident** → `personas/<name>/.cache/` could be gitignored
+  inconsistently. **Mitigation**: P5 amends
+  `personas/_template/.gitignore` to add `.cache/` and adds a
+  startup check that asserts `os.stat(cache_dir).st_mode & 0o077 ==
+  0` (no group/other access) before writing.
+- **[Risk] `msgraph-sdk` adapter never gets written, Protocol becomes
+  dead weight** → If P14 also chooses custom httpx, the
+  `CloudGraphClient` Protocol is unused abstraction. **Mitigation**:
+  the Protocol is small (~5 methods) and exists to encode the
+  *shape* of any cloud-graph backend. Even with two custom
+  implementations, the Protocol still serves as a documented
+  contract for tests and is no more than 30 lines of code.
+- **[Trade-off] No memory in MSAF harness in P5** → MSAF agents
+  cannot consult per-persona memory in P5. **Acceptance**:
+  documented as a follow-up; DeepAgents already covers
+  memory-aware workflows for the personal persona, and the work
+  persona launches first without memory anyway (P2 delivered the
+  layer but no persona has yet wired it).
+
+## Migration Plan
+
+P5 is a pure-additive change for the four extensions and the MSAF
+harness — no production data exists yet to migrate. The deployment
+plan reduces to:
+
+1. **Land foundation**: merge `wp-foundation` (cloud_client +
+   msal_auth + graph_client) ahead of the four extension packages. All
+   four extensions depend on it.
+2. **Land four extension packages in parallel**: `wp-ms-graph`,
+   `wp-outlook`, `wp-teams`, `wp-sharepoint`. Each can merge
+   independently because their write_allow scopes are disjoint.
+3. **Land MSAF harness package**: `wp-msaf-harness` depends only on
+   `wp-foundation` (it does NOT depend on the four extension packages —
+   the harness consumes whatever extensions are enabled, but doesn't
+   import from them at module-load time).
+4. **Land integration package**: `wp-integration` runs the full test
+   suite, validates `openspec --strict`, and confirms the four
+   extensions and harness all coexist cleanly.
+5. **No persona YAML changes in P5**. The personal persona keeps MS
+   extensions disabled. The work persona will turn them on in P15.
+
+**Rollback**: If P5 ships and turns out to break the personal persona
+somehow, `git revert` the merge commit. Because no persona consumes
+the new code at the time of merge, rollback has zero data impact —
+only code regression.
+
+## Decisions added after parallel-review-plan (2026-05-05)
+
+A multi-vendor plan review (claude + codex + gemini) surfaced gaps
+in the initial design that are addressed by the following additional
+decisions. Each decision corresponds to one or more new spec
+requirements.
+
+### D13 — Retry-After honoring on 429/503
+
+Microsoft Graph throttles via HTTP 429 with a `Retry-After` header.
+Generic exponential backoff would violate Graph throttling guidance
+and amplify rate-limit failures. `GraphClient` parses both
+delta-seconds and HTTP-date forms of `Retry-After` and waits at
+least that long before allowing P9 backoff to compute additional
+delay. (graph-client spec: "Retry-After Honoring on 429 and 503".)
+
+### D14 — Per-request httpx timeouts
+
+Without explicit timeouts a hung TCP connection can block an
+extension tool indefinitely. `GraphClient` constructs `httpx.Timeout`
+with `connect=10s, read=30s, write=30s, pool=5s` by default, all
+overridable. Read timeout exceeded raises `GraphAPIError` with
+`status_code=None`. (graph-client spec: "Per-Request Timeout
+Configuration".)
+
+### D15 — Transport-level observability via trace_graph_call
+
+The four extensions and the MSAF harness already emit observability
+spans, but the new HTTP transport tier in `core/graph_client.py` had
+no visibility. A new `trace_graph_call(...)` method on the P4
+observability provider receives one span per outbound HTTP request
+with `extension_name`, `method`, normalized `path` (with sensitive
+ID values redacted to placeholders), `status_code`, `duration_ms`,
+the Microsoft Graph `request-id` response header (key for
+correlating with Entra ID and Graph audit logs), retry attempt
+count, and `breaker_key`. (graph-client spec: "Transport-Level
+Observability Span per Request".)
+
+### D16 — Empty-body 202/204 handling
+
+Microsoft Graph returns HTTP 202 with empty body on most successful
+write endpoints (`/me/sendMail`, `/chats/{id}/messages` for some
+channel types). The original spec mandated parsed JSON return for
+all GET/POST. The revised contract: empty 202 / 204 / empty
+JSON-Content-Type 200 responses return `{}` rather than raising. The
+write-tool tests (e.g., `outlook.send_email` returning successfully)
+depend on this. (graph-client spec: "Empty-Body Handling for 202
+and 204 Responses".)
+
+### D17 — GraphAPIError subclasses httpx.HTTPStatusError
+
+P9's `@resilient_http` retry classifier matches on
+`httpx.HTTPStatusError` and status-coded httpx failures. A custom
+exception class outside that hierarchy would never trigger retry.
+`GraphAPIError(httpx.HTTPStatusError)` preserves our typed error
+surface while ensuring P9 classifies 429/5xx as retriable. (graph-
+client spec: "GraphAPIError Subclasses httpx.HTTPStatusError".)
+
+### D18 — Per-method retry safety control
+
+Microsoft Graph has no idempotency-key protocol. Auto-retrying
+non-idempotent POSTs (`outlook.send_email`,
+`teams.post_chat_message`) on transient 5xx would risk **duplicate
+emails and duplicate Teams messages**. `GraphClient.post()` accepts
+a `retry_safe: bool = True` parameter; the two write tools above
+pass `retry_safe=False`, which routes the call through a
+non-retrying implementation path while still recording breaker
+state on failure. Idempotent operations rely on the default. (graph-
+client spec: "Per-Method Retry Safety Control".)
+
+### D19 — Binary download via get_bytes
+
+`sharepoint.download_document` retrieves binary content
+(application/pdf, application/octet-stream, etc.) which cannot fit
+the original Protocol contract `dict[str, Any]`. Adding a fifth
+async method `get_bytes(path, *, max_bytes=52428800)` to
+`CloudGraphClient` solves this without leaking SharePoint specifics.
+The method streams the response to a tempfile and returns a
+metadata dict (`path`, `size_bytes`, `content_type`, `request_id`)
+so LLM tool serialization stays bounded; raw bytes never enter agent
+context. (graph-client spec: "Binary Download via get_bytes".)
+
+### D20 — MSAL synchronous calls run via asyncio.to_thread
+
+The MSAL Python SDK is synchronous. Wrapping `acquire_token_*` calls
+with `asyncio.to_thread()` prevents MSAL from blocking the event
+loop during token acquisition; concurrent Graph calls from sibling
+extensions proceed in parallel rather than serializing behind a
+single MSAL operation. (msal-auth spec: "Synchronous MSAL Calls
+Run Off the Event Loop".)
+
+### D21 — Atomic tmp-file creation with mode 0o600
+
+The previous design used write-then-chmod for the cache tmp file,
+which under a permissive umask creates a brief window where the tmp
+file is group/world-readable before the chmod takes effect. Switched
+to `os.open(path, O_CREAT|O_WRONLY|O_EXCL, 0o600)` so the file is
+0o600 from the moment of creation. `O_EXCL` also catches stale tmp
+files cleanly. (msal-auth spec: scenario "Tmp file is created with
+mode 0o600 atomically".)
+
+### D22 — Persona repo gitignore verification before token write
+
+The original plan amended `personas/_template/.gitignore` to
+exclude `.cache/`, but this only helps NEW personas. Existing
+persona submodules created before the template change would not
+pick up the rule, and accidental commits would leak refresh
+tokens. The strategy now performs a startup gitignore check and
+refuses to write tokens unless `.cache/` (or an equivalent pattern)
+is declared in the persona repo's `.gitignore` chain. (msal-auth
+spec: "Persona Repo Gitignore Verification".)
+
+### D23 — Tool input URL-encoding and validation
+
+Tool inputs (`message_id`, `chat_id`, search strings) are
+interpolated into Graph paths. URL-encode all path segments via
+`urllib.parse.quote(value, safe="")`; reject inputs containing path
+separators (`/`), control characters, or backslashes with
+`ValueError` before any HTTP call. Search strings always pass via
+`params=`, never embedded in path. (ms-extensions spec: "Tool Input
+URL-Encoding and Validation".)
+
+### D24 — Scope override semantics: REPLACE
+
+When persona configures `extensions.<name>.config.scopes`, the
+list entirely supersedes module defaults. Empty list or absent key
+falls back to defaults. There is no merge or add-to mode. This
+disambiguates "Default scopes include..." language and prevents
+implementations from drifting on this question. (ms-extensions spec:
+"Scope Override Semantics".)
+
+### D25 — Structured GraphAPIError on OPEN-breaker tool invocation
+
+When the per-extension breaker is OPEN, tool invocation raises
+`GraphAPIError(status_code=None, error_code="breaker_open")` with
+the extension name in the message. This surfaces unavailability to
+the agent in a structured way rather than as a generic
+`BreakerOpen` exception. (ms-extensions spec: "Tool Invocation
+Error When Breaker is OPEN".)
+
+### D26 — Factory contract accepts optional persona keyword
+
+The original plan specified
+`create_extension(config, client=mock_client)` for tests but the
+production load path
+(`PersonaRegistry.load_extensions`) calls `mod.create_extension(
+config)`. The two contracts disagreed; real extensions would have
+been unconstructable in production. The factory signature is now
+`create_extension(config: dict, *, persona: PersonaConfig | None
+= None)`. Stubs ignore `persona`; real factories use it to
+construct their own MSAL strategy + GraphClient internally. The
+load path passes `persona=<the persona>` to every factory call.
+(extension-registry spec: "Extension Factory Contract Accepts
+Optional Persona".)
+
+### D27 — Minimal MemoryPolicy injection in MSAF harness
+
+The original plan deferred `MemoryPolicy` from the MSAF harness,
+creating asymmetry where DeepAgents agents on the personal persona
+have memory continuity but MSAF agents on the work persona do not.
+The work persona is precisely the one most likely to benefit from
+cross-session memory. Resolution: at `create_agent()` time, fetch
+the persona's recent N memory snippets via
+`MemoryPolicy.get_recent_snippets(persona, role, limit=10)` and
+prepend them under a `## Recent context` heading inside the
+`Agent`'s `instructions` parameter. ~50 LOC, no SDK contract
+change required. (ms-agent-framework-harness spec: "Memory Snippet
+Injection in create_agent".)
+
+## Decisions added during PLAN_ITERATE iteration 3 (2026-05-06)
+
+### D28 — Foundation work-package split: protocols + impls
+
+After PLAN_ITERATE iteration 2 the foundation package had grown to
+~3000 LOC and 54 tasks (sections 1, 8.1.x, 8.4.x, 9.1.x, 9.2.x).
+That made wp-foundation a single-agent assignment that would (a)
+overflow context, (b) gate the four extension packages
+unnecessarily even though the extensions only need the Protocols
+to start, and (c) extend the merge-train critical path by holding
+all impls work in series before fan-out.
+
+Resolution: split foundation into two packages.
+
+**`wp-foundation-protocols`** (~600 LOC, no deps) owns
+*pure-interface* code:
+
+- `core/cloud_client.py` — `CloudGraphClient` Protocol (5 transport
+  methods + 3 lifecycle methods)
+- `core/persona.py` — extended `create_extension(config, *,
+  persona=None)` factory contract and `PersonaRegistry.load_extensions`
+  signature change
+- `telemetry/providers/base.py` — adds `trace_graph_call` method
+  to the existing `ObservabilityProvider` Protocol
+- `tests/mocks/graph_client.py` — typed `MockGraphClient` test
+  fixture that satisfies `CloudGraphClient`. Lives here (not in
+  impls) so extension test suites can use it without depending on
+  the httpx GraphClient.
+
+**`wp-foundation-impls`** (~2400 LOC, depends on protocols) owns
+*concrete* code:
+
+- `core/msal_auth.py` — `MSALStrategy` Protocol (narrowly scoped to
+  MSAL; not reused by P14 Google extensions which use OAuth
+  differently) plus `InteractiveDelegatedStrategy` and
+  `ClientCredentialsStrategy` impls. Co-located here because the
+  Protocol and impls evolve together within the MSAL subsystem.
+- `core/graph_client.py` — `GraphClient` httpx-based impl of
+  `CloudGraphClient`
+- `telemetry/providers/{noop,langfuse}.py` — `trace_graph_call`
+  impls
+- `pyproject.toml` + `uv.lock` — adds `msal>=1.28`, `respx>=0.21`
+  (test-only), and the pinned `agent-framework>=1.0.0,<2.0.0`
+  (per D5 PLAN_ITERATE pin)
+
+**Why MockGraphClient lives in protocols, not impls:** its purpose
+is "thing that satisfies CloudGraphClient without an httpx impl".
+Putting it in impls would force every extension test suite to wait
+for impls to land. Conceptually it is a typed test fixture, not a
+concrete network client.
+
+**Why MSALStrategy Protocol stays in impls (co-located with
+classes):** it is narrowly scoped to MSAL. P14 Google extensions
+will define their own auth abstraction (likely OAuth-flow shaped)
+that does not satisfy `MSALStrategy`. There is no reuse argument
+for moving this Protocol into the protocols package, and splitting
+a small Protocol from its only impls would create maintenance
+overhead. By contrast, `CloudGraphClient` and `ObservabilityProvider`
+ARE shared across MS and Google (P14) and harness layers, which
+justifies their position in the protocols package.
+
+**DAG and parallelism implications:**
+
+```
+wp-foundation-protocols (600 LOC)
+ │
+ ├─→ wp-foundation-impls (2400 LOC)         ─┐
+ ├─→ wp-ms-graph     (extension, ~300 LOC)  ─┤  parallel-2
+ ├─→ wp-outlook      (extension, ~350 LOC)  ─┤
+ ├─→ wp-teams        (extension, ~300 LOC)  ─┤
+ ├─→ wp-sharepoint   (extension, ~250 LOC)  ─┘
+ │
+ └─→ wp-msaf-harness (depends on impls too) ─→ wp-integration
+```
+
+Critical path before extensions can start drops from ~3000 LOC to
+~600 LOC (5x reduction). Total LOC remains ~5000 (max_loc bumped
+from 4200 to 5000 to accommodate; max_packages from 6 to 7).
+
+**Alternative considered — keep monolithic:** rejected because the
+parallelism win for the four extensions is concrete and the split
+boundary is clean (no leaky cross-package edits expected; the
+Protocol files exist precisely as type-only contracts). The risk
+of "review ping-pong" between protocols and impls is mitigated by
+landing protocols first in a single small commit.
+
+### D29 — Pyproject ownership consolidates in wp-foundation-impls
+
+All three external deps (`msal`, `respx`, `agent-framework`) now
+land in `wp-foundation-impls` via task 1.16. Previously,
+`wp-msaf-harness` owned the `agent-framework` dep. Consolidating
+into impls means a single pyproject lock window during the merge
+train, no semantic-boundary debate, and a deterministic version
+pin point. `wp-msaf-harness` `consumes_external_deps:
+[agent-framework]` (declarative, no pyproject write) and depends
+on impls so the dep is installed before harness implementation
+begins.
+
+## Open Questions
+
+- **`agent-framework` version pin**: which exact version? Decision
+  deferred to `wp-foundation` task 1.1, where Context7 will be queried
+  again for the current stable version at implementation time.
+- **MSAF chat client choice**: `OpenAIChatClient` vs.
+  `AzureOpenAIChatClient` is persona-driven. P5 supports both but only
+  exercises one in the integration test. Which one CI exercises is
+  decided at integration-test authoring time based on which credential
+  set the CI account has.
+- **`spawn_sub_agent` cycle detection**: P12 `delegation-context` is
+  the phase that adds delegation-chain cycle detection. P5's MSAF
+  harness implements `spawn_sub_agent` without cycle detection (same
+  as DeepAgents' P1 implementation). Cycle detection is a P12
+  concern.
+- **Document the Approach A.3 retrofit cost**: If P14
+  google-extensions chooses to wrap `google-api-python-client`,
+  should we also retroactively wrap `msgraph-sdk` for symmetry? This
+  is an architectural question that surfaces only after P14 ships.
+  Captured as a P14 design.md open question, not a P5 concern.

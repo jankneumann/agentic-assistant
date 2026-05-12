@@ -1,0 +1,41 @@
+// FIXTURE_GRAPH_RESPONSE_v1
+// Synthetic Microsoft Graph response for
+// GET /teams/{team_id}/channels/{channel_id}/messages. No real names
+// or message content — see CLAUDE.md G6.
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#teams('FIXTURE_TEAM_ID')/channels('FIXTURE_CHANNEL_ID')/messages",
+  "value": [
+    {
+      "id": "FIXTURE_MESSAGE_ID_1",
+      "messageType": "message",
+      "createdDateTime": "2026-05-04T10:00:00Z",
+      "lastModifiedDateTime": "2026-05-04T10:00:00Z",
+      "from": {
+        "user": {
+          "id": "FIXTURE_USER_ID_1",
+          "displayName": "FIXTURE_DISPLAY_NAME_alpha"
+        }
+      },
+      "body": {
+        "contentType": "html",
+        "content": "<p>FIXTURE_BODY_CONTENT_alpha</p>"
+      }
+    },
+    {
+      "id": "FIXTURE_MESSAGE_ID_2",
+      "messageType": "message",
+      "createdDateTime": "2026-05-04T11:00:00Z",
+      "lastModifiedDateTime": "2026-05-04T11:00:00Z",
+      "from": {
+        "user": {
+          "id": "FIXTURE_USER_ID_2",
+          "displayName": "FIXTURE_DISPLAY_NAME_bravo"
+        }
+      },
+      "body": {
+        "contentType": "text",
+        "content": "FIXTURE_BODY_CONTENT_bravo"
+      }
+    }
+  ]
+}

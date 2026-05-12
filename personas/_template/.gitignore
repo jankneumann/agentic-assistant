@@ -1,0 +1,20 @@
+# Persona-template gitignore. Files matching these patterns are
+# never committed by accident in any persona-config repo cloned
+# from this template.
+
+# MSAL token cache (per ms-graph-extension D2 / D22). The msal_auth
+# strategy refuses to write tokens unless this pattern is declared
+# in the persona repo's gitignore chain — accidental commit of a
+# refresh token would let anyone with read access on the repo
+# impersonate the persona until the token is revoked.
+.cache/
+
+# Python bytecode in case the persona ships any helper scripts.
+__pycache__/
+*.pyc
+
+# Local override files that operators may keep alongside checked-in
+# config without committing.
+*.local.yaml
+.env
+.env.*

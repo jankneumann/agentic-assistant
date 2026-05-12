@@ -1,0 +1,115 @@
+{
+  "review_type": "plan",
+  "target": "ms-graph-extension",
+  "reviewer_vendor": "claude_code",
+  "findings": [
+    {
+      "id": 1,
+      "type": "correctness",
+      "criticality": "high",
+      "description": "Inconsistency between design.md and graph-client/spec.md on what GraphClient.paginate() yields. design.md D4 states 'yields each page's value array as a whole list, not individual records'. graph-client/spec.md scenario 'Paginate yields successive pages until nextLink absent' states 'Each yielded item SHALL be the full page response (a dict with value, @odata.nextLink, and other top-level keys)'. The two contradict each other and cannot both be implemented.",
+      "resolution": "Update design.md D4 to match the spec text — yielded items are full page dicts, not just the value arrays. The spec form is more useful because it exposes nextLink and any other top-level Graph metadata to the caller. Confirm spec scenarios reflect this and update tasks.md task 1.10 if needed.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/design.md"
+    },
+    {
+      "id": 2,
+      "type": "resilience",
+      "criticality": "high",
+      "description": "graph-client/spec.md does not require honoring HTTP 429 Retry-After headers. Microsoft Graph uses 429 with Retry-After heavily for throttling, and the standard exponential backoff in P9's DEFAULT_HTTP_RETRY_POLICY ignores Retry-After entirely. Without explicit Retry-After honoring, GraphClient will retry too soon during throttling, increasing the chance of breaker trip and prolonging recovery.",
+      "resolution": "Add a requirement to graph-client/spec.md: 'On HTTP 429 responses with a Retry-After header, GraphClient MUST delay the next retry by at least the header's value (in seconds, or until the HTTP-date) before invoking @resilient_http's backoff'. Add a corresponding test scenario asserting the delay is observed. May require P9 retry policy customization or a wrapper that pre-empts retry timing.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/graph-client/spec.md"
+    },
+    {
+      "id": 3,
+      "type": "resilience",
+      "criticality": "medium",
+      "description": "graph-client/spec.md does not specify a per-request timeout for GraphClient HTTP calls. Without a timeout, a hung TCP connection could block an extension tool indefinitely. P9's @resilient_http handles retry but does not by itself enforce timeouts at the httpx layer.",
+      "resolution": "Add a requirement that GraphClient configures httpx.AsyncClient with a sensible default timeout (suggest 30s read / 10s connect, configurable at construction). Add a scenario asserting that requests exceeding the timeout raise GraphAPIError with status_code=None and a clear timeout reason.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/graph-client/spec.md"
+    },
+    {
+      "id": 4,
+      "type": "observability",
+      "criticality": "medium",
+      "description": "The new transport layer (core/graph_client.py) makes outbound HTTP calls but has no transport-level observability requirement. Existing observability spans (trace_tool_call, trace_llm_call) cover the extension and harness tiers but not the Graph HTTP tier. Debugging auth refresh, rate limiting, and 401 patterns will be harder than necessary.",
+      "resolution": "Add a requirement to graph-client/spec.md (or extend observability spec via a delta) that GraphClient emits a span per outbound HTTP request with method, path, status_code, duration_ms, breaker_key, and a sanitized error class on failure. Wire via P4 observability provider.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/graph-client/spec.md"
+    },
+    {
+      "id": 5,
+      "type": "architecture",
+      "criticality": "medium",
+      "description": "design.md D10 says MSAF harness skips MemoryPolicy in P5, deferred to P5b. This creates user-visible asymmetry: DeepAgents harness on the personal persona has memory continuity, MSAF harness on the work persona does not. The work persona is precisely the one most likely to benefit from cross-session memory (recurring reports, ongoing email triage, etc). Treating this as 'documented follow-up' understates the UX impact.",
+      "resolution": "Either (a) downgrade to acceptance after explicitly confirming with the user that work persona launches without memory in P5 is acceptable, or (b) add a minimal MemoryPolicy injection — pass the persona's last N memory snippets as an instructions-prepend in MSAgentFrameworkHarness.create_agent. Option (b) is ~50 LOC and avoids the asymmetry. Update design.md D10 and add a corresponding spec requirement either way.",
+      "disposition": "escalate",
+      "file_path": "openspec/changes/ms-graph-extension/design.md"
+    },
+    {
+      "id": 6,
+      "type": "performance",
+      "criticality": "medium",
+      "description": "graph-client/spec.md scenario 'Page ceiling triggers termination with warning' silently truncates pagination after 100 pages with only a log warning. Callers (and the agent invoking the extension tool) have no programmatic way to detect that truncation occurred. A user could see a partial result and assume completeness.",
+      "resolution": "Either (a) raise a TruncationError when the ceiling is hit (forcing callers to handle it explicitly), or (b) yield a final sentinel page with a 'truncated': True marker. Option (a) is safer because it surfaces the problem; option (b) preserves partial-progress access. Pick one and update the spec scenario.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/graph-client/spec.md"
+    },
+    {
+      "id": 7,
+      "type": "security",
+      "criticality": "medium",
+      "description": "The MSAL token cache lives at personas/<name>/.cache/msal_token_cache.json, inside the private persona submodule mount point. Task 7.3 amends personas/_template/.gitignore but this only helps NEW personas. An EXISTING persona submodule that was created before this template change does not pick up the new ignore rule, and accidental commits of the cache file would leak refresh tokens to a private (or worse, public) repository.",
+      "resolution": "Add a startup check in InteractiveDelegatedStrategy: before writing the cache, verify that the cache path is gitignored at the persona repo level. If not, raise MSALAuthenticationError with an actionable message instructing the operator to add .cache/ to the persona's .gitignore. Add a spec scenario for this. Also document this in docs/gotchas.md as G10.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/msal-auth/spec.md"
+    },
+    {
+      "id": 8,
+      "type": "spec_gap",
+      "criticality": "medium",
+      "description": "ms-extensions/spec.md uses the phrase 'Default scopes include X, Y, Z' for each extension. The spec does not define what happens when persona.yaml provides scopes — does the persona override REPLACE, MERGE-INTO, or ADD-TO the defaults? Implementation will pick one but spec is silent, which means future implementations might disagree.",
+      "resolution": "Add a requirement to ms-extensions/spec.md: 'When persona.extensions.<name>.config.scopes is non-empty, it REPLACES the module-level defaults entirely. The default scope list is used only when the persona omits scopes or sets them to an empty list (in which case defaults apply)'. Or pick the alternative semantics — but pick one explicitly.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/ms-extensions/spec.md"
+    },
+    {
+      "id": 9,
+      "type": "spec_gap",
+      "criticality": "low",
+      "description": "When the per-extension circuit breaker is OPEN and an extension tool is invoked, the spec does not specify what error the tool raises. P9 default behavior is BreakerOpen exception, but ms-extensions/spec.md should be explicit so callers (agents) get a predictable error class.",
+      "resolution": "Add a scenario to ms-extensions/spec.md: 'When the breaker for an extension is OPEN and the extension tool is invoked, the tool MUST raise GraphAPIError with status_code=None and error_code=\"breaker_open\"'. Or whatever wrapping pattern aligns with P9.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/ms-extensions/spec.md"
+    },
+    {
+      "id": 10,
+      "type": "architecture",
+      "criticality": "low",
+      "description": "tasks.md task 7.7 piggybacks the P4 observability roadmap-drift hygiene fix into wp-integration. While the fix is one line, bundling it with P5 means the hygiene improvement is blocked if P5 review fails. Splitting it into a separate small commit (or a separate PR) would let the hygiene fix land independently.",
+      "resolution": "Optional: split task 7.7 into a separate one-line PR before P5 lands. Acceptable to keep bundled if review schedule is tight. Worth flagging because it conflates two unrelated concerns.",
+      "disposition": "accept",
+      "file_path": "openspec/changes/ms-graph-extension/tasks.md"
+    },
+    {
+      "id": 11,
+      "type": "spec_gap",
+      "criticality": "low",
+      "description": "ms-agent-framework-harness/spec.md scenario 'Authorized extensions are filtered through ToolPolicy' requires the harness to consult ToolPolicy.authorized_extensions before reading as_ms_agent_tools. But the existing capability-resolver spec says the resolver does this filtering, not the harness. There may be a layering question: does the resolver pass already-filtered extensions to create_agent, or does the harness re-filter? If both filter, scenarios may double-count exclusions.",
+      "resolution": "Clarify in design.md D10 (or msaf spec): is the ToolPolicy filter applied at the resolver before harness.create_agent receives the extensions parameter, or at the harness inside create_agent? Pick one and update the spec scenario to match. Symmetric with how DeepAgents handles it.",
+      "disposition": "fix",
+      "file_path": "openspec/changes/ms-graph-extension/specs/ms-agent-framework-harness/spec.md"
+    },
+    {
+      "id": 12,
+      "type": "compatibility",
+      "criticality": "low",
+      "description": "If a work persona uses an Entra app registration that lacks one of the spec's default scopes (e.g., persona has Mail.Read but not Mail.Send), the extension tool calls will get HTTP 403 at first invocation — late binding error. The plan does not specify any startup-time scope verification.",
+      "resolution": "Optional but valuable: add an extension method verify_scopes() that calls /me with the required scopes and asserts no 403 (or uses Graph's /servicePrincipals/{id}/oauth2PermissionGrants to check granted scopes). Run at extension load time and fail early with an actionable message. Could be deferred to P5b but worth scoping.",
+      "disposition": "accept",
+      "file_path": "openspec/changes/ms-graph-extension/specs/ms-extensions/spec.md"
+    }
+  ]
+}

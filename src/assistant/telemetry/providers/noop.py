@@ -44,6 +44,13 @@ class NoopProvider:
         _validate_tool_kind(kwargs.get("tool_kind"))
         return None
 
+    def trace_graph_call(self, **kwargs: Any) -> None:
+        # Per ms-graph-extension observability MODIFIED: NoopProvider
+        # accepts the new method silently. Real validation (verb +
+        # path-shape sanity) lives in LangfuseProvider where it can be
+        # surfaced as a span attribute.
+        return None
+
     def trace_memory_op(self, **kwargs: Any) -> None:
         # Same symmetry fix as trace_tool_call above (req observability.1
         # Protocol Contract — "Rejects mis-typed op value", including

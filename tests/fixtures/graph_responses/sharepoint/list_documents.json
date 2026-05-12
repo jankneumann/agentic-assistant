@@ -1,0 +1,31 @@
+// FIXTURE_GRAPH_RESPONSE_v1
+{
+  "value": [
+    {
+      "id": "01SYNTHITEM000000000000000000000000A",
+      "name": "Synthetic Quarterly Report.pdf",
+      "size": 524288,
+      "file": {
+        "mimeType": "application/pdf"
+      },
+      "webUrl": "https://synth-tenant.sharepoint.com/sites/finance/Shared%20Documents/Synthetic%20Quarterly%20Report.pdf"
+    },
+    {
+      "id": "01SYNTHITEM000000000000000000000000B",
+      "name": "Synthetic Budget.xlsx",
+      "size": 102400,
+      "file": {
+        "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      },
+      "webUrl": "https://synth-tenant.sharepoint.com/sites/finance/Shared%20Documents/Synthetic%20Budget.xlsx"
+    },
+    {
+      "id": "01SYNTHITEM000000000000000000000000C",
+      "name": "Synthetic Team Notes",
+      "folder": {
+        "childCount": 4
+      },
+      "webUrl": "https://synth-tenant.sharepoint.com/sites/finance/Shared%20Documents/Synthetic%20Team%20Notes"
+    }
+  ]
+}

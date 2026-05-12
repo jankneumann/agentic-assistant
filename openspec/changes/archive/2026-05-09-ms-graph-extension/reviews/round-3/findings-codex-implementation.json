@@ -1,0 +1,16 @@
+{
+  "review_type": "implementation",
+  "target": "ms-graph-extension",
+  "reviewer_vendor": "gpt-5-codex",
+  "findings": [
+    {
+      "id": 1,
+      "type": "resilience",
+      "criticality": "medium",
+      "description": "src/assistant/core/graph_client.py:1256 now catches httpx.TransportError inside _get_bytes_inner and re-raises GraphAPIError at src/assistant/core/graph_client.py:1283 without a real response, so GraphAPIError creates a synthetic 599 response at src/assistant/core/graph_client.py:187-193. The retry predicate in src/assistant/core/resilience.py:465-468 only retries raw policy exceptions or HTTPStatusError responses whose response.status_code is in the retryable set; 599 is not retryable. As a result, get_bytes stream ConnectError/ReadTimeout/RemoteProtocolError cases that previously propagated as raw httpx transport exceptions to resilient_http are no longer retried or recorded as breaker availability failures.",
+      "resolution": "Preserve transport-error observability without hiding retryability: either emit the span and re-raise the original httpx.TransportError through resilient_http, wrapping to GraphAPIError only after retry exhaustion, or update resilience classification to treat GraphAPIError transport error_codes as retryable availability failures.",
+      "disposition": "fix",
+      "package_id": "whole-branch"
+    }
+  ]
+}

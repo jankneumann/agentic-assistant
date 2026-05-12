@@ -7,5 +7,10 @@ from typing import Any
 from assistant.extensions._stub import StubExtension
 
 
-def create_extension(config: dict[str, Any]) -> StubExtension:
+def create_extension(
+    config: dict[str, Any], *, persona: Any = None
+) -> StubExtension:
+    # ``persona`` is accepted (per the post-P5 factory contract) and
+    # ignored — gmail stays a stub until P14 google-extensions.
+    _ = persona
     return StubExtension("gmail", config)

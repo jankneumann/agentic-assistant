@@ -38,7 +38,11 @@ def test_protocol_declares_required_methods() -> None:
 def test_valid_tool_kinds_set() -> None:
     from assistant.telemetry.providers.base import _VALID_TOOL_KINDS
 
-    assert _VALID_TOOL_KINDS == frozenset({"extension", "http"})
+    # ``"graph"`` was added in ms-graph-extension (observability
+    # MODIFIED requirement) so callers may use trace_tool_call as a
+    # lower-fidelity alternative to trace_graph_call without tripping
+    # the validator.
+    assert _VALID_TOOL_KINDS == frozenset({"extension", "http", "graph"})
 
 
 def test_valid_ops_set() -> None:
@@ -78,7 +82,12 @@ def test_invalid_op_raises_via_helper() -> None:
 
 
 def test_isinstance_with_compliant_object() -> None:
-    """A duck-typed object with all 9 attributes IS-A ObservabilityProvider."""
+    """A duck-typed object with all required attributes IS-A ObservabilityProvider.
+
+    The Protocol gained ``trace_graph_call`` in ms-graph-extension
+    (observability MODIFIED requirement) — a compliant object MUST now
+    implement it too, alongside the original eight members.
+    """
     from assistant.telemetry.providers.base import ObservabilityProvider
 
     class Compliant:
@@ -94,6 +103,9 @@ def test_isinstance_with_compliant_object() -> None:
             return None
 
         def trace_tool_call(self, **kw: object) -> None:
+            return None
+
+        def trace_graph_call(self, **kw: object) -> None:
             return None
 
         def trace_memory_op(self, **kw: object) -> None:

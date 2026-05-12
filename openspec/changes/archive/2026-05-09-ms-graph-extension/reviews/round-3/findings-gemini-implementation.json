@@ -1,0 +1,27 @@
+{
+  "review_type": "implementation",
+  "target": "ms-graph-extension",
+  "reviewer_vendor": "gemini-cli",
+  "findings": [
+    {
+      "id": "R3.1",
+      "file": "src/assistant/core/graph_client.py",
+      "line": "120",
+      "symbol": "GraphAPIError.status_code",
+      "description": "Mapping httpx.TransportError to GraphAPIError (R2.2/R2.6) breaks the resilience classifier in resilience.py. GraphAPIError subclasses httpx.HTTPStatusError, which the classifier (P9) evaluates solely by status_code. Since transport-mapped GraphAPIErrors use a synthetic 599 response or return None (for a subset of codes), they no longer match policy.retryable_status_codes. Because they are no longer instances of the specific httpx timeout/error classes, they also bypass policy.retryable_exceptions. This effectively disables retries and circuit breaker failure-recording for all transport-level errors (ConnectTimeout, ReadError, etc.) raised by GraphClient.",
+      "criticality": "high",
+      "disposition": "fix",
+      "requirement_id": "P9"
+    },
+    {
+      "id": "R3.2",
+      "file": "src/assistant/core/graph_client.py",
+      "line": "127",
+      "symbol": "GraphAPIError.status_code",
+      "description": "The transport_only set in GraphAPIError.status_code is incomplete. It is missing several transport error codes defined in _TRANSPORT_ERROR_CODE_MAP (e.g., connect_timeout, write_timeout, read_error, protocol_error). These will return a synthetic status_code=599 instead of None, creating inconsistency in how transport failures are exposed to consumers.",
+      "criticality": "low",
+      "disposition": "fix",
+      "requirement_id": "P9"
+    }
+  ]
+}

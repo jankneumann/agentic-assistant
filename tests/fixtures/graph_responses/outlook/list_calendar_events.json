@@ -1,0 +1,41 @@
+{
+  "_comment": "// FIXTURE_GRAPH_RESPONSE_v1 — synthetic only (CLAUDE.md G6)",
+  "value": [
+    {
+      "id": "FIXTURE_EVENT_ID_1",
+      "subject": "FIXTURE_EVENT_SUBJECT_1",
+      "start": {
+        "dateTime": "2026-05-07T09:00:00",
+        "timeZone": "UTC"
+      },
+      "end": {
+        "dateTime": "2026-05-07T10:00:00",
+        "timeZone": "UTC"
+      },
+      "organizer": {
+        "emailAddress": {
+          "name": "FIXTURE_ORGANIZER_NAME",
+          "address": "fixture-organizer@example.invalid"
+        }
+      }
+    },
+    {
+      "id": "FIXTURE_EVENT_ID_2",
+      "subject": "FIXTURE_EVENT_SUBJECT_2",
+      "start": {
+        "dateTime": "2026-05-07T14:00:00",
+        "timeZone": "UTC"
+      },
+      "end": {
+        "dateTime": "2026-05-07T15:00:00",
+        "timeZone": "UTC"
+      },
+      "organizer": {
+        "emailAddress": {
+          "name": "FIXTURE_ORGANIZER_NAME_2",
+          "address": "fixture-organizer-2@example.invalid"
+        }
+      }
+    }
+  ]
+}

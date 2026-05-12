@@ -1,0 +1,582 @@
+schema_version: 1
+change_id: ms-graph-extension
+
+defaults:
+  auto_loop:
+    # P5 ships a foundation layer split into two packages:
+    # protocols (cloud_client Protocol + factory contract +
+    # ObservabilityProvider Protocol modification + MockGraphClient
+    # — pure interfaces, ~600 LOC) and impls (msal_auth +
+    # graph_client + observability provider impls + pyproject —
+    # concrete code, ~2400 LOC). The split (PLAN_ITERATE iteration 3)
+    # lets the four MS extension packages depend only on protocols
+    # and run in parallel with impls, cutting the critical path
+    # before extensions can start by ~5x. Plus the MSAF harness
+    # implementation (with minimal MemoryPolicy injection per D27)
+    # and integration. Integration package is exempted from
+    # max_packages (per complexity_gate._count_impl_packages — see
+    # http-tools-layer's comment).
+    max_loc: 5000
+    max_packages: 7
+    max_external_deps: 3
+
+packages:
+  # ──────────────────────────────────────────────────────────
+  # wp-foundation-protocols — pure interfaces
+  # Runs first. All other packages depend on this one.
+  # Split out from monolithic wp-foundation in PLAN_ITERATE
+  # iteration 3 to unblock extension packages from waiting on the
+  # heavy impls work.
+  # ──────────────────────────────────────────────────────────
+  - id: wp-foundation-protocols
+    name: "Foundation/Protocols: CloudGraphClient Protocol + factory contract + ObservabilityProvider extension + MockGraphClient"
+    description: >
+      Pure-interface foundation per design.md D3 (CloudGraphClient
+      Protocol with 5 transport methods + 3 lifecycle methods),
+      D26 (extended `create_extension(config, *, persona=None)`
+      factory contract through PersonaRegistry), and D15 (adds the
+      `trace_graph_call` method to the existing P4
+      ObservabilityProvider Protocol). Also lands the typed
+      `MockGraphClient` test fixture so extension tests can
+      satisfy CloudGraphClient without depending on the
+      httpx-based GraphClient impl. NO concrete httpx, NO MSAL,
+      NO Langfuse code lives here. Covers tasks 1.1, 1.2, 8.4.1,
+      8.4.2, 8.4.3, 9.1.1 (Protocol-shape part), 9.1.2 (Protocol
+      method addition), 9.2.1 (factory persona=None test),
+      9.2.2 (factory persona=None impl).
+    tasks:
+      - "1.1"
+      - "1.2"
+      - "1.15"
+      - "8.4.1"
+      - "8.4.2"
+      - "8.4.3"
+      - "9.1.1"
+      - "9.1.2"
+      - "9.2.1"
+      - "9.2.2"
+    priority: 1
+    dependencies: []
+    scope:
+      write_allow:
+        - "src/assistant/core/cloud_client.py"
+        - "src/assistant/core/persona.py"
+        - "src/assistant/telemetry/providers/base.py"
+        - "tests/mocks/__init__.py"
+        - "tests/mocks/graph_client.py"
+        - "tests/test_cloud_client.py"
+        - "tests/test_persona_registry_factory_contract.py"
+        - "tests/test_observability_trace_graph_call_protocol.py"
+      read_allow:
+        - "**"
+    locks:
+      files:
+        - "src/assistant/core/cloud_client.py"
+        - "src/assistant/core/persona.py"
+        - "src/assistant/telemetry/providers/base.py"
+      keys:
+        - "core:cloud_client:protocol"
+        - "core:persona:factory_contract"
+        - "telemetry:providers:protocol"
+      ttl_minutes: 60
+      reason: >
+        Establishes the pure-interface contract that the four
+        extension packages, the MSAF harness, and
+        wp-foundation-impls all depend on. Lock window is short (60
+        min) because no httpx/MSAL/Langfuse code is touched here —
+        only Protocol declarations, dataclasses, and the test
+        fixture MockGraphClient.
+    verification: tier_b
+    metadata:
+      loc_estimate: 600
+      external_deps: []
+
+  # ──────────────────────────────────────────────────────────
+  # wp-foundation-impls — concrete httpx + MSAL + telemetry impls
+  # Depends on wp-foundation-protocols.
+  # Runs in PARALLEL with the four extension packages (they only
+  # need protocols). The MSAF harness depends on this package
+  # because of the agent-framework dep in pyproject.toml.
+  # ──────────────────────────────────────────────────────────
+  - id: wp-foundation-impls
+    name: "Foundation/Impls: MSAL strategies + GraphClient + observability provider impls + pyproject"
+    description: >
+      Concrete implementation of the protocols declared in
+      wp-foundation-protocols. Lands per design.md D1, D2, D4 (and
+      post-review additions D13–D22, D27): two MSAL strategy
+      classes with serializable token cache discipline +
+      asyncio.to_thread wrapping + atomic 0o600 tmp creation +
+      gitignore verification + concurrent-refresh tmp-file
+      collision handling (core/msal_auth.py); the custom
+      httpx-based `GraphClient` with Retry-After honoring,
+      configured timeouts, transport-level trace_graph_call
+      observability, empty-body 202/204 handling, GraphAPIError
+      subclassing httpx.HTTPStatusError, retry_safe parameter,
+      get_bytes streaming download, async context-manager
+      lifecycle, and cross-domain redirect rejection
+      (core/graph_client.py); and the noop/langfuse impls of the
+      new trace_graph_call method on the ObservabilityProvider
+      Protocol. Adds `msal>=1.28`, `respx>=0.21`, and the pinned
+      `agent-framework>=1.0.0,<2.0.0` (per D5 PLAN_ITERATE pin
+      decision) to pyproject.toml. Covers tasks 1.3-1.14, 1.16,
+      8.1.x, 9.1.3-9.1.9, 9.4.1.
+    tasks:
+      - "1.3"
+      - "1.4"
+      - "1.5"
+      - "1.6"
+      - "1.7"
+      - "1.8"
+      - "1.9"
+      - "1.10"
+      - "1.11"
+      - "1.12"
+      - "1.13"
+      - "1.14"
+      - "1.16"
+      - "8.1.1"
+      - "8.1.2"
+      - "8.1.3"
+      - "8.1.4"
+      - "8.1.5"
+      - "8.1.6"
+      - "8.1.7"
+      - "8.1.8"
+      - "8.1.9"
+      - "8.1.10"
+      - "8.1.11"
+      - "8.1.12"
+      - "8.1.13"
+      - "8.1.14"
+      - "8.1.15"
+      - "8.1.16"
+      - "8.1.17"
+      - "8.1.18"
+      - "8.1.19"
+      - "8.1.20"
+      - "8.1.21"
+      - "8.1.22"
+      - "8.1.23"
+      - "9.1.3"
+      - "9.1.4"
+      - "9.1.5"
+      - "9.1.6"
+      - "9.1.7"
+      - "9.1.8"
+      - "9.1.9"
+      - "9.4.1"
+    priority: 1
+    dependencies:
+      - wp-foundation-protocols
+    scope:
+      write_allow:
+        - "src/assistant/core/msal_auth.py"
+        - "src/assistant/core/graph_client.py"
+        - "src/assistant/telemetry/providers/noop.py"
+        - "src/assistant/telemetry/providers/langfuse.py"
+        - "src/assistant/extensions/_stub.py"
+        - "src/assistant/extensions/gmail.py"
+        - "src/assistant/extensions/gcal.py"
+        - "src/assistant/extensions/gdrive.py"
+        - "tests/test_msal_auth.py"
+        - "tests/test_graph_client.py"
+        - "tests/test_observability_trace_graph_call.py"
+        - "pyproject.toml"
+        - "uv.lock"
+      read_allow:
+        - "**"
+    locks:
+      files:
+        - "src/assistant/core/msal_auth.py"
+        - "src/assistant/core/graph_client.py"
+        - "src/assistant/telemetry/providers/noop.py"
+        - "src/assistant/telemetry/providers/langfuse.py"
+        - "pyproject.toml"
+        - "uv.lock"
+      keys:
+        - "core:msal_auth:strategies"
+        - "core:graph_client:impl"
+        - "telemetry:providers:impls"
+        - "deps:pyproject"
+      ttl_minutes: 150
+      reason: >
+        Establishes the concrete httpx GraphClient and MSAL
+        strategy classes that the four extensions construct at
+        factory time, plus the noop/langfuse trace_graph_call
+        impls that the harness consumes. The deps:pyproject lock
+        window does not overlap wp-msaf-harness's pyproject edit
+        because wp-msaf-harness depends on this package; the dep
+        edge guarantees lock acquisition is serialized regardless
+        of TTL.
+    verification: tier_b
+    metadata:
+      loc_estimate: 2400
+      external_deps:
+        - msal
+        - respx
+        - agent-framework
+
+  # ──────────────────────────────────────────────────────────
+  # wp-ms-graph — real ms_graph extension
+  # Parallel with the other three extension packages and the harness.
+  # ──────────────────────────────────────────────────────────
+  - id: wp-ms-graph
+    name: "ms_graph extension — real implementation"
+    description: >
+      Replaces the 11-line `StubExtension`-returning shim at
+      src/assistant/extensions/ms_graph.py with a real
+      `MsGraphExtension` exposing search_people, get_my_profile,
+      and search_messages. Default scopes include People.Read +
+      User.Read. Tools are dual-wrapped (LangChain StructuredTool +
+      MSAF @ai_function) per design D6, D11. Per design D23–D25,
+      tools URL-encode path-segment IDs with rejection on
+      separators/control chars, apply REPLACE semantics for persona
+      scope override, and surface OPEN-breaker invocations as
+      structured GraphAPIError. Covers tasks 2.1–2.5 and the
+      ms_graph slices of 8.2.1–8.2.6.
+    tasks:
+      - "2.1"
+      - "2.2"
+      - "2.3"
+      - "2.4"
+      - "2.5"
+      - "8.2.1"
+      - "8.2.2"
+      - "8.2.3"
+      - "8.2.4"
+      - "8.2.5"
+      - "8.2.6"
+    priority: 2
+    dependencies:
+      - wp-foundation-protocols
+    scope:
+      write_allow:
+        - "src/assistant/extensions/ms_graph.py"
+        - "tests/test_extensions_ms_graph.py"
+        - "tests/fixtures/graph_responses/ms_graph/**"
+      read_allow:
+        - "**"
+      deny:
+        - "src/assistant/extensions/outlook.py"
+        - "src/assistant/extensions/teams.py"
+        - "src/assistant/extensions/sharepoint.py"
+        - "src/assistant/harnesses/sdk/ms_agent_fw.py"
+    locks:
+      files:
+        - "src/assistant/extensions/ms_graph.py"
+      keys:
+        - "extension:ms_graph:impl"
+      ttl_minutes: 120
+      reason: >
+        ms_graph extension owns its own breaker key
+        ("graph:ms_graph") and tool surface; locking the file plus
+        the breaker namespace keeps the implementation isolated from
+        sibling extensions running in parallel.
+    verification: tier_b
+    metadata:
+      loc_estimate: 480
+      external_deps: []
+
+  # ──────────────────────────────────────────────────────────
+  # wp-outlook — real outlook extension
+  # ──────────────────────────────────────────────────────────
+  - id: wp-outlook
+    name: "outlook extension — real implementation (read + send_email)"
+    description: >
+      Replaces the outlook stub with a real `OutlookExtension`
+      exposing list_messages, read_message, search_messages,
+      send_email, list_calendar_events, find_free_times. Default
+      scopes include Mail.Read, Mail.Send, Calendars.Read. Tools
+      are dual-wrapped per design D6, D11. Covers tasks 3.1–3.6.
+    tasks:
+      - "3.1"
+      - "3.2"
+      - "3.3"
+      - "3.4"
+      - "3.5"
+      - "3.6"
+      - "8.2.1"
+      - "8.2.2"
+      - "8.2.3"
+      - "8.2.4"
+      - "8.2.5"
+      - "8.2.6"
+      - "8.2.7"
+    priority: 2
+    dependencies:
+      - wp-foundation-protocols
+    scope:
+      write_allow:
+        - "src/assistant/extensions/outlook.py"
+        - "tests/test_extensions_outlook.py"
+        - "tests/fixtures/graph_responses/outlook/**"
+      read_allow:
+        - "**"
+      deny:
+        - "src/assistant/extensions/ms_graph.py"
+        - "src/assistant/extensions/teams.py"
+        - "src/assistant/extensions/sharepoint.py"
+        - "src/assistant/harnesses/sdk/ms_agent_fw.py"
+    locks:
+      files:
+        - "src/assistant/extensions/outlook.py"
+      keys:
+        - "extension:outlook:impl"
+      ttl_minutes: 120
+      reason: >
+        outlook extension owns its own breaker key ("graph:outlook")
+        and tool surface (including the only write tool in P5,
+        send_email). Locking the file isolates this implementation
+        from sibling extensions in parallel.
+    verification: tier_b
+    metadata:
+      loc_estimate: 580
+      external_deps: []
+
+  # ──────────────────────────────────────────────────────────
+  # wp-teams — real teams extension
+  # ──────────────────────────────────────────────────────────
+  - id: wp-teams
+    name: "teams extension — real implementation (read + post_chat_message)"
+    description: >
+      Replaces the teams stub with a real `TeamsExtension` exposing
+      list_chats, list_channel_messages, read_message,
+      post_chat_message. Default scopes include Chat.Read,
+      Chat.ReadWrite, ChannelMessage.Read.All. Tools dual-wrapped per
+      design D6, D11. Covers tasks 4.1–4.6.
+    tasks:
+      - "4.1"
+      - "4.2"
+      - "4.3"
+      - "4.4"
+      - "4.5"
+      - "4.6"
+      - "8.2.1"
+      - "8.2.2"
+      - "8.2.3"
+      - "8.2.4"
+      - "8.2.5"
+      - "8.2.6"
+      - "8.2.8"
+    priority: 2
+    dependencies:
+      - wp-foundation-protocols
+    scope:
+      write_allow:
+        - "src/assistant/extensions/teams.py"
+        - "tests/test_extensions_teams.py"
+        - "tests/fixtures/graph_responses/teams/**"
+      read_allow:
+        - "**"
+      deny:
+        - "src/assistant/extensions/ms_graph.py"
+        - "src/assistant/extensions/outlook.py"
+        - "src/assistant/extensions/sharepoint.py"
+        - "src/assistant/harnesses/sdk/ms_agent_fw.py"
+    locks:
+      files:
+        - "src/assistant/extensions/teams.py"
+      keys:
+        - "extension:teams:impl"
+      ttl_minutes: 120
+      reason: >
+        teams extension owns its own breaker key ("graph:teams")
+        and tool surface (including the post_chat_message write
+        tool). Locked to prevent parallel sibling drift.
+    verification: tier_b
+    metadata:
+      loc_estimate: 510
+      external_deps: []
+
+  # ──────────────────────────────────────────────────────────
+  # wp-sharepoint — real sharepoint extension (read-only)
+  # ──────────────────────────────────────────────────────────
+  - id: wp-sharepoint
+    name: "sharepoint extension — read-only implementation"
+    description: >
+      Replaces the sharepoint stub with a real `SharepointExtension`
+      exposing search_sites, list_documents, download_document.
+      Read-only — write-side (list-item create, doc upload) is
+      explicitly deferred to P5b. Default scopes include
+      Sites.Read.All, Files.Read.All. Tools dual-wrapped per design
+      D6, D11. Covers tasks 5.1–5.5.
+    tasks:
+      - "5.1"
+      - "5.2"
+      - "5.3"
+      - "5.4"
+      - "5.5"
+      - "8.2.1"
+      - "8.2.2"
+      - "8.2.3"
+      - "8.2.4"
+      - "8.2.5"
+      - "8.2.6"
+      - "8.2.9"
+    priority: 2
+    dependencies:
+      - wp-foundation-protocols
+    scope:
+      write_allow:
+        - "src/assistant/extensions/sharepoint.py"
+        - "tests/test_extensions_sharepoint.py"
+        - "tests/fixtures/graph_responses/sharepoint/**"
+      read_allow:
+        - "**"
+      deny:
+        - "src/assistant/extensions/ms_graph.py"
+        - "src/assistant/extensions/outlook.py"
+        - "src/assistant/extensions/teams.py"
+        - "src/assistant/harnesses/sdk/ms_agent_fw.py"
+    locks:
+      files:
+        - "src/assistant/extensions/sharepoint.py"
+      keys:
+        - "extension:sharepoint:impl"
+      ttl_minutes: 120
+      reason: >
+        sharepoint extension owns its own breaker key
+        ("graph:sharepoint") and tool surface. Locked to prevent
+        parallel sibling drift.
+    verification: tier_b
+    metadata:
+      loc_estimate: 450
+      external_deps: []
+
+  # ──────────────────────────────────────────────────────────
+  # wp-msaf-harness — MS Agent Framework harness implementation
+  # Parallel with the four extension packages.
+  # ──────────────────────────────────────────────────────────
+  - id: wp-msaf-harness
+    name: "MS Agent Framework harness — full implementation"
+    description: >
+      Replaces the `NotImplementedError`-raising stub at
+      src/assistant/harnesses/sdk/ms_agent_fw.py with a full
+      `MSAgentFrameworkHarness` per design.md D5: builds
+      `agent_framework.Agent` with composed instructions + dual-format
+      tool union from extensions, awaits `agent.run()` in invoke(),
+      spawns sub-agents recursively, consumes ToolPolicy +
+      ContextProvider + GuardrailProvider via CapabilityResolver
+      (MemoryPolicy deferred to P5b). Adds the `agent-framework`
+      package to pyproject.toml; uses Context7 to confirm version at
+      implementation time. Covers tasks 6.1–6.8.
+    tasks:
+      - "6.1"
+      - "6.2"
+      - "6.3"
+      - "6.4"
+      - "6.5"
+      - "6.6"
+      - "6.7"
+      - "6.8"
+      - "8.3.1"
+      - "8.3.2"
+    priority: 2
+    dependencies:
+      - wp-foundation-protocols
+      - wp-foundation-impls
+    scope:
+      write_allow:
+        - "src/assistant/harnesses/sdk/ms_agent_fw.py"
+        - "tests/test_harness_ms_agent_fw.py"
+      read_allow:
+        - "**"
+      deny:
+        - "src/assistant/extensions/ms_graph.py"
+        - "src/assistant/extensions/outlook.py"
+        - "src/assistant/extensions/teams.py"
+        - "src/assistant/extensions/sharepoint.py"
+        - "pyproject.toml"
+        - "uv.lock"
+    locks:
+      files:
+        - "src/assistant/harnesses/sdk/ms_agent_fw.py"
+      keys:
+        - "harness:ms_agent_framework:impl"
+      ttl_minutes: 150
+      reason: >
+        Replaces the entire MSAF harness module from a stub into a
+        full implementation. Imports `agent-framework` from the dep
+        added by wp-foundation-impls; this package does NOT touch
+        pyproject.toml itself (the pin is wp-foundation-impls's
+        responsibility per design D5). The dep edge to
+        wp-foundation-impls guarantees agent-framework is installed
+        before harness implementation begins.
+    verification: tier_b
+    metadata:
+      loc_estimate: 580
+      external_deps: []
+      consumes_external_deps:
+        - agent-framework
+
+  # ──────────────────────────────────────────────────────────
+  # wp-integration — final cross-cutting validation + roadmap
+  # Depends on all priority-2 packages.
+  # ──────────────────────────────────────────────────────────
+  - id: wp-integration
+    task_type: integration
+    name: "Integration: existing-test updates, gitignore, roadmap, smoke test, follow-ups"
+    description: >
+      Updates the existing test files that asserted stub-state
+      behavior for the four MS extensions and the MSAF harness
+      stub, so they now assert real-implementation behavior.
+      Amends personas/_template/.gitignore to add `.cache/`. Flips
+      P5 to archived in roadmap.md and corrects P4's drifted
+      `pending` status (observability is archived as
+      2026-05-03-observability). Adds the parameterized dual-format
+      parity test, the opt-in integration smoke test, and runs the
+      full quality gate (pytest + ruff + mypy + openspec validate
+      --strict). Files P5b follow-up issues for deferred scope.
+    tasks:
+      - "7.1"
+      - "7.2"
+      - "7.3"
+      - "7.4"
+      - "7.5"
+      - "7.6"
+      - "7.7"
+      - "7.8"
+      - "7.9"
+      - "8.5.1"
+      - "8.5.2"
+      - "8.5.3"
+      - "9.3.1"
+      - "9.3.2"
+      - "9.3.3"
+      - "9.3.4"
+      - "9.4.2"
+    priority: 3
+    dependencies:
+      - wp-ms-graph
+      - wp-outlook
+      - wp-teams
+      - wp-sharepoint
+      - wp-msaf-harness
+    scope:
+      write_allow:
+        - "tests/test_extension_registry.py"
+        - "tests/test_extensions.py"
+        - "tests/test_harness_factory.py"
+        - "tests/test_extensions_dual_format.py"
+        - "tests/integration/__init__.py"
+        - "tests/integration/test_graph_smoke.py"
+        - "personas/_template/.gitignore"
+        - "openspec/roadmap.md"
+        - "CLAUDE.md"
+      read_allow:
+        - "**"
+    locks:
+      files:
+        - "openspec/roadmap.md"
+        - "personas/_template/.gitignore"
+      keys:
+        - "openspec:roadmap"
+      ttl_minutes: 60
+      reason: >
+        Roadmap status flips and persona-template gitignore are
+        cross-cutting; serialized at the end so all earlier work has
+        committed before status changes are recorded.
+    verification: tier_a
+    metadata:
+      loc_estimate: 250
+      external_deps: []

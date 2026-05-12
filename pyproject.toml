@@ -29,12 +29,18 @@ dependencies = [
     # ImportError on assistant.telemetry.decorators. IMPL_REVIEW round-3
     # codex finding #1.
     "langchain-core>=0.3.49",
+    # P5 ms-graph-extension wp-foundation-impls (D5, D29):
+    # ``msal`` powers ``core/msal_auth.py`` strategies (Interactive +
+    # ClientCredentials). ``agent-framework`` is consumed by
+    # ``harnesses/sdk/ms_agent_fw.py`` (D5 pinned via Context7);
+    # both deps live in core dependencies because the foundation
+    # modules depend on them at import time. Test-only ``respx``
+    # mocks httpx at the wire level for the GraphClient suite.
+    "msal>=1.28",
+    "agent-framework>=1.0.0,<2.0.0",
 ]
 
 [project.optional-dependencies]
-ms = [
-    "agent-framework>=0.1.0b1",
-]
 telemetry = [
     "langfuse>=3.0,<4.0",
 ]
@@ -55,6 +61,7 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.11",
     "types-pyyaml>=6.0",
+    "respx>=0.21",
 ]
 
 [tool.ruff]

@@ -15,7 +15,21 @@ from typing import Any, Protocol, runtime_checkable
 
 # Module-level frozensets give zero-allocation O(1) membership checks
 # for enum validation in NoopProvider's hot path (D7).
-_VALID_TOOL_KINDS: frozenset[str] = frozenset({"extension", "http"})
+#
+# ``"graph"`` was added in ms-graph-extension to label tool calls that
+# resolve through the new ``CloudGraphClient`` transport tier. The
+# ``trace_graph_call`` method below is the first-class entry for those
+# events; ``trace_tool_call(tool_kind="graph", ...)`` MAY also be used
+# by callers who want a lower-fidelity tool-tier span.
+_VALID_TOOL_KINDS: frozenset[str] = frozenset({"extension", "http", "graph"})
+
+# Allowed HTTP verbs for ``trace_graph_call`` per ms-graph-extension
+# observability MODIFIED requirement. The MS Graph API has no native
+# CONNECT/TRACE/OPTIONS surface that an extension would emit, so the
+# set is closed at five.
+_VALID_GRAPH_METHODS: frozenset[str] = frozenset(
+    {"GET", "POST", "PUT", "PATCH", "DELETE"}
+)
 _VALID_OPS: frozenset[str] = frozenset(
     {
         "context",
@@ -113,7 +127,39 @@ class ObservabilityProvider(Protocol):
         error: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        """Record a StructuredTool invocation. ``tool_kind`` ∈ {extension, http}."""
+        """Record a StructuredTool invocation. ``tool_kind`` ∈ {extension, http, graph}."""
+        ...
+
+    def trace_graph_call(
+        self,
+        *,
+        extension_name: str,
+        method: str,
+        path: str,
+        status_code: int | None,
+        duration_ms: float,
+        breaker_key: str,
+        request_id: str | None = None,
+        retry_attempt: int = 0,
+        bytes_streamed: int | None = None,
+        error: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Record a single outbound HTTP request to a CloudGraphClient backend.
+
+        One span per HTTP attempt — the ``@resilient_http`` retry layer
+        emits multiple ``trace_graph_call`` invocations with monotonically
+        increasing ``retry_attempt`` for a single user-level operation.
+        ``status_code`` is ``None`` on transport errors (read timeout,
+        connection refused) per D14. ``request_id`` is the Microsoft
+        Graph ``request-id`` response header value, included for
+        correlation with Entra ID and Graph audit logs. ``path`` MUST be
+        normalized — sensitive ID values redacted to placeholders like
+        ``/me/messages/{message_id}`` (D15) so the span itself does not
+        contain PII or unbounded cardinality.
+
+        Spec: observability — Observability Provider Contract MODIFIED.
+        """
         ...
 
     def trace_memory_op(

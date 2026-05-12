@@ -153,7 +153,9 @@ def test_private_extension_takes_precedence(
                 def as_ms_agent_tools(self): return []
                 async def health_check(self): return True
 
-            def create_extension(config):
+            # Post-P5 factory contract: accept the persona kwarg
+            # (gmail-style stub here, so we ignore it).
+            def create_extension(config, *, persona=None):
                 return _PrivateGmail(config)
             """
         )

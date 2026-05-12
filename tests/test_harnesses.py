@@ -154,12 +154,29 @@ def test_factory_returns_ms_af_harness_for_enabled_persona() -> None:
     assert isinstance(harness, MSAgentFrameworkHarness)
 
 
-def test_ms_af_create_agent_raises_not_implemented() -> None:
-    h = MSAgentFrameworkHarness(_persona(ms_enabled=True), _role())
-    with pytest.raises(NotImplementedError) as exc:
-        asyncio.run(h.create_agent(tools=[], extensions=[]))
-    msg = str(exc.value).lower()
-    assert "p5" in msg or "later proposal" in msg or "deferred" in msg
+def test_ms_af_create_agent_no_longer_raises_not_implemented() -> None:
+    """Post-P5 contract: create_agent MUST NOT raise NotImplementedError.
+
+    The full MSAF harness implementation lives behind agent_framework
+    SDK imports that this test does not exercise; the dedicated MSAF
+    harness suite under tests/test_harness_ms_agent_fw.py covers
+    create_agent's full behavior with the SDK mocked.
+    """
+    h = MSAgentFrameworkHarness(
+        _persona(ms_enabled=True),
+        _role(),
+        chat_client_factory=lambda: object(),
+    )
+
+    from unittest.mock import patch
+
+    class _FakeAgent:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    with patch("agent_framework.Agent", new=_FakeAgent, create=True):
+        agent = asyncio.run(h.create_agent(tools=[], extensions=[]))
+    assert agent is not None  # spec: NotImplementedError MUST NOT fire
 
 
 # ── Claude Code Host Harness ─────────────────────────────────────────
