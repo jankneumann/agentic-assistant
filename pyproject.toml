@@ -28,7 +28,7 @@ dependencies = [
     # token counts per invocation. Earlier 0.3.x releases would
     # ImportError on assistant.telemetry.decorators. IMPL_REVIEW round-3
     # codex finding #1.
-    "langchain-core>=0.3.49",
+    "langchain-core>=1.3.3",
     # P5 ms-graph-extension wp-foundation-impls (D5, D29):
     # ``msal`` powers ``core/msal_auth.py`` strategies (Interactive +
     # ClientCredentials). ``agent-framework`` is consumed by
