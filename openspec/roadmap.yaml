@@ -208,7 +208,7 @@ items:
   - item_id: ms-graph-extension
     change_id: ms-graph-extension
     title: MS Graph / Teams / SharePoint / Outlook extensions + MS Agent Framework
-    status: candidate
+    status: archived
     priority: 9
     effort: L
     depends_on: [http-tools-layer]
