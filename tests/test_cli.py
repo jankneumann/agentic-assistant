@@ -520,3 +520,308 @@ def test_explicit_run_subcommand(stub_factory) -> None:
     )
     assert result.exit_code == 0
     assert "Chief of Staff" in result.output
+
+
+# ── Teacher --method CLI flag (add-teacher-role) ─────────────────────
+
+
+def test_method_flag_with_teacher_role_accepted(
+    stub_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--method feynman` with `-r teacher` is accepted; the first
+    user-turn is prefixed with a directive naming the method."""
+    seen_invocations: list[str] = []
+
+    real_stub_invoke = StubHarness.invoke
+
+    async def capture_invoke(self, agent, message):
+        seen_invocations.append(message)
+        return await real_stub_invoke(self, agent, message)
+
+    monkeypatch.setattr(StubHarness, "invoke", capture_invoke)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main,
+        ["-p", "personal", "-r", "teacher", "--method", "feynman"],
+        input="entropy\nquit\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert seen_invocations, "expected at least one invoke() call"
+    assert "feynman" in seen_invocations[0].lower()
+
+
+def test_method_flag_without_teacher_role_rejected(stub_factory) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main,
+        ["-p", "personal", "-r", "coder", "--method", "feynman"],
+    )
+    assert result.exit_code != 0
+    combined = (result.output or "") + (
+        str(result.exception) if result.exception else ""
+    )
+    assert "--method" in combined
+    assert "teacher" in combined
+
+
+def test_method_flag_with_unknown_method_rejected(stub_factory) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main,
+        ["-p", "personal", "-r", "teacher", "--method", "made_up"],
+    )
+    assert result.exit_code != 0
+    combined = (result.output or "") + (
+        str(result.exception) if result.exception else ""
+    )
+    # Error MUST list the available method names.
+    assert "feynman" in combined
+    assert "socratic" in combined
+
+
+def test_methods_repl_command_lists_skills(stub_factory) -> None:
+    """`/methods` lists feynman + socratic, with an active marker on the
+    currently-active method when one is set via --method."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main,
+        ["-p", "personal", "-r", "teacher", "--method", "feynman"],
+        input="/methods\nquit\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "feynman" in result.output
+    assert "socratic" in result.output
+    # The active method MUST have a trailing arrow marker.
+    assert "feynman ←" in result.output or "feynman  ←" in result.output
+
+
+def test_methods_repl_command_rejected_outside_teacher(stub_factory) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main,
+        ["-p", "personal", "-r", "coder"],
+        input="/methods\nquit\n",
+    )
+    assert result.exit_code == 0
+    # Guard message names the teacher requirement.
+    assert "teacher" in result.output.lower()
+
+
+def test_method_repl_command_switches_without_rebuilding(
+    stub_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`/method socratic` after `/method feynman` records the new active
+    method WITHOUT calling _create_harness again (contrast with /role
+    which rebuilds)."""
+    call_count = {"n": 0}
+
+    def counting_factory(persona, role, harness_name):
+        call_count["n"] += 1
+        return StubHarness(persona, role)
+
+    monkeypatch.setattr(cli_mod, "_create_harness", counting_factory)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main,
+        ["-p", "personal", "-r", "teacher"],
+        input="/method feynman\n/method socratic\nteach me entropy\nquit\n",
+    )
+    assert result.exit_code == 0, result.output
+    # Exactly one initial harness construction; /method MUST NOT add more.
+    assert call_count["n"] == 1, (
+        f"expected 1 harness build, got {call_count['n']}"
+    )
+    # Prompt prefix reflects the latest active method on assistant responses.
+    assert "[Teacher:socratic]>" in result.output
+
+
+def test_method_repl_command_rejects_invalid(stub_factory) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main,
+        ["-p", "personal", "-r", "teacher"],
+        input="/method feynman\n/method bogus\nteach me entropy\nquit\n",
+    )
+    assert result.exit_code == 0, result.output
+    # Error message lists valid methods.
+    assert "feynman" in result.output
+    assert "socratic" in result.output
+    # Active method unchanged from feynman — the prompt prefix should
+    # still read feynman after the rejected /method bogus.
+    assert "[Teacher:feynman]>" in result.output
+
+
+def test_methods_repl_command_no_active_method_shows_no_marker(
+    stub_factory,
+) -> None:
+    """When --method was NOT supplied, /methods lists methods without an
+    active marker — the user hasn't picked yet."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main,
+        ["-p", "personal", "-r", "teacher"],
+        input="/methods\nquit\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "feynman" in result.output
+    assert "socratic" in result.output
+    # No marker until the user picks.
+    assert "←" not in result.output.split("/methods", 1)[-1].split("You>", 1)[0]
+
+
+def test_method_repl_command_outside_teacher_role(stub_factory) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main,
+        ["-p", "personal", "-r", "coder"],
+        input="/method feynman\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert "teacher" in result.output.lower()
+
+
+def test_teacher_role_prompt_prefix_without_active_method(stub_factory) -> None:
+    """When teacher is active but no method is set, the prompt prefix is
+    `[Teacher]>`, not `[Teacher:None]>`."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main,
+        ["-p", "personal", "-r", "teacher"],
+        input="hello\nquit\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "[Teacher]>" in result.output
+    assert "Teacher:None" not in result.output
+
+
+def test_teacher_role_help_line_lists_method_commands(stub_factory) -> None:
+    """When starting role is teacher, the Commands help line includes
+    /method and /methods."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main,
+        ["-p", "personal", "-r", "teacher"],
+        input="quit\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "/method" in result.output
+    assert "/methods" in result.output
+
+
+def test_non_teacher_help_line_omits_method_commands(stub_factory) -> None:
+    """Other roles see the existing help line unchanged."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main,
+        ["-p", "personal", "-r", "coder"],
+        input="quit\n",
+    )
+    assert result.exit_code == 0, result.output
+    # The /methods command is teacher-specific; it MUST NOT appear in
+    # the coder role's startup help line. (The command still works as a
+    # guard message if typed.)
+    initial_help = result.output.split("You>", 1)[0]
+    assert "/methods" not in initial_help
+
+
+# ── Regression: /role transition clears teacher state (finding #1) ───
+
+
+def test_role_switch_clears_active_method_state(
+    stub_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test for review-findings.json #1.
+
+    Sequence that triggered the latent bug:
+      1. --method feynman → active_method=feynman, directive queued
+      2. real user turn → directive consumed (sent to agent)
+      3. /role teacher → harness IS rebuilt (conversation lost) but
+         active_method was preserved, so the next response prefix would
+         render [Teacher:feynman]> on a fresh agent that has no method
+         context. Fix: /role always resets method state.
+    """
+    seen_messages: list[str] = []
+    real_invoke = StubHarness.invoke
+
+    async def capture(self, agent, message):
+        seen_messages.append(message)
+        return await real_invoke(self, agent, message)
+
+    monkeypatch.setattr(StubHarness, "invoke", capture)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main,
+        ["-p", "personal", "-r", "teacher", "--method", "feynman"],
+        input="entropy\n/role teacher\nentropy again\nquit\n",
+    )
+    assert result.exit_code == 0, result.output
+
+    # First message: directive prepended (contains 'feynman').
+    assert any("feynman" in m.lower() for m in seen_messages[:1])
+    # Second message: post-/role rebuild, NO directive — agent gets the
+    # bare user input. The phantom-badge would have rendered prefix
+    # [Teacher:feynman]> even though the agent doesn't know about it.
+    # Fix: state cleared → second message has no directive AND prefix
+    # is the generic [Teacher]>.
+    assert "feynman" not in seen_messages[-1].lower(), (
+        f"second message leaked stale directive: {seen_messages[-1]!r}"
+    )
+    # After /role rebuild, the prefix MUST drop the method portion.
+    post_role_output = result.output.split("→ Teacher", 1)[-1]
+    assert "[Teacher:feynman]" not in post_role_output, (
+        "phantom method badge after /role rebuild"
+    )
+    assert "[Teacher]>" in post_role_output
+
+
+def test_role_switch_to_other_role_clears_method_state(stub_factory) -> None:
+    """Switching to a non-teacher role MUST also clear method state — was
+    already correct pre-fix but now guaranteed by unconditional reset."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main,
+        ["-p", "personal", "-r", "teacher", "--method", "feynman"],
+        input="/role writer\nhello\nquit\n",
+    )
+    assert result.exit_code == 0, result.output
+    # After /role writer, prefix is plain Writer (no method portion).
+    post = result.output.split("→ Writer", 1)[-1]
+    assert "Writer:" not in post
+    assert "[Writer]>" in post
+
+
+# ── /method no-arg usage hint (finding #4) ──────────────────────────
+
+
+def test_method_repl_command_no_arg_shows_usage(stub_factory) -> None:
+    """Bare `/method` (no argument) should print a usage hint and list
+    available methods, matching the /delegate UX pattern at cli.py."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main,
+        ["-p", "personal", "-r", "teacher"],
+        input="/method\nquit\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "Usage: /method" in result.output
+    # Available methods listed in the hint.
+    assert "feynman" in result.output
+    assert "socratic" in result.output
+
+
+def test_method_repl_command_trailing_space_shows_usage(stub_factory) -> None:
+    """`/method <space>` with no name — same hint, not the 'Unknown
+    method' branch."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main,
+        ["-p", "personal", "-r", "teacher"],
+        input="/method \nquit\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "Usage: /method" in result.output
+    # Must NOT have fallen through to the "Unknown method ''" branch.
+    assert "Unknown method ''" not in result.output

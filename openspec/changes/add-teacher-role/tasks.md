@@ -6,7 +6,7 @@ dependency task(s).
 
 ## Phase 1 — Role scaffold
 
-- [ ] 1.1 Create `roles/teacher/role.yaml` with:
+- [x] 1.1 Create `roles/teacher/role.yaml` with:
   - `name: teacher`, `display_name: "Teacher"`, `description:
     "Structured teaching loop toward transferable understanding"`
   - `preferred_tools: [content_analyzer:search,
@@ -26,7 +26,7 @@ dependency task(s).
   **Design decisions**: D5, D6, D9
   **Dependencies**: none
 
-- [ ] 1.2 Create `roles/teacher/prompt.md` with:
+- [x] 1.2 Create `roles/teacher/prompt.md` with:
   - Role header + purpose (one paragraph: "You drive a structured
     teaching loop with the user toward transferable mastery of a
     topic they name").
@@ -53,7 +53,7 @@ dependency task(s).
 
 ## Phase 2 — Skills
 
-- [ ] 2.1 Create `roles/teacher/skills/feynman.md`. Contains the full
+- [x] 2.1 Create `roles/teacher/skills/feynman.md`. Contains the full
   Feynman loop adapted from the user's provided prompt: Step 1
   (≤150-word plain-language explanation + one flagged analogy + "explain
   it back to me" prompt), Step 2 (wait), Step 3 (1-10 score, bulleted
@@ -68,7 +68,7 @@ dependency task(s).
   **Design decisions**: D6, D8
   **Dependencies**: 1.1
 
-- [ ] 2.2 Create `roles/teacher/skills/socratic.md`. Contains the
+- [x] 2.2 Create `roles/teacher/skills/socratic.md`. Contains the
   question-only loop: Step 1 (one open question that probes the user's
   existing model of the topic, no explanation), Step 2 (wait), Step 3
   (follow-up question that targets the assumption or gap surfaced by
@@ -85,7 +85,7 @@ dependency task(s).
 
 ## Phase 3 — CLI and REPL
 
-- [ ] 3.1 Write tests in `tests/test_cli.py`:
+- [x] 3.1 Write tests in `tests/test_cli.py`:
   - `test_method_flag_with_teacher_role_accepted` — invoke CLI with
     `-p personal -r teacher --method feynman`, assert no UsageError,
     first-turn directive to the agent contains `feynman`.
@@ -112,7 +112,7 @@ dependency task(s).
   **Design decisions**: D3, D4
   **Dependencies**: 1.1, 2.1, 2.2
 
-- [ ] 3.2 Implement `--method` / `-m` option on `main()` in
+- [x] 3.2 Implement `--method` / `-m` option on `main()` in
   `src/assistant/cli.py`. Validation logic:
   - `method` is None → no-op.
   - `method` is not None AND `role_name != "teacher"` → raise
@@ -129,7 +129,7 @@ dependency task(s).
   **Design decisions**: D3, D4
   **Dependencies**: 3.1
 
-- [ ] 3.3 Implement `/methods` REPL command. Lists skill files from
+- [x] 3.3 Implement `/methods` REPL command. Lists skill files from
   `roles/teacher/skills/*.md` (strip extension for display), marks the
   active method with `←`. If the current role is not `teacher`, print
   "`/methods` is only available when role is `teacher`." and continue.
@@ -138,7 +138,7 @@ dependency task(s).
   **Design decisions**: D3
   **Dependencies**: 3.1
 
-- [ ] 3.4 Implement `/method <name>` REPL command. Behavior:
+- [x] 3.4 Implement `/method <name>` REPL command. Behavior:
   - Current role is not `teacher` → print same guard message as in
     3.3; continue.
   - Method name not found among skill files → print
@@ -154,7 +154,7 @@ dependency task(s).
   **Design decisions**: D3, D4, D7
   **Dependencies**: 3.1
 
-- [ ] 3.5 Update the REPL prompt prefix. When the active role is
+- [x] 3.5 Update the REPL prompt prefix. When the active role is
   `teacher` AND an active method is set, display
   `[Teacher:<method>]>` instead of the generic `[Teacher]>`. No
   change when role is not `teacher`.
@@ -163,7 +163,7 @@ dependency task(s).
   **Design decisions**: D4
   **Dependencies**: 3.4
 
-- [ ] 3.6 Update the initial REPL Commands help line (currently
+- [x] 3.6 Update the initial REPL Commands help line (currently
   `cli.py:128-130`) to include `/method <name>` and `/methods` when
   the starting role is `teacher`. Other roles see the existing help
   line unchanged.
@@ -174,7 +174,7 @@ dependency task(s).
 
 ## Phase 4 — Role-registry tests
 
-- [ ] 4.1 Write in `tests/test_role_registry.py`:
+- [x] 4.1 Write in `tests/test_role_registry.py`:
   - `test_teacher_role_is_discoverable` — assert `"teacher" in
     RoleRegistry(roles_dir).discover()`.
   - `test_teacher_preferred_tools` — load teacher, assert
@@ -196,7 +196,7 @@ dependency task(s).
 
 ## Phase 5 — Roadmap and docs
 
-- [ ] 5.1 Add a row to `openspec/roadmap.md`'s "Proposal sequence"
+- [x] 5.1 Add a row to `openspec/roadmap.md`'s "Proposal sequence"
   table for `add-teacher-role`, kind `non-phase`, status `pending`
   (flips to `in-progress` when this proposal is implemented and
   `archived` on final archive). Description: "Add `teacher` role
@@ -209,7 +209,7 @@ dependency task(s).
   **Design decisions**: none
   **Dependencies**: none
 
-- [ ] 5.2 Add a corresponding item to `openspec/roadmap.yaml` with
+- [x] 5.2 Add a corresponding item to `openspec/roadmap.yaml` with
   `item_id: add-teacher-role`, `status: pending`, `depends_on: []`
   (no functional dependency on any P-phase), `effort: S`,
   `acceptance_outcomes` naming the spec capabilities populated
@@ -219,7 +219,7 @@ dependency task(s).
   **Design decisions**: none
   **Dependencies**: 5.1
 
-- [ ] 5.3 Append a note to `roles/teacher/role.yaml`'s header comment
+- [x] 5.3 Append a note to `roles/teacher/role.yaml`'s header comment
   (if feasible; YAML comments) pointing at this proposal:
   `# See openspec/changes/add-teacher-role/ for the design`. Low
   value but cheap signal for future readers browsing the role.
@@ -230,12 +230,12 @@ dependency task(s).
 
 ## Phase 6 — Validation
 
-- [ ] 6.1 Run `openspec validate add-teacher-role --strict`. Fix any
+- [x] 6.1 Run `openspec validate add-teacher-role --strict`. Fix any
   reported validation errors before proceeding.
   **Spec scenarios**: n/a
   **Dependencies**: all prior tasks.
 
-- [ ] 6.2 Run `uv run pytest tests/` from repo root. Must exit 0.
+- [x] 6.2 Run `uv run pytest tests/` from repo root. Must exit 0.
   Covers Phase 3 CLI tests and Phase 4 role-registry tests.
   **Spec scenarios**: all populated in specs/
   **Dependencies**: 3.6, 4.1
@@ -248,8 +248,12 @@ dependency task(s).
   `[Teacher:socratic]>`).
   **Spec scenarios**: n/a (exploratory)
   **Dependencies**: 6.2
+  **Status**: BLOCKED on user — this task requires an interactive
+  terminal + live LLM invocation; the implementing agent cannot
+  perform it. Tick only after the user has run the smoke test and
+  confirms the behaviors above.
 
-- [ ] 6.4 Verify ACA-binding status (R5 in design.md). Inspect
+- [x] 6.4 Verify ACA-binding status (R5 in design.md). Inspect
   `discover_tools(...)` output for the `content_analyzer` source —
   e.g. `assistant --list-tools` from `src/assistant/cli.py` — and
   record whether the registry contains `content_analyzer:search` and
@@ -262,5 +266,18 @@ dependency task(s).
     (`src/api/routes/graph_routes.py:119`); reference this proposal.
     Mark task done — the role itself is fully shipped; the binding
     activates automatically once ACA's PR lands.
+
+  **Outcome (verified 2026-05-13)**: ACA is **not yet aligned**.
+  Direct inspection of the ACA repo via
+  `gh api repos/jankneumann/agentic-content-analyzer/contents/src/api/routes/{kb_search_routes,graph_routes}.py`
+  confirms neither `@router.get("/search", ...)` nor
+  `@router.post("/query", ...)` declares an explicit `operation_id=`.
+  Cross-repo issue filed:
+  [agentic-content-analyzer#421](https://github.com/jankneumann/agentic-content-analyzer/issues/421).
+  The teacher role ships fully functional today — `preferred_tools`
+  strings render advisory-only into the system prompt
+  (`composition.py:49-52`); binding activates automatically once ACA
+  ships the two `operation_id=` annotations.
+
   **Spec scenarios**: n/a (cross-repo contract verification)
   **Dependencies**: 6.3

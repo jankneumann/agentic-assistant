@@ -125,3 +125,141 @@ def test_missing_role_raises_with_available_list(
     with pytest.raises(ValueError) as exc:
         registry.load("nonexistent", persona)
     assert "Available:" in str(exc.value)
+
+
+# ── Teacher role (add-teacher-role) ──────────────────────────────────
+
+
+def test_teacher_role_is_discoverable(roles_dir: Path) -> None:
+    """teacher-role/teacher-role-is-discoverable."""
+    registry = RoleRegistry(roles_dir)
+    assert "teacher" in registry.discover()
+
+
+def test_teacher_preferred_tools(
+    roles_dir: Path, personas_dir: Path
+) -> None:
+    """teacher-role/teacher-declares-kb-tool-preferences."""
+    persona = PersonaRegistry(personas_dir).load("personal")
+    role = RoleRegistry(roles_dir, personas_dir).load("teacher", persona)
+    assert "content_analyzer:search" in role.preferred_tools
+    assert "content_analyzer:knowledge_graph" in role.preferred_tools
+
+
+def test_teacher_delegates_only_to_researcher(
+    roles_dir: Path, personas_dir: Path
+) -> None:
+    """teacher-role/teacher-declares-researcher-delegation."""
+    persona = PersonaRegistry(personas_dir).load("personal")
+    role = RoleRegistry(roles_dir, personas_dir).load("teacher", persona)
+    assert role.delegation["allowed_sub_roles"] == ["researcher"]
+    assert role.delegation["can_spawn_sub_agents"] is True
+    assert role.delegation["max_concurrent"] == 1
+
+
+def test_teacher_skills_dir_resolves(
+    roles_dir: Path, personas_dir: Path
+) -> None:
+    """teacher-role/teacher-skills-directory-populated."""
+    persona = PersonaRegistry(personas_dir).load("personal")
+    role = RoleRegistry(roles_dir, personas_dir).load("teacher", persona)
+    assert role.skills_dir == "./roles/teacher/skills"
+    skills_path = Path(role.skills_dir)
+    assert skills_path.exists()
+    assert (skills_path / "feynman.md").exists()
+    assert (skills_path / "socratic.md").exists()
+
+
+def test_feynman_skill_defines_explain_check_reteach_loop(
+    roles_dir: Path,
+) -> None:
+    """teacher-role/feynman-skill-defines-explain-check-reteach-loop.
+
+    Asserts the spec-mandated structural markers in feynman.md:
+    - Step 1 with ≤150-word plain-language explanation + flagged analogy
+    - Step 3 with 1-10 score + ≤100-word re-teach of gaps
+    - Completion signal phrase "You've got it"
+    - knowledge_graph consultation permitted before Step 1 only
+    """
+    content = (roles_dir / "teacher" / "skills" / "feynman.md").read_text()
+    lc = content.lower()
+
+    # Step 1 markers
+    assert "step 1" in lc
+    assert "150" in content, "Step 1 word-budget marker missing"
+    assert "analogy" in lc
+
+    # Step 3 markers
+    assert "step 3" in lc
+    # feynman.md uses an en-dash (U+2013) per typographic convention.
+    # Construct via chr() so the source stays ASCII-only and ruff's
+    # RUF001 (ambiguous unicode) doesn't fire on the test file.
+    en_dash_form = f"1{chr(0x2013)}10"
+    assert "1-10" in content or en_dash_form in content, (
+        "1-10 scoring scale missing"
+    )
+    assert "100" in content, "Step 3 re-teach word budget missing"
+
+    # Completion signal — exact phrase per spec.
+    assert "you've got it" in lc
+
+    # Tool-timing per D6/spec: knowledge_graph only before Step 1.
+    assert "before step 1 only" in lc, (
+        "knowledge_graph consultation timing rule missing"
+    )
+
+
+def test_socratic_skill_defines_question_only_loop(roles_dir: Path) -> None:
+    """teacher-role/socratic-skill-defines-question-only-loop.
+
+    Asserts the spec-mandated structural markers in socratic.md:
+    - States that the assistant asks questions and does NOT state facts
+    - Completion signal phrase "You're teaching yourself now"
+    - knowledge_graph may be consulted silently between questions
+    """
+    content = (roles_dir / "teacher" / "skills" / "socratic.md").read_text()
+    lc = content.lower()
+
+    # Question-only loop discipline.
+    assert "question" in lc
+    # The skill MUST explicitly state the no-facts rule.
+    assert "does not state facts" in lc or "does NOT state facts" in content
+
+    # Completion signal — exact phrase per spec.
+    assert "you're teaching yourself now" in lc
+
+    # Silent knowledge_graph consultation between questions.
+    assert "silently" in lc
+    assert "knowledge_graph" in lc
+
+
+def test_teacher_prompt_contains_meta_behavior_markers(
+    roles_dir: Path, personas_dir: Path
+) -> None:
+    """Asserts the meta-behavior markers design.md test-strategy calls out.
+
+    Spec scenarios for first-turn negotiation and skill-switch transition
+    are model-behavior scenarios (untestable without a live LLM), but the
+    *prompt content* that drives them is checkable: it MUST contain the
+    phrases that the spec says it does.
+    """
+    persona = PersonaRegistry(personas_dir).load("personal")
+    role = RoleRegistry(roles_dir, personas_dir).load("teacher", persona)
+    lc = role.prompt.lower()
+
+    # First-turn negotiation (D2).
+    assert "offer the user a choice" in lc, (
+        "first-turn method-choice marker missing from prompt"
+    )
+
+    # Skill-switch transition protocol (D7).
+    assert "summarize" in lc and "switch" in lc, (
+        "skill-switch summarize-before-switch marker missing"
+    )
+
+    # Both method names are presented to the user on first turn.
+    assert "feynman" in lc
+    assert "socratic" in lc
+
+    # Delegation scope (D5).
+    assert "researcher" in lc

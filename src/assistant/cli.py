@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from pathlib import Path
 
 import click
 import httpx
@@ -26,6 +27,37 @@ from assistant.telemetry import set_assistant_ctx
 logger = logging.getLogger(__name__)
 
 _create_harness = _default_create_harness
+
+def _list_role_skills(rc: RoleConfig) -> list[str]:
+    """Return sorted skill names (filename without extension) declared by
+    the role's ``skills_dir``. Empty list if the directory is missing or
+    the role declares no ``skills_dir``."""
+    if not rc.skills_dir:
+        return []
+    skills_path = Path(rc.skills_dir)
+    if not skills_path.exists():
+        return []
+    return sorted(p.stem for p in skills_path.glob("*.md"))
+
+
+def _method_directive(method: str, *, switching: bool) -> str:
+    """Build a system-level directive injected into the next agent
+    invocation when --method or /method is in play.
+
+    - ``switching=False``: first-turn directive (from --method).
+    - ``switching=True``: in-session switch directive (from /method).
+    """
+    if switching:
+        return (
+            f"[system] From this turn forward, use the `{method}` "
+            f"method. Summarize where we are in the current method's "
+            f"loop in ≤3 sentences, announce the switch, then "
+            f"enter Step 1 of the new method.\n\n"
+        )
+    return (
+        f"[system] Use the `{method}` method. Begin Step 1 now for "
+        f"the topic the user provides in their next message.\n\n"
+    )
 
 
 class _DefaultGroup(click.Group):
@@ -69,6 +101,13 @@ def main() -> None:
     is_flag=True,
     help="List HTTP tools discovered from the persona's tool_sources and exit.",
 )
+@click.option(
+    "--method",
+    "-m",
+    type=str,
+    default=None,
+    help="Teaching method (skill) for the teacher role. Requires --role teacher.",
+)
 def run(
     persona: str | None,
     role: str | None,
@@ -76,6 +115,7 @@ def run(
     list_personas: bool,
     list_roles: bool,
     list_tools: bool,
+    method: str | None,
 ) -> None:
     """Start the interactive REPL."""
     persona_reg = PersonaRegistry()
@@ -111,6 +151,21 @@ def run(
     except ValueError as e:
         raise click.UsageError(str(e)) from e
 
+    # Validate --method against the effective role and skill files
+    # before any harness work — failures here are UsageErrors.
+    if method is not None:
+        if rc.name != "teacher":
+            raise click.UsageError(
+                "--method/-m requires --role teacher "
+                f"(active role is '{rc.name}')."
+            )
+        available = _list_role_skills(rc)
+        if method not in available:
+            raise click.UsageError(
+                f"Unknown method '{method}'. "
+                f"Available: {', '.join(available) if available else '(none)'}."
+            )
+
     # Bind the assistant ContextVar (D4) so every span emitted during
     # this CLI run carries the right persona + role labels without
     # threading them through every method signature. Set once per CLI
@@ -134,7 +189,9 @@ def run(
         )
         sys.exit(1)
 
-    asyncio.run(_run_repl(persona_reg, role_reg, pc, rc, harness, adapter))
+    asyncio.run(
+        _run_repl(persona_reg, role_reg, pc, rc, harness, adapter, method)
+    )
 
 
 @main.command()
@@ -294,6 +351,7 @@ async def _run_repl(
     rc: RoleConfig,
     harness_name: str,
     adapter: SdkHarnessAdapter,
+    method: str | None = None,
 ) -> None:
     click.echo(f"Persona:  {pc.display_name}")
     click.echo(f"Role:     {rc.display_name}")
@@ -303,12 +361,13 @@ async def _run_repl(
         async with _make_discovery_client() as client:
             registry = await discover_tools(pc.tool_sources, client=client)
             await _run_repl_with_registry(
-                persona_reg, role_reg, pc, rc, harness_name, adapter, registry,
+                persona_reg, role_reg, pc, rc, harness_name, adapter,
+                registry, method,
             )
     else:
         await _run_repl_with_registry(
             persona_reg, role_reg, pc, rc, harness_name, adapter,
-            HttpToolRegistry(),
+            HttpToolRegistry(), method,
         )
 
 
@@ -320,6 +379,7 @@ async def _run_repl_with_registry(
     harness_name: str,
     adapter: SdkHarnessAdapter,
     registry: HttpToolRegistry,
+    method: str | None = None,
 ) -> None:
     from assistant.core.capabilities.resolver import CapabilityResolver
 
@@ -348,9 +408,25 @@ async def _run_repl_with_registry(
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
-    click.echo(
-        "\nCommands: /roles  /role <name>  /delegate <role> <task>  quit\n"
+    # Teacher-role-only state. ``active_method`` tracks the currently
+    # selected method (seeded from --method if present), and
+    # ``pending_directive`` carries a system-level instruction to
+    # prepend to the next user-turn (set by --method on startup and by
+    # each /method switch).
+    active_method: str | None = method if rc.name == "teacher" else None
+    pending_directive: str | None = (
+        _method_directive(active_method, switching=False)
+        if active_method is not None
+        else None
     )
+
+    base_commands = "/roles  /role <name>  /delegate <role> <task>  quit"
+    if rc.name == "teacher":
+        click.echo(
+            f"\nCommands: {base_commands}  /methods  /method <name>\n"
+        )
+    else:
+        click.echo(f"\nCommands: {base_commands}\n")
 
     while True:
         try:
@@ -364,6 +440,60 @@ async def _run_repl_with_registry(
             for r in role_reg.available_for_persona(pc):
                 marker = " ←" if r == rc.name else ""
                 click.echo(f"  {r}{marker}")
+            continue
+
+        if user_input == "/methods":
+            if rc.name != "teacher":
+                click.echo(
+                    "`/methods` is only available when role is `teacher`.\n"
+                )
+                continue
+            skills = _list_role_skills(rc)
+            if not skills:
+                click.echo(f"  (no skill files under {rc.skills_dir})\n")
+                continue
+            for s in skills:
+                marker = " ←" if s == active_method else ""
+                click.echo(f"  {s}{marker}")
+            continue
+
+        if user_input.strip() == "/method":
+            if rc.name != "teacher":
+                click.echo(
+                    "`/method` is only available when role is `teacher`.\n"
+                )
+                continue
+            skills = _list_role_skills(rc)
+            click.echo(
+                f"Usage: /method <name>  "
+                f"(available: {', '.join(skills) if skills else '(none)'})\n"
+            )
+            continue
+
+        if user_input.startswith("/method "):
+            if rc.name != "teacher":
+                click.echo(
+                    "`/method` is only available when role is `teacher`.\n"
+                )
+                continue
+            new_method = user_input.split(" ", 1)[1].strip()
+            skills = _list_role_skills(rc)
+            if not new_method:
+                click.echo(
+                    f"Usage: /method <name>  "
+                    f"(available: {', '.join(skills) if skills else '(none)'})\n"
+                )
+                continue
+            if new_method not in skills:
+                click.echo(
+                    f"Unknown method '{new_method}'. "
+                    f"Available: {', '.join(skills) if skills else '(none)'}.\n"
+                )
+                continue
+            # Prompt-level switch — do NOT rebuild the agent/harness.
+            active_method = new_method
+            pending_directive = _method_directive(new_method, switching=True)
+            click.echo(f"→ method: {new_method}\n")
             continue
 
         if user_input.startswith("/role "):
@@ -386,6 +516,16 @@ async def _run_repl_with_registry(
                 click.echo(f"Error: {e}\n")
                 continue
             rc, adapter, agent = new_rc, new_adapter_raw, new_agent
+            authorized = new_authorized
+            # /role rebuilds the agent (conversation lost), so always
+            # reset method state. If the user wants method context on
+            # the new agent, they re-issue /method <name>. Without
+            # this reset, switching role A → teacher would preserve a
+            # stale active_method from a prior teacher session and
+            # render a phantom [Teacher:<method>]> badge on a fresh
+            # agent that has no idea the method is active.
+            active_method = None
+            pending_directive = None
             click.echo(f"→ {rc.display_name}\n")
             continue
 
@@ -404,12 +544,22 @@ async def _run_repl_with_registry(
                 click.echo(f"Error: {e}\n")
             continue
 
+        message = user_input
+        if pending_directive is not None:
+            message = pending_directive + user_input
+            pending_directive = None
+
         try:
-            response = await adapter.invoke(agent, user_input)
+            response = await adapter.invoke(agent, message)
         except NotImplementedError as e:
             click.echo(f"Error: {e}\n", err=True)
             break
-        click.echo(f"\n[{rc.display_name}]> {response}\n")
+
+        if rc.name == "teacher" and active_method is not None:
+            prefix = f"{rc.display_name}:{active_method}"
+        else:
+            prefix = rc.display_name
+        click.echo(f"\n[{prefix}]> {response}\n")
 
 
 @main.group()

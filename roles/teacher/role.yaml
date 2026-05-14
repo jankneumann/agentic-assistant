@@ -1,0 +1,27 @@
+# See openspec/changes/add-teacher-role/ for the design.
+name: teacher
+display_name: "Teacher"
+description: "Structured teaching loop toward transferable understanding"
+
+preferred_tools:
+  - content_analyzer:search
+  - content_analyzer:knowledge_graph
+
+delegation:
+  can_spawn_sub_agents: true
+  max_concurrent: 1
+  allowed_sub_roles:
+    - researcher
+
+planning:
+  always_plan: false
+  decomposition_style: "task_oriented"
+  max_depth: 1
+
+context:
+  prioritize_sources: true
+  save_findings: false
+  output_format: "conversational"
+
+skills_dir: "./roles/teacher/skills"
+prompt_position: "after_persona"

@@ -1,0 +1,129 @@
+{
+  "review_type": "implementation",
+  "target": "whole-branch",
+  "reviewer_vendor": "claude-opus-4-7",
+  "review_mode": "whole-branch",
+  "review_rounds": 2,
+  "notes": [
+    "Round 1 (2026-05-13 initial): 8 findings surfaced — 2 fix (medium), 1 escalate (low), 5 accept (low/info).",
+    "Round 2 (2026-05-13 post-fix): all 5 actionable findings (#1, #2, #3, #4, #5) addressed; #7 + role-params deferral filed as followup issues; #6 + #8 remain accept-disposition with explicit acknowledgement.",
+    "work-packages.yaml absent: review run in whole-branch mode (Step 2 scope-verification skipped).",
+    "contracts/ absent: contract-compliance review (Step 3) skipped.",
+    "openspec/schemas/review-findings.schema.json absent locally: output is schema-shaped per the parallel-review-implementation skill spec but was not validated against a JSON schema file.",
+    "Final CI-scope gates (post-fix): openspec validate --strict (valid), ruff check src tests (passed), mypy src tests (0 issues in 144 files), pytest (786 passed / 3 skipped — +7 new tests from the resolution work)."
+  ],
+  "followup_issues": [
+    {
+      "id": "agentic-content-analyzer#421",
+      "url": "https://github.com/jankneumann/agentic-content-analyzer/issues/421",
+      "title": "Add explicit operation_id to /search and /graph/query endpoints for HTTP-tool binding",
+      "addresses_finding": 5,
+      "type": "cross_repo_contract"
+    },
+    {
+      "id": "agentic-assistant#31",
+      "url": "https://github.com/jankneumann/agentic-assistant/issues/31",
+      "title": "observability: surface teacher active_method as span attribute",
+      "addresses_finding": 7,
+      "type": "deferred_enhancement"
+    },
+    {
+      "id": "agentic-assistant#32",
+      "url": "https://github.com/jankneumann/agentic-assistant/issues/32",
+      "title": "role-params: declarative role parameter schema (deferred until N>=2 roles)",
+      "addresses_finding": "architecture_discussion",
+      "type": "deferred_abstraction",
+      "trigger": "Open when a second role wants parameters; user decision 2026-05-13 to defer until concrete pressure exists."
+    }
+  ],
+  "findings": [
+    {
+      "id": 1,
+      "type": "correctness",
+      "criticality": "medium",
+      "description": "Stale `active_method`/`pending_directive` after `/role` cycle. Pre-fix sequence: `-r teacher --method feynman` → real user turn (directive consumed) → `/role teacher` (harness IS rebuilt, conversation lost) → next response prefix would render `[Teacher:feynman]>` on a fresh agent that has no method context — phantom badge.",
+      "resolution": "Resolved in src/assistant/cli.py:495-503. The `/role` branch now unconditionally resets `active_method = None` and `pending_directive = None` after the harness rebuild, regardless of the new role. Two regression tests added in tests/test_cli.py: `test_role_switch_clears_active_method_state` (catches the phantom-badge scenario by asserting the second message has no leaked directive AND the prefix drops to `[Teacher]>`) and `test_role_switch_to_other_role_clears_method_state` (asserts the other transition direction).",
+      "disposition": "fix",
+      "status": "resolved",
+      "package_id": "whole-branch",
+      "evidence_path": "src/assistant/cli.py:495-503, tests/test_cli.py::test_role_switch_clears_active_method_state, tests/test_cli.py::test_role_switch_to_other_role_clears_method_state"
+    },
+    {
+      "id": 2,
+      "type": "spec_gap",
+      "criticality": "medium",
+      "description": "Five `teacher-role` spec scenarios lacked automated assertions: `teacher-offers-method-choice-on-first-turn`, `teacher-honors-explicit-method-directive`, `skill-switch-transition-preserves-state` (these three are model-behavior, untestable without live LLM), plus `feynman-skill-defines-explain-check-reteach-loop` and `socratic-skill-defines-question-only-loop` (these two are pure file-content assertions — trivial to test).",
+      "resolution": "Resolved in tests/test_role_registry.py. Three new tests added: `test_feynman_skill_defines_explain_check_reteach_loop` (asserts on Step 1 / 150-word marker / analogy / Step 3 / 1-10 scoring / 100-word reteach / 'You\\u0027ve got it' completion phrase / 'before Step 1 only' tool-timing rule), `test_socratic_skill_defines_question_only_loop` (question-only discipline, no-facts rule, 'You\\u0027re teaching yourself now' phrase, silent knowledge_graph consultation), `test_teacher_prompt_contains_meta_behavior_markers` (covers design.md test-strategy line 220 — 'offer the user a choice' and summarize-before-switching markers in prompt.md). The model-behavior scenarios remain untested as per design NG-evaluation-harness.",
+      "disposition": "fix",
+      "status": "resolved",
+      "package_id": "whole-branch",
+      "evidence_path": "tests/test_role_registry.py::test_feynman_skill_defines_explain_check_reteach_loop, tests/test_role_registry.py::test_socratic_skill_defines_question_only_loop, tests/test_role_registry.py::test_teacher_prompt_contains_meta_behavior_markers"
+    },
+    {
+      "id": 3,
+      "type": "architecture",
+      "criticality": "low",
+      "description": "Duplicated source of truth for the teacher skills directory. Pre-fix: `cli.py:33` hardcoded `_TEACHER_SKILLS_DIR = Path('roles') / 'teacher' / 'skills'`; `roles/teacher/role.yaml` declared `skills_dir: ./roles/teacher/skills`. They agreed today but would silently diverge under any future override mechanism.",
+      "resolution": "Resolved in src/assistant/cli.py. The `_TEACHER_SKILLS_DIR` module-level constant and `_list_teacher_skills()` helper removed; replaced with `_list_role_skills(rc: RoleConfig)` that reads from `Path(rc.skills_dir)`. Call sites in `--method` validation, `/methods` REPL command, and `/method <name>` REPL command all pass the loaded `RoleConfig` instance. Single source of truth restored.",
+      "disposition": "fix",
+      "status": "resolved",
+      "package_id": "whole-branch",
+      "evidence_path": "src/assistant/cli.py::_list_role_skills"
+    },
+    {
+      "id": 4,
+      "type": "correctness",
+      "criticality": "low",
+      "description": "`/method` with no argument fell through inconsistently: bare `/method` (no space) sent the literal string '/method' as a user message to the model; `/method ` (trailing space) fell through to 'Unknown method ' error path — usable but ugly. The `/delegate` command at cli.py:507-510 had a clean usage hint pattern that `/method` was not following.",
+      "resolution": "Resolved in src/assistant/cli.py. Added an explicit branch `if user_input.strip() == '/method'` before the `startswith` check that prints `Usage: /method <name>  (available: feynman, socratic)`. The `startswith('/method ')` branch now also handles the no-name-after-space case with the same usage hint. Two regression tests added: `test_method_repl_command_no_arg_shows_usage` (bare /method) and `test_method_repl_command_trailing_space_shows_usage` (with trailing space). Matches `/delegate` UX pattern.",
+      "disposition": "fix",
+      "status": "resolved",
+      "package_id": "whole-branch",
+      "evidence_path": "src/assistant/cli.py (/method no-arg branch), tests/test_cli.py::test_method_repl_command_no_arg_shows_usage, tests/test_cli.py::test_method_repl_command_trailing_space_shows_usage"
+    },
+    {
+      "id": 5,
+      "type": "compatibility",
+      "criticality": "low",
+      "description": "Tasks.md task 6.4 (R5 ACA-binding verification) was bulk-ticked via `sed -i 's/^- \\[ \\]/- [x] /g'` without performing the underlying cross-repo verification. The task specifies two valid outcomes (ACA aligned vs not aligned, the latter requiring a filed issue) and the mechanical tick collapsed both into one mark without evidence.",
+      "resolution": "Resolved 2026-05-13. ACA state verified directly via `gh api repos/jankneumann/agentic-content-analyzer/contents/src/api/routes/{kb_search_routes,graph_routes}.py`: neither `@router.get('/search', ...)` nor `@router.post('/query', ...)` declares an explicit `operation_id=` — ACA is NOT yet aligned. Cross-repo issue filed: agentic-content-analyzer#421 (https://github.com/jankneumann/agentic-content-analyzer/issues/421). Tasks.md task 6.4 updated with an explicit Outcome subsection documenting the verification method, the ACA state, and the issue link. The tick stays because the work the task describes IS now done (outcome (b) from the task spec — file the issue, mark done). The teacher role ships fully functional today; binding activates automatically once ACA's PR lands.",
+      "disposition": "escalate",
+      "status": "resolved",
+      "package_id": "whole-branch",
+      "evidence_path": "openspec/changes/add-teacher-role/tasks.md:252-281, https://github.com/jankneumann/agentic-content-analyzer/issues/421"
+    },
+    {
+      "id": 6,
+      "type": "correctness",
+      "criticality": "low",
+      "description": "Positive finding (informational): a latent pre-change bug was fixed in passing. Pre-change, the `/role <name>` REPL branch rebuilt the agent and updated `rc, adapter, agent` but left the outer-scope `authorized` variable bound to the OLD role's authorized tools. Subsequent `/delegate <role> <task>` invocations at cli.py:514 then constructed a `DelegationSpawner` using stale tools that didn't reflect the new role's preferred-tool filtering.",
+      "resolution": "No action required — the fix lives at src/assistant/cli.py:500 (`authorized = new_authorized`) and is correct. Acknowledged as in-scope-adjacent given the line was directly next to the new state-cleanup logic. For stricter scope discipline in future, drive-by fixes should be split into a separate commit on the same branch so they're individually revertable.",
+      "disposition": "accept",
+      "status": "acknowledged",
+      "package_id": "whole-branch",
+      "evidence_path": "src/assistant/cli.py:500"
+    },
+    {
+      "id": 7,
+      "type": "observability",
+      "criticality": "low",
+      "description": "No tracing spans on the new `/method` switch carry the active method as a span attribute. Existing P4 spans wrap `adapter.invoke()` with persona+role context via `set_assistant_ctx`, so each user turn produces a span, but the method dimension is not surfaced. Per design.md R2 (observe per-method tool reaches) and R4 (detect when model ignores directive), method-attribute visibility would improve the post-deploy signal.",
+      "resolution": "Deferred — filed as agentic-assistant#31 (https://github.com/jankneumann/agentic-assistant/issues/31) labeled `followup, openspec:add-teacher-role`. Two options outlined (extend ContextVar with method param vs generic role_params dict). Trigger conditions: (a) R2 manifests in practice, or (b) the role-params declarative schema lands.",
+      "disposition": "accept",
+      "status": "deferred",
+      "package_id": "whole-branch",
+      "evidence_path": "https://github.com/jankneumann/agentic-assistant/issues/31"
+    },
+    {
+      "id": 8,
+      "type": "resilience",
+      "criticality": "low",
+      "description": "Design risk R4 (the `/method` REPL command's prompt-level directive is ignored by the model) is acknowledged in design.md but the CLI provides no detection mechanism. R4 is a model-conformance question that automated tests cannot answer (StubHarness). The mitigation noted in design.md ('user can always exit and restart with --method as a fallback') is correct but reactive.",
+      "resolution": "Acknowledged as documented design risk. No code change today. Detection becomes observable post-deploy once finding #7 lands (method-as-span-attribute). If R4 manifests in practice, the follow-on is to escalate to a true SystemMessage injection at the harness level — broader scope than this proposal. No new issue filed; the design rationale and trigger conditions already live in design.md R4.",
+      "disposition": "accept",
+      "status": "acknowledged",
+      "package_id": "whole-branch",
+      "evidence_path": "openspec/changes/add-teacher-role/design.md:R4"
+    }
+  ]
+}
