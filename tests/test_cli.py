@@ -871,6 +871,148 @@ def test_quit_forms_are_case_insensitive(stub_factory) -> None:
         assert result.exit_code == 0, f"{term!r} failed: {result.output}"
 
 
+# ── Method-persistence sticky reminder (Bug B fix) ───────────────────
+
+
+def test_sticky_method_reminder_injected_on_subsequent_turns(
+    stub_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test for Bug B from the 2026-05-14 smoke test.
+
+    After `--method feynman`, the FIRST user turn gets the full setup
+    directive (existing behavior). EVERY subsequent turn while
+    `active_method` is set MUST get a compact `[system] Active
+    teaching method: <name>` reminder, so the agent doesn't drift
+    back to method-negotiation between turns of the loop.
+    """
+    seen: list[str] = []
+    real_invoke = StubHarness.invoke
+
+    async def capture(self, agent, message):
+        seen.append(message)
+        return await real_invoke(self, agent, message)
+
+    monkeypatch.setattr(StubHarness, "invoke", capture)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main,
+        ["-p", "personal", "-r", "teacher", "--method", "feynman"],
+        input="entropy\nmy explanation\nfollowup\nquit\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert len(seen) == 3, f"expected 3 invocations, got {len(seen)}"
+
+    # Turn 1: full setup directive (contains "Begin Step 1").
+    assert "begin step 1" in seen[0].lower(), (
+        f"first-turn directive missing: {seen[0]!r}"
+    )
+
+    # Turns 2 and 3: compact reminder (contains "Active teaching method").
+    for i, msg in enumerate(seen[1:], start=2):
+        assert "active teaching method" in msg.lower(), (
+            f"turn {i} missing sticky reminder: {msg!r}"
+        )
+        assert "feynman" in msg.lower(), (
+            f"turn {i} reminder missing method name: {msg!r}"
+        )
+        # Reminder MUST NOT contain the full setup directive's
+        # "Begin Step 1" — it's a different shape.
+        assert "begin step 1" not in msg.lower(), (
+            f"turn {i} got full directive instead of compact reminder: {msg!r}"
+        )
+
+
+def test_sticky_reminder_absent_when_no_active_method(
+    stub_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No reminder when `active_method` is None — first-turn negotiation
+    handles that path via the prompt, not via CLI injection."""
+    seen: list[str] = []
+    real_invoke = StubHarness.invoke
+
+    async def capture(self, agent, message):
+        seen.append(message)
+        return await real_invoke(self, agent, message)
+
+    monkeypatch.setattr(StubHarness, "invoke", capture)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main,
+        ["-p", "personal", "-r", "teacher"],  # no --method
+        input="entropy\nfollowup\nquit\n",
+    )
+    assert result.exit_code == 0, result.output
+    for msg in seen:
+        assert "active teaching method" not in msg.lower(), (
+            f"unexpected reminder when no method active: {msg!r}"
+        )
+
+
+def test_sticky_reminder_absent_for_non_teacher_roles(
+    stub_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No reminder on non-teacher roles even if `active_method` would
+    somehow be set — the role guard belongs to the teacher role only."""
+    seen: list[str] = []
+    real_invoke = StubHarness.invoke
+
+    async def capture(self, agent, message):
+        seen.append(message)
+        return await real_invoke(self, agent, message)
+
+    monkeypatch.setattr(StubHarness, "invoke", capture)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main,
+        ["-p", "personal", "-r", "coder"],
+        input="hello\nfollowup\nquit\n",
+    )
+    assert result.exit_code == 0, result.output
+    for msg in seen:
+        assert "active teaching method" not in msg.lower()
+
+
+def test_sticky_reminder_persists_across_method_switch(
+    stub_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After `/method socratic` (mid-session switch), subsequent turns
+    MUST get a reminder naming `socratic`, not the stale `feynman`."""
+    seen: list[str] = []
+    real_invoke = StubHarness.invoke
+
+    async def capture(self, agent, message):
+        seen.append(message)
+        return await real_invoke(self, agent, message)
+
+    monkeypatch.setattr(StubHarness, "invoke", capture)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main,
+        ["-p", "personal", "-r", "teacher", "--method", "feynman"],
+        input="entropy\n/method socratic\nfollowup\nfollowup2\nquit\n",
+    )
+    assert result.exit_code == 0, result.output
+    # Three invocations: "entropy" (with setup directive),
+    # "followup" (with switch directive then socratic-reminder
+    # after consumption), "followup2" (sticky socratic-reminder).
+    assert len(seen) == 3
+
+    # Last two turns mention socratic, not feynman.
+    for i in (1, 2):
+        msg_lower = seen[i].lower()
+        if "active teaching method" in msg_lower:
+            assert "socratic" in msg_lower, (
+                f"turn {i+1} reminder names wrong method: {seen[i]!r}"
+            )
+            assert "feynman" not in msg_lower.split("\n\n", 1)[0], (
+                f"turn {i+1} reminder still names feynman: {seen[i]!r}"
+            )
+
+
 def test_teacher_help_line_appends_method_commands(stub_factory) -> None:
     """Teacher role's help line MUST end with /methods and /method,
     while still advertising /quit before them."""

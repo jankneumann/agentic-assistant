@@ -263,3 +263,34 @@ def test_teacher_prompt_contains_meta_behavior_markers(
 
     # Delegation scope (D5).
     assert "researcher" in lc
+
+
+def test_teacher_prompt_contains_method_persistence_markers(
+    roles_dir: Path, personas_dir: Path
+) -> None:
+    """Method-Persistence-Across-Turns spec requirement: the prompt
+    MUST explicitly state that once a method is selected (by any
+    mechanism, including plain-prose naming), it is the active
+    method for the rest of the session and MUST NOT be re-offered."""
+    persona = PersonaRegistry(personas_dir).load("personal")
+    role = RoleRegistry(roles_dir, personas_dir).load("teacher", persona)
+    lc = role.prompt.lower()
+
+    # Section header / topic.
+    assert "method persistence" in lc, (
+        "method-persistence section heading missing"
+    )
+
+    # Three core rules the prompt MUST encode for the requirement.
+    # 1. Selection by any mechanism (including plain prose) is binding.
+    assert "plain prose" in lc, (
+        "prompt does not cover plain-prose method selection"
+    )
+    # 2. Never re-offer after selection.
+    assert "not re-offer" in lc or "do not re-offer" in lc or "must not re-offer" in lc, (
+        "no-re-offer rule missing from prompt"
+    )
+    # 3. Continue from conversation history rather than re-asking topic.
+    assert "do not re-ask" in lc or "not re-ask" in lc or "without re-asking" in lc, (
+        "topic-continuity rule missing from prompt"
+    )

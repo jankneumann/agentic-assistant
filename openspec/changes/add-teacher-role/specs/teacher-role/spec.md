@@ -64,6 +64,58 @@ entering any method's loop.
   Feynman method for the topic given in the user's first message
 - **AND** it MUST NOT re-offer a method choice
 
+### Requirement: Method Persistence Across Turns
+
+The teacher role SHALL treat a teaching method as active for the
+remainder of the session once it has been selected by any mechanism
+(the `--method` CLI flag, a `/method <name>` REPL directive, a
+`[system] Active teaching method: <name>` reminder injected on a
+turn, or the user naming a method in plain prose), MUST NOT re-offer
+a method choice on any subsequent turn, and MUST continue the active
+method's loop based on the full conversation history until either
+(a) the user explicitly switches via `/method` or natural-language
+switch language, or (b) the user issues `/role <other>` which clears
+teacher state.
+
+#### Scenario: Method persists after user names it in plain prose
+
+- **WHEN** a session has no `--method` flag and no `/method`
+  directive issued
+- **AND** the teacher offers method choice on its first turn
+- **AND** the user replies with a plain-prose method name (e.g.
+  `"feynman"`, `"let's use socratic"`)
+- **THEN** the teacher's next response MUST treat the named method
+  as active
+- **AND** the teacher's response MUST NOT re-offer a method choice
+- **AND** the teacher's response MUST enter Step 1 for the topic the
+  user named earlier in the session (if any was named) without
+  re-asking the topic question
+
+#### Scenario: Method persists across multiple turns of the loop
+
+- **WHEN** the user has set the method via `/method feynman` and the
+  CLI has injected the setup directive on the next turn
+- **AND** the teacher has executed Step 1 of Feynman
+- **AND** the user has replied with their plain-language explanation
+  (Step 2 of the Feynman loop)
+- **THEN** the teacher's next response MUST execute Step 3 of Feynman
+  (score, gap list, re-teach gaps in ≤100 words)
+- **AND** the teacher's response MUST NOT re-offer a method choice
+- **AND** the CLI MUST inject a compact `[system] Active teaching
+  method: feynman.` reminder on this turn's message to the agent
+
+#### Scenario: CLI reinjects method reminder on every turn while active
+
+- **WHEN** `active_method` is set on the teacher role (via `--method`
+  or `/method`)
+- **AND** the user submits a non-command message
+- **THEN** the message passed to `adapter.invoke()` MUST begin with
+  a system-level reminder naming the active method
+- **AND** the reminder MUST be present on the first user turn after
+  the method was set
+- **AND** the reminder MUST also be present on every subsequent user
+  turn until the method is cleared
+
 ### Requirement: Skill-Switch Transition Protocol
 
 The teacher role SHALL execute a four-part transition when the active

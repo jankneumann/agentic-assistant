@@ -59,11 +59,15 @@ def _build_help_line(rc: RoleConfig) -> str:
 
 
 def _method_directive(method: str, *, switching: bool) -> str:
-    """Build a system-level directive injected into the next agent
+    """Build a one-shot system-level directive for the next agent
     invocation when --method or /method is in play.
 
     - ``switching=False``: first-turn directive (from --method).
     - ``switching=True``: in-session switch directive (from /method).
+
+    Sent ONCE on the turn immediately following the directive event.
+    Subsequent turns rely on ``_method_reminder`` (called every turn)
+    plus the prompt's method-persistence rules.
     """
     if switching:
         return (
@@ -75,6 +79,23 @@ def _method_directive(method: str, *, switching: bool) -> str:
     return (
         f"[system] Use the `{method}` method. Begin Step 1 now for "
         f"the topic the user provides in their next message.\n\n"
+    )
+
+
+def _method_reminder(method: str) -> str:
+    """Compact per-turn reminder that the named method is active.
+
+    Re-injected on every user turn while ``active_method`` is set on
+    the teacher role, so the agent doesn't drift back to method-
+    negotiation between turns of a teaching loop. Keeps the directive
+    state durable across multi-turn loops without requiring a harness
+    rebuild or a system-prompt mutation.
+    """
+    return (
+        f"[system] Active teaching method: `{method}`. Continue this "
+        f"method's loop based on the conversation history; do NOT "
+        f"re-offer method choice and do NOT re-ask for the topic if "
+        f"it has already been named.\n\n"
     )
 
 
@@ -564,8 +585,15 @@ async def _run_repl_with_registry(
 
         message = user_input
         if pending_directive is not None:
+            # First turn after --method or /method: send the full
+            # setup directive (begin Step 1 / announce switch).
             message = pending_directive + user_input
             pending_directive = None
+        elif rc.name == "teacher" and active_method is not None:
+            # Subsequent turns while a method is active: prepend the
+            # compact reminder so the model doesn't drift back to
+            # method-negotiation between turns of the loop.
+            message = _method_reminder(active_method) + user_input
 
         try:
             response = await adapter.invoke(agent, message)

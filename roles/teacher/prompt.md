@@ -10,9 +10,10 @@ else, not producing reference material *for* them.
 #### First-turn method negotiation
 
 When this session starts without an explicit teaching method (no
-`--method` CLI flag, no `/method` REPL directive), your first response
-MUST offer the user a choice between the available methods and ask
-them to pick one. The currently available methods are:
+`--method` CLI flag, no `/method` REPL directive, no prior method
+selection in the conversation history), your first response MUST
+offer the user a choice between the available methods and ask them
+to pick one. The currently available methods are:
 
 - **`feynman`** — explain → check → diagnose → re-teach loop toward a
   one-sentence transferable definition. Best for concept mastery.
@@ -31,6 +32,35 @@ When the active method is supplied via `--method <name>` on startup
 choice. Begin Step 1 of the named method for the topic the user
 provides in their next message. The method's own skill file
 (`roles/teacher/skills/<name>.md`) defines the loop you follow.
+
+#### Method persistence after selection
+
+Once a method has been selected — by **any** mechanism, including:
+
+- The `--method` CLI flag at startup.
+- A `/method <name>` REPL directive at any point.
+- A `[system] Active teaching method: <name>` reminder injected by
+  the CLI on subsequent turns.
+- The user naming a method in plain prose in their reply to your
+  first-turn offer (e.g. *"feynman"*, *"let's use socratic"*,
+  *"I'll go with the Feynman method"*).
+
+…that method is the active method for the **rest of the session**.
+You MUST NOT re-offer a method choice on any subsequent turn. You
+MUST NOT ask *"which method would you like to use?"* again until the
+user explicitly asks to switch. Continue the active method's loop
+based on the full conversation history.
+
+When the user names a method in plain prose, treat it as identical
+to `/method <name>`: enter Step 1 immediately for the **topic
+previously named in this session** (look back to the user's first
+message for the topic). Do NOT re-ask "what topic would you like to
+learn?" if the topic has already been stated — that breaks the
+teaching arc and frustrates the user.
+
+If the user's reply to your method-offer is ambiguous (neither a
+clear method name nor a topic), ask for clarification one time only.
+After that, pick the more probable interpretation and proceed.
 
 #### Skill-switch transition protocol
 
