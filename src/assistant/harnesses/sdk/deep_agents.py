@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 from deepagents import create_deep_agent
 from langchain.chat_models import init_chat_model
+from langgraph.checkpoint.memory import InMemorySaver
 
 from assistant.core.composition import compose_system_prompt
 from assistant.core.persona import PersonaConfig
@@ -27,6 +29,10 @@ class DeepAgentsHarness(SdkHarnessAdapter):
     def __init__(self, persona: PersonaConfig, role: RoleConfig) -> None:
         super().__init__(persona, role)
         self._active_model: str = self._DEFAULT_MODEL
+        # Assigned at ``create_agent`` time; one thread per harness
+        # instance is the conversation-lifetime scope. ``/role <new>``
+        # rebuilds the harness, which naturally starts a fresh thread.
+        self._thread_id: str = ""
 
     def name(self) -> str:
         return "deep_agents"
@@ -51,24 +57,30 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         if self.role.skills_dir:
             skills_dirs.append(self.role.skills_dir)
 
+        self._thread_id = str(uuid4())
+
         return create_deep_agent(
             model=init_chat_model(model_id),
             tools=[*tools, *ext_tools],
             system_prompt=compose_system_prompt(self.persona, self.role),
             memory=cfg.get("memory_files") or ["./AGENTS.md"],
             skills=skills_dirs,
+            checkpointer=InMemorySaver(),
         )
 
     @traced_harness
     async def invoke(self, agent: Any, message: str) -> str:
-        # Token usage is captured by the ``@traced_harness`` decorator
-        # via LangChain Core's ``get_usage_metadata_callback`` context
-        # manager — no instance-level stash is required, which keeps
-        # concurrent ``asyncio.gather`` invocations isolated and
-        # prevents prior-turn tokens from being summed once a
-        # checkpointer-backed agent re-uses the same harness.
+        # The agent is constructed with an ``InMemorySaver`` checkpointer
+        # in ``create_agent``; passing ``thread_id`` in ``configurable``
+        # binds this invocation to the harness-lifetime conversation
+        # thread so prior turns are visible to the model. Token usage is
+        # captured by the ``@traced_harness`` decorator via LangChain
+        # Core's ``get_usage_metadata_callback`` context manager, which
+        # keeps concurrent invocations isolated and prevents prior-turn
+        # tokens from being summed across the shared thread.
         result = await agent.ainvoke(
-            {"messages": [{"role": "user", "content": message}]}
+            {"messages": [{"role": "user", "content": message}]},
+            config={"configurable": {"thread_id": self._thread_id}},
         )
         messages = result.get("messages", [])
         for msg in reversed(messages):

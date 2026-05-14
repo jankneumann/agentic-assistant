@@ -132,7 +132,7 @@ def test_create_agent_includes_extension_tools() -> None:
 
 def test_invoke_returns_last_assistant_message_content() -> None:
     class _FakeAgent:
-        async def ainvoke(self, payload):
+        async def ainvoke(self, payload, config=None):
             return {
                 "messages": [
                     {"role": "user", "content": "q"},
@@ -157,7 +157,7 @@ def test_invoke_extracts_content_from_langchain_aimessage_objects() -> None:
     from langchain_core.messages import AIMessage, HumanMessage
 
     class _FakeAgent:
-        async def ainvoke(self, payload):
+        async def ainvoke(self, payload, config=None):
             return {
                 "messages": [
                     HumanMessage(content="explain entropy"),
@@ -180,7 +180,7 @@ def test_invoke_extracts_text_from_aimessage_with_content_blocks() -> None:
     from langchain_core.messages import AIMessage
 
     class _FakeAgent:
-        async def ainvoke(self, payload):
+        async def ainvoke(self, payload, config=None):
             return {
                 "messages": [
                     AIMessage(content=[
@@ -202,12 +202,123 @@ def test_invoke_returns_empty_when_no_assistant_message() -> None:
     from langchain_core.messages import HumanMessage
 
     class _FakeAgent:
-        async def ainvoke(self, payload):
+        async def ainvoke(self, payload, config=None):
             return {"messages": [HumanMessage(content="q")]}
 
     h = DeepAgentsHarness(_persona(), _role())
     result = asyncio.run(h.invoke(_FakeAgent(), "q"))
     assert result == ""
+
+
+# ── Multi-Turn Conversation Memory (#34) ─────────────────────────────
+
+
+def test_create_agent_constructs_with_checkpointer() -> None:
+    """The harness MUST pass a non-None ``checkpointer`` to
+    ``create_deep_agent``; without it, the agent has no place to
+    persist prior turns and every ``ainvoke`` starts a fresh
+    conversation (the bug filed as agentic-assistant#34)."""
+    with patch(
+        "assistant.harnesses.sdk.deep_agents.init_chat_model",
+        return_value=MagicMock(),
+    ), patch(
+        "assistant.harnesses.sdk.deep_agents.create_deep_agent"
+    ) as cda_mock:
+        cda_mock.return_value = MagicMock()
+        h = DeepAgentsHarness(_persona(), _role())
+        asyncio.run(h.create_agent(tools=[], extensions=[]))
+        kwargs = cda_mock.call_args.kwargs
+        assert kwargs.get("checkpointer") is not None
+        assert h._thread_id  # non-empty
+
+
+def test_invoke_passes_thread_id_in_runnable_config() -> None:
+    """``invoke`` MUST pass ``config={"configurable":
+    {"thread_id": self._thread_id}}`` to ``agent.ainvoke``;
+    LangGraph's checkpointer uses this key to look up the prior
+    state for the conversation."""
+    captured: dict = {}
+
+    class _FakeAgent:
+        async def ainvoke(self, payload, config=None):
+            captured["config"] = config
+            return {"messages": [{"role": "assistant", "content": "ok"}]}
+
+    h = DeepAgentsHarness(_persona(), _role())
+    h._thread_id = "thread-xyz-123"
+    asyncio.run(h.invoke(_FakeAgent(), "hello"))
+    assert captured["config"] == {"configurable": {"thread_id": "thread-xyz-123"}}
+
+
+def test_thread_id_is_stable_across_invocations_on_one_harness() -> None:
+    """Successive ``invoke`` calls on the same harness MUST use the
+    same ``thread_id``. If the id changed per call, LangGraph would
+    treat each call as a new conversation and the bug would persist."""
+    seen_thread_ids: list[str] = []
+
+    class _FakeAgent:
+        async def ainvoke(self, payload, config=None):
+            seen_thread_ids.append(config["configurable"]["thread_id"])
+            return {"messages": [{"role": "assistant", "content": "ok"}]}
+
+    with patch(
+        "assistant.harnesses.sdk.deep_agents.init_chat_model",
+        return_value=MagicMock(),
+    ), patch(
+        "assistant.harnesses.sdk.deep_agents.create_deep_agent"
+    ) as cda_mock:
+        cda_mock.return_value = _FakeAgent()
+        h = DeepAgentsHarness(_persona(), _role())
+        agent = asyncio.run(h.create_agent(tools=[], extensions=[]))
+        asyncio.run(h.invoke(agent, "turn 1"))
+        asyncio.run(h.invoke(agent, "turn 2"))
+    assert len(seen_thread_ids) == 2
+    assert seen_thread_ids[0] == seen_thread_ids[1]
+    assert seen_thread_ids[0] == h._thread_id
+
+
+def test_distinct_harnesses_get_distinct_thread_ids() -> None:
+    """Two ``DeepAgentsHarness`` instances MUST be assigned distinct
+    ``thread_id`` values so that a ``/role <new>`` rebuild (which
+    instantiates a fresh harness) starts a fresh conversation.
+    Matches the existing ``/role`` rebuild semantics in
+    ``cli.py:146-159``."""
+    with patch(
+        "assistant.harnesses.sdk.deep_agents.init_chat_model",
+        return_value=MagicMock(),
+    ), patch(
+        "assistant.harnesses.sdk.deep_agents.create_deep_agent",
+        return_value=MagicMock(),
+    ):
+        h1 = DeepAgentsHarness(_persona(), _role())
+        h2 = DeepAgentsHarness(_persona(), _role())
+        asyncio.run(h1.create_agent(tools=[], extensions=[]))
+        asyncio.run(h2.create_agent(tools=[], extensions=[]))
+        assert h1._thread_id != h2._thread_id
+        assert h1._thread_id and h2._thread_id
+
+
+def test_create_agent_passes_real_inmemorysaver_instance() -> None:
+    """Sanity check that the ``checkpointer`` kwarg passed to
+    ``create_deep_agent`` is an actual ``InMemorySaver`` (not a
+    bare ``MagicMock`` or ``None`` that the API might silently
+    accept). Pairs with the upstream LangGraph test suite, which
+    covers the checkpointer's history-preservation behavior given
+    a properly-bound ``thread_id``.
+    """
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    with patch(
+        "assistant.harnesses.sdk.deep_agents.init_chat_model",
+        return_value=MagicMock(),
+    ), patch(
+        "assistant.harnesses.sdk.deep_agents.create_deep_agent"
+    ) as cda_mock:
+        cda_mock.return_value = MagicMock()
+        h = DeepAgentsHarness(_persona(), _role())
+        asyncio.run(h.create_agent(tools=[], extensions=[]))
+        checkpointer = cda_mock.call_args.kwargs["checkpointer"]
+        assert isinstance(checkpointer, InMemorySaver)
 
 
 # ── MS Agent Framework Harness Registered but Stubbed ───────────────
