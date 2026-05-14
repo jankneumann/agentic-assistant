@@ -89,14 +89,42 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         return await sub.invoke(agent, task)
 
 
+_LANGCHAIN_TO_CANONICAL_ROLE = {"ai": "assistant", "human": "user"}
+
+
 def _msg_role(msg: Any) -> str:
+    """Normalize message role across LangChain BaseMessage objects and
+    raw dicts. LangChain ``AIMessage`` exposes ``type='ai'`` (no
+    ``role`` attribute); Anthropic-style dicts expose ``role='assistant'``.
+    Return the canonical Anthropic/OpenAI role name in both cases so
+    downstream matching against ``"assistant"`` works regardless of
+    upstream shape.
+    """
     if isinstance(msg, dict):
-        return msg.get("role", "")
-    return getattr(msg, "role", "") or ""
+        raw = msg.get("role") or msg.get("type") or ""
+    else:
+        raw = getattr(msg, "role", None) or getattr(msg, "type", "") or ""
+    return _LANGCHAIN_TO_CANONICAL_ROLE.get(raw, raw)
 
 
 def _msg_content(msg: Any) -> str:
-    if isinstance(msg, dict):
-        return msg.get("content", "")
-    return getattr(msg, "content", "") or ""
+    """Extract text content from a message. Anthropic models emit
+    ``content`` as either a plain string OR a list of content blocks
+    (``[{"type": "text", "text": ...}, {"type": "tool_use", ...}]``)
+    when tool calls are interleaved with text. Concatenate text blocks
+    in the list case so the REPL renders prose rather than a raw list
+    repr.
+    """
+    raw = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, list):
+        parts: list[str] = []
+        for block in raw:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text", "")))
+        return "".join(parts)
+    return str(raw)
 

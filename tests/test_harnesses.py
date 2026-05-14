@@ -145,6 +145,71 @@ def test_invoke_returns_last_assistant_message_content() -> None:
     assert result == "a"
 
 
+def test_invoke_extracts_content_from_langchain_aimessage_objects() -> None:
+    """Regression test for a latent bug discovered during the
+    add-teacher-role smoke test: the real langchain agent returns
+    ``AIMessage`` objects (which expose ``type='ai'``), NOT dicts with
+    ``role='assistant'``. Before the fix, ``_msg_role`` looked only at
+    ``role`` and returned ``""`` for every ``AIMessage``, so
+    ``invoke()`` returned ``""`` and the REPL printed an empty
+    ``[Teacher]>`` line.
+    """
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    class _FakeAgent:
+        async def ainvoke(self, payload):
+            return {
+                "messages": [
+                    HumanMessage(content="explain entropy"),
+                    AIMessage(content="entropy is a measure of disorder"),
+                ]
+            }
+
+    h = DeepAgentsHarness(_persona(), _role())
+    result = asyncio.run(h.invoke(_FakeAgent(), "q"))
+    assert result == "entropy is a measure of disorder"
+
+
+def test_invoke_extracts_text_from_aimessage_with_content_blocks() -> None:
+    """Anthropic models can emit ``content`` as a list of content
+    blocks (``[{"type": "text", ...}, {"type": "tool_use", ...}]``)
+    when tool calls and text are interleaved. ``invoke()`` must
+    extract and concatenate the text blocks; otherwise the REPL would
+    echo a raw Python list repr.
+    """
+    from langchain_core.messages import AIMessage
+
+    class _FakeAgent:
+        async def ainvoke(self, payload):
+            return {
+                "messages": [
+                    AIMessage(content=[
+                        {"type": "text", "text": "Step 1: "},
+                        {"type": "tool_use", "id": "t1", "name": "kb", "input": {}},
+                        {"type": "text", "text": "entropy is..."},
+                    ])
+                ]
+            }
+
+    h = DeepAgentsHarness(_persona(), _role())
+    result = asyncio.run(h.invoke(_FakeAgent(), "q"))
+    assert result == "Step 1: entropy is..."
+
+
+def test_invoke_returns_empty_when_no_assistant_message() -> None:
+    """Pure tool-call turn with no final text response — invoke()
+    returns empty string rather than crashing."""
+    from langchain_core.messages import HumanMessage
+
+    class _FakeAgent:
+        async def ainvoke(self, payload):
+            return {"messages": [HumanMessage(content="q")]}
+
+    h = DeepAgentsHarness(_persona(), _role())
+    result = asyncio.run(h.invoke(_FakeAgent(), "q"))
+    assert result == ""
+
+
 # ── MS Agent Framework Harness Registered but Stubbed ───────────────
 
 
