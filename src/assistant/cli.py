@@ -40,6 +40,24 @@ def _list_role_skills(rc: RoleConfig) -> list[str]:
     return sorted(p.stem for p in skills_path.glob("*.md"))
 
 
+def _build_help_line(rc: RoleConfig) -> str:
+    """Render the REPL Commands help line for the active role.
+
+    All session commands carry a ``/`` prefix; ``/quit`` is the
+    canonical terminator (bare ``quit``/``exit`` remain accepted for
+    REPL-muscle-memory compatibility but are not advertised).
+    """
+    commands = [
+        "/roles",
+        "/role <name>",
+        "/delegate <role> <task>",
+        "/quit",
+    ]
+    if rc.name == "teacher":
+        commands.extend(["/methods", "/method <name>"])
+    return "\nCommands: " + "  ".join(commands) + "\n"
+
+
 def _method_directive(method: str, *, switching: bool) -> str:
     """Build a system-level directive injected into the next agent
     invocation when --method or /method is in play.
@@ -420,20 +438,20 @@ async def _run_repl_with_registry(
         else None
     )
 
-    base_commands = "/roles  /role <name>  /delegate <role> <task>  quit"
-    if rc.name == "teacher":
-        click.echo(
-            f"\nCommands: {base_commands}  /methods  /method <name>\n"
-        )
-    else:
-        click.echo(f"\nCommands: {base_commands}\n")
+    click.echo(_build_help_line(rc))
 
     while True:
         try:
             user_input = click.prompt("You", prompt_suffix="> ", default="")
         except (click.exceptions.Abort, EOFError):
             break
-        if user_input.lower() in ("quit", "exit"):
+        # Accept bare ``quit``/``exit`` (decades of REPL muscle memory)
+        # AND slash-prefixed ``/quit``/``/exit`` (matches the convention
+        # of the other session commands). The help line advertises
+        # ``/quit`` so the displayed command set is internally
+        # consistent; the bare forms remain undocumented compatibility
+        # aliases.
+        if user_input.lower() in ("quit", "exit", "/quit", "/exit"):
             break
 
         if user_input == "/roles":

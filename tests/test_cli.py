@@ -825,3 +825,66 @@ def test_method_repl_command_trailing_space_shows_usage(stub_factory) -> None:
     assert "Usage: /method" in result.output
     # Must NOT have fallen through to the "Unknown method ''" branch.
     assert "Unknown method ''" not in result.output
+
+
+# ── Help-line consistency: /quit advertised, bare quit/exit accepted ──
+
+
+def test_help_line_advertises_slash_quit(stub_factory) -> None:
+    """Help line must advertise the slash-prefixed `/quit` so the
+    displayed command set is internally consistent (all session
+    commands share the `/` prefix)."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main, ["-p", "personal"], input="quit\n"
+    )
+    assert result.exit_code == 0, result.output
+    # The startup help line — extract just the "Commands:" header
+    # region so we don't false-positive on later REPL output.
+    help_region = result.output.split("Commands:", 1)[1].split("You", 1)[0]
+    assert "/quit" in help_region
+    # Bare `quit` MUST NOT be advertised in the help line (it remains
+    # an undocumented compatibility alias).
+    assert " quit" not in help_region.replace("/quit", "")
+
+
+@pytest.mark.parametrize("terminator", ["quit", "exit", "/quit", "/exit"])
+def test_repl_accepts_all_quit_forms(stub_factory, terminator: str) -> None:
+    """All four forms terminate the REPL cleanly: bare `quit`/`exit`
+    (REPL muscle memory) and slash-prefixed `/quit`/`/exit` (matches
+    the convention of the other session commands)."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main, ["-p", "personal"], input=f"{terminator}\n"
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_quit_forms_are_case_insensitive(stub_factory) -> None:
+    """`QUIT`, `EXIT`, `/QUIT`, `/Quit` all work — same case-insensitive
+    behavior the bare forms had before option-1 normalization."""
+    runner = CliRunner()
+    for term in ("QUIT", "Exit", "/QUIT", "/Quit"):
+        result = runner.invoke(
+            cli_mod.main, ["-p", "personal"], input=f"{term}\n"
+        )
+        assert result.exit_code == 0, f"{term!r} failed: {result.output}"
+
+
+def test_teacher_help_line_appends_method_commands(stub_factory) -> None:
+    """Teacher role's help line MUST end with /methods and /method,
+    while still advertising /quit before them."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main,
+        ["-p", "personal", "-r", "teacher"],
+        input="/quit\n",
+    )
+    assert result.exit_code == 0, result.output
+    help_region = result.output.split("Commands:", 1)[1].split("You", 1)[0]
+    assert "/quit" in help_region
+    assert "/methods" in help_region
+    assert "/method <name>" in help_region
+    # Order: /quit MUST come before /methods (terminator before
+    # teacher-specific commands, matching the visual progression).
+    assert help_region.index("/quit") < help_region.index("/methods")
