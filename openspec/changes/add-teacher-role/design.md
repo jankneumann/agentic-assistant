@@ -8,9 +8,16 @@ The agentic-assistant repo has a two-layer behavioral contract:
   agent interacts — delegation graph, planning defaults, tool
   preferences, output shape. They flow through
   `composition.compose_system_prompt()` into the agent's system prompt.
-- **Skills** (`roles/<name>/skills/*.md`) are knowledge artifacts
-  passed to `create_deep_agent(skills=...)`. Deep Agents lets the
-  model inspect these and decide when to apply one.
+- **Skills** (`roles/<name>/skills/<skill-name>/SKILL.md`) are
+  knowledge artifacts passed to `create_deep_agent(skills=...)`. They
+  follow Deep Agents' Agent-Skills layout: each skill is its own
+  subdirectory containing a `SKILL.md` file with YAML frontmatter
+  (`name`, `description`) followed by the loop instructions. Deep
+  Agents indexes skills by directory name and surfaces them to the
+  model via the skills middleware. Files NOT in this format are
+  silently ignored at agent-construction time (this bit the
+  2026-05-14 smoke test, which initially shipped flat `.md` files
+  before migration).
 
 This change adds a `teacher` role whose behavior is "drive a
 structured teaching loop with the user toward mastery of a topic".
@@ -157,7 +164,7 @@ the role's strings silently no-op against the registry until ACA adds
 two relevant decorators. See R5.
 
 Each skill's markdown specifies *when* to reach for the declared
-tools. Example from `feynman.md`:
+tools. Example from `feynman/SKILL.md`:
 
 > Before Step 1, you MAY (not MUST) query
 > `content_analyzer:knowledge_graph` for the canonical definition of

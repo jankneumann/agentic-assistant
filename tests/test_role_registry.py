@@ -160,14 +160,45 @@ def test_teacher_delegates_only_to_researcher(
 def test_teacher_skills_dir_resolves(
     roles_dir: Path, personas_dir: Path
 ) -> None:
-    """teacher-role/teacher-skills-directory-populated."""
+    """teacher-role/teacher-skills-directory-populated.
+
+    Skills follow Deep Agents' Agent Skills layout: each skill is a
+    subdirectory containing a ``SKILL.md`` file with YAML frontmatter.
+    """
     persona = PersonaRegistry(personas_dir).load("personal")
     role = RoleRegistry(roles_dir, personas_dir).load("teacher", persona)
     assert role.skills_dir == "./roles/teacher/skills"
     skills_path = Path(role.skills_dir)
     assert skills_path.exists()
-    assert (skills_path / "feynman.md").exists()
-    assert (skills_path / "socratic.md").exists()
+    assert (skills_path / "feynman" / "SKILL.md").exists()
+    assert (skills_path / "socratic" / "SKILL.md").exists()
+
+
+def test_teacher_skills_have_required_frontmatter(roles_dir: Path) -> None:
+    """Deep Agents middleware requires YAML frontmatter with ``name`` and
+    ``description`` at the start of each ``SKILL.md``. Without
+    frontmatter the file is silently ignored at agent-construction time
+    — that's exactly what bit the 2026-05-14 smoke test before this
+    migration. Assert both fields are present for each skill.
+    """
+    for skill_name in ("feynman", "socratic"):
+        content = (
+            roles_dir / "teacher" / "skills" / skill_name / "SKILL.md"
+        ).read_text()
+        assert content.startswith("---\n"), (
+            f"{skill_name} SKILL.md missing leading frontmatter delimiter"
+        )
+        frontmatter_end = content.find("\n---\n", 4)
+        assert frontmatter_end > 0, (
+            f"{skill_name} SKILL.md missing closing frontmatter delimiter"
+        )
+        frontmatter = content[4:frontmatter_end]
+        assert f"name: {skill_name}" in frontmatter, (
+            f"{skill_name} SKILL.md frontmatter missing or wrong name field"
+        )
+        assert "description:" in frontmatter, (
+            f"{skill_name} SKILL.md frontmatter missing description field"
+        )
 
 
 def test_feynman_skill_defines_explain_check_reteach_loop(
@@ -175,13 +206,15 @@ def test_feynman_skill_defines_explain_check_reteach_loop(
 ) -> None:
     """teacher-role/feynman-skill-defines-explain-check-reteach-loop.
 
-    Asserts the spec-mandated structural markers in feynman.md:
+    Asserts the spec-mandated structural markers in feynman/SKILL.md:
     - Step 1 with ≤150-word plain-language explanation + flagged analogy
     - Step 3 with 1-10 score + ≤100-word re-teach of gaps
     - Completion signal phrase "You've got it"
     - knowledge_graph consultation permitted before Step 1 only
     """
-    content = (roles_dir / "teacher" / "skills" / "feynman.md").read_text()
+    content = (
+        roles_dir / "teacher" / "skills" / "feynman" / "SKILL.md"
+    ).read_text()
     lc = content.lower()
 
     # Step 1 markers
@@ -212,12 +245,14 @@ def test_feynman_skill_defines_explain_check_reteach_loop(
 def test_socratic_skill_defines_question_only_loop(roles_dir: Path) -> None:
     """teacher-role/socratic-skill-defines-question-only-loop.
 
-    Asserts the spec-mandated structural markers in socratic.md:
+    Asserts the spec-mandated structural markers in socratic/SKILL.md:
     - States that the assistant asks questions and does NOT state facts
     - Completion signal phrase "You're teaching yourself now"
     - knowledge_graph may be consulted silently between questions
     """
-    content = (roles_dir / "teacher" / "skills" / "socratic.md").read_text()
+    content = (
+        roles_dir / "teacher" / "skills" / "socratic" / "SKILL.md"
+    ).read_text()
     lc = content.lower()
 
     # Question-only loop discipline.

@@ -1,3 +1,8 @@
+---
+name: feynman
+description: Explain → check → diagnose → re-teach loop toward a one-sentence transferable definition. Use when the active teaching method is `feynman`; agent explains first (≤150 words + flagged analogy), user re-teaches back, agent scores 1-10 and re-teaches gaps until user scores 9+ without hints.
+---
+
 # Skill: Feynman Method
 
 Use this skill when the active method is `feynman`. The Feynman

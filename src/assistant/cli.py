@@ -29,15 +29,25 @@ logger = logging.getLogger(__name__)
 _create_harness = _default_create_harness
 
 def _list_role_skills(rc: RoleConfig) -> list[str]:
-    """Return sorted skill names (filename without extension) declared by
-    the role's ``skills_dir``. Empty list if the directory is missing or
-    the role declares no ``skills_dir``."""
+    """Return sorted skill names declared by the role's ``skills_dir``.
+
+    Skills follow Deep Agents' Agent Skills layout: each skill is a
+    subdirectory containing a ``SKILL.md`` file (with YAML
+    frontmatter declaring ``name`` and ``description``). The skill's
+    name is the subdirectory name. Empty list if the directory is
+    missing, the role declares no ``skills_dir``, or no subdirectories
+    contain a ``SKILL.md``.
+    """
     if not rc.skills_dir:
         return []
     skills_path = Path(rc.skills_dir)
     if not skills_path.exists():
         return []
-    return sorted(p.stem for p in skills_path.glob("*.md"))
+    return sorted(
+        p.parent.name
+        for p in skills_path.glob("*/SKILL.md")
+        if p.is_file()
+    )
 
 
 def _build_help_line(rc: RoleConfig) -> str:

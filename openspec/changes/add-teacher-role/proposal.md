@@ -31,11 +31,13 @@ Agents' native skill-discovery mechanism — no new core plumbing required.
    CLI flag or REPL command); during the learning loop, honor mid-session
    method switches cleanly; summarize progress before switching.
 
-2. **Two initial skill files** at `roles/teacher/skills/`:
-   - `feynman.md` — the explain→check→diagnose→re-teach loop the user
-     provided, adapted to the repo's voice.
-   - `socratic.md` — question-only loop that surfaces the user's existing
-     model of the topic before guiding them to fill gaps.
+2. **Two initial skills** at `roles/teacher/skills/<skill-name>/SKILL.md`
+   in Deep Agents' Agent-Skills layout (per-skill subdirectory with
+   YAML-frontmatter-prefixed `SKILL.md`):
+   - `feynman/SKILL.md` — the explain→check→diagnose→re-teach loop the
+     user provided, adapted to the repo's voice.
+   - `socratic/SKILL.md` — question-only loop that surfaces the user's
+     existing model of the topic before guiding them to fill gaps.
    Additional methods (ELI5, analogy-ladder, teach-back, spaced recall)
    are explicitly out of scope for this change and tracked as a
    follow-on proposal.

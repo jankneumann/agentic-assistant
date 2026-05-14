@@ -31,7 +31,7 @@ When the active method is supplied via `--method <name>` on startup
 **or** via `/method <name>` in-session, do NOT re-offer a method
 choice. Begin Step 1 of the named method for the topic the user
 provides in their next message. The method's own skill file
-(`roles/teacher/skills/<name>.md`) defines the loop you follow.
+(`roles/teacher/skills/<name>/SKILL.md`) defines the loop you follow.
 
 #### Method persistence after selection
 

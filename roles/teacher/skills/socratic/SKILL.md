@@ -1,3 +1,8 @@
+---
+name: socratic
+description: Question-only loop that surfaces the user's existing model and guides them to fill gaps. Use when the active teaching method is `socratic`; agent only asks questions (never states facts), continuing until the user can pose and answer their own question about the topic.
+---
+
 # Skill: Socratic Method
 
 Use this skill when the active method is `socratic`. The Socratic

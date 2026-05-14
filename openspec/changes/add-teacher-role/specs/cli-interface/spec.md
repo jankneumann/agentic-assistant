@@ -15,7 +15,7 @@ MUST list the available methods.
 #### Scenario: Teacher method flag accepted with teacher role
 
 - **WHEN** the CLI is invoked with `-p personal -r teacher --method feynman`
-- **AND** `roles/teacher/skills/feynman.md` exists
+- **AND** `roles/teacher/skills/feynman/SKILL.md` exists
 - **THEN** CLI startup MUST succeed without raising `UsageError`
 - **AND** the first user-turn MUST be prefixed with a system-level
   directive instructing the agent to use the Feynman method
@@ -30,7 +30,7 @@ MUST list the available methods.
 #### Scenario: Unknown method name rejected
 
 - **WHEN** the CLI is invoked with `-r teacher --method nonexistent`
-- **AND** `roles/teacher/skills/nonexistent.md` does NOT exist
+- **AND** `roles/teacher/skills/nonexistent/SKILL.md` does NOT exist
 - **THEN** `click.UsageError` MUST be raised
 - **AND** the error message MUST list the available methods
   (`feynman`, `socratic`)
@@ -98,7 +98,7 @@ and continue without changing the active method.
 
 - **WHEN** the REPL is running with the `teacher` role active
 - **AND** the user enters `/method bogus`
-- **AND** `roles/teacher/skills/bogus.md` does NOT exist
+- **AND** `roles/teacher/skills/bogus/SKILL.md` does NOT exist
 - **THEN** the REPL MUST print an error message listing valid methods
 - **AND** the REPL's recorded active method MUST be unchanged
 - **AND** the REPL MUST continue without error

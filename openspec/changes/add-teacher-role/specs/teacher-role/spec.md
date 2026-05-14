@@ -36,8 +36,10 @@ The system SHALL expose a public role named `teacher`, discoverable by
 - **WHEN** `RoleRegistry.load("teacher", personal_persona)` is called
 - **THEN** `RoleConfig.skills_dir` MUST resolve to
   `"./roles/teacher/skills"`
-- **AND** the directory MUST contain `feynman.md`
-- **AND** the directory MUST contain `socratic.md`
+- **AND** the directory MUST contain `feynman/SKILL.md` (Deep Agents
+  Agent-Skills layout: each skill is a subdirectory with a
+  YAML-frontmatter-prefixed `SKILL.md`)
+- **AND** the directory MUST contain `socratic/SKILL.md`
 
 ### Requirement: First-Turn Method Negotiation
 
@@ -141,7 +143,7 @@ starting focus.
 
 ### Requirement: Feynman Skill Loop Contract
 
-The `feynman.md` skill SHALL define a four-step loop: Step 1 — the
+The `feynman/SKILL.md` skill SHALL define a four-step loop: Step 1 — the
 assistant produces a ≤150-word plain-language explanation with one
 flagged analogy and prompts the user to explain it back; Step 2 — the
 assistant waits for user response; Step 3 — the assistant scores the
@@ -152,7 +154,7 @@ it" followed by a one-sentence transferable definition.
 
 #### Scenario: Feynman skill defines explain-check-reteach loop
 
-- **WHEN** `roles/teacher/skills/feynman.md` is read
+- **WHEN** `roles/teacher/skills/feynman/SKILL.md` is read
 - **THEN** it MUST contain a "Step 1" section mentioning a
   ≤150-word plain-language explanation and a flagged analogy
 - **AND** it MUST contain a "Step 3" section mentioning a 1-10 score
@@ -164,7 +166,7 @@ it" followed by a one-sentence transferable definition.
 
 ### Requirement: Socratic Skill Loop Contract
 
-The `socratic.md` skill SHALL define a question-only loop in which the
+The `socratic/SKILL.md` skill SHALL define a question-only loop in which the
 assistant never states facts, only asks questions that surface the
 user's existing model of the topic; the loop continues until the user
 can answer their own question about the topic; the completion signal
@@ -173,7 +175,7 @@ sentence the user could use to open the topic with someone else.
 
 #### Scenario: Socratic skill defines question-only loop
 
-- **WHEN** `roles/teacher/skills/socratic.md` is read
+- **WHEN** `roles/teacher/skills/socratic/SKILL.md` is read
 - **THEN** it MUST state that the assistant asks questions and does
   NOT state facts
 - **AND** it MUST contain a completion signal with the phrase
