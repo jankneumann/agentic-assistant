@@ -477,7 +477,8 @@ items:
   - item_id: add-teacher-role
     change_id: add-teacher-role
     title: Add teacher role with Feynman and Socratic skill files
-    status: in_progress
+    status: archived
+    archived_at: 2026-05-15
     priority: 23
     effort: S
     depends_on: []

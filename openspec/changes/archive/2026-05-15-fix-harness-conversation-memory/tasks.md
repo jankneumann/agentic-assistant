@@ -55,22 +55,29 @@
 
 ## 5. Smoke test
 
-- [ ] 5.1 Run the teacher Feynman smoke test (`uv run assistant -p
+- [x] 5.1 Run the teacher Feynman smoke test (`uv run assistant -p
   personal -r teacher --method feynman`) for a multi-turn dialog
   (Step 1 → user explanation → Step 3). Confirm the agent's Step 3
   response references the user's explanation from Step 2 (i.e.,
   history is actually preserved, not just plumbed).
-- [ ] 5.2 Tick `add-teacher-role` task 6.3 (manual smoke test) if
+  **Outcome (user-confirmed 2026-05-15)**: PASS. Teacher role works
+  as intended end-to-end after the checkpointer + thread_id fix.
+- [x] 5.2 Tick `add-teacher-role` task 6.3 (manual smoke test) if
   this run confirms multi-turn coherence — closes that remaining
-  loose end.
+  loose end. Done — `add-teacher-role` task 6.3 ticked 2026-05-15
+  and archived to `openspec/changes/archive/2026-05-15-add-teacher-role/`.
 
 ## 6. Land the plane
 
-- [ ] 6.1 Commit with `fix(harness-adapter): wire conversation memory
-  via InMemorySaver + per-harness thread_id (#34)`.
-- [ ] 6.2 Push to origin and verify `git status` shows up-to-date
-  with origin.
-- [ ] 6.3 Close agentic-assistant#34 with a reference to the commit
-  and the smoke-test outcome.
-- [ ] 6.4 Archive this change (`/openspec-archive-change
-  fix-harness-conversation-memory`) once the smoke test passes.
+- [x] 6.1 Commit with `fix(harness-adapter): wire conversation memory
+  via InMemorySaver + per-harness thread_id (#34)` — landed as
+  `67795c2`.
+- [x] 6.2 Push to origin and verify `git status` shows up-to-date
+  with origin — `b93c7e0..67795c2  main -> main`, working tree clean.
+- [x] 6.3 Close agentic-assistant#34 with a reference to the commit
+  and the smoke-test outcome — auto-closed by commit's `Closes #34`
+  keyword on push to main; resolution comment added at
+  https://github.com/jankneumann/agentic-assistant/issues/34#issuecomment-4454057903.
+- [x] 6.4 Archive this change (`/openspec-archive-change
+  fix-harness-conversation-memory`) once the smoke test passes —
+  archived 2026-05-15.

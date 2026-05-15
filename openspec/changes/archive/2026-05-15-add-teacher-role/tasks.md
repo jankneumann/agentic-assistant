@@ -240,7 +240,7 @@ dependency task(s).
   **Spec scenarios**: all populated in specs/
   **Dependencies**: 3.6, 4.1
 
-- [ ] 6.3 Manual smoke test: `uv run assistant -p personal -r teacher`
+- [x] 6.3 Manual smoke test: `uv run assistant -p personal -r teacher`
   — verify the REPL launches, the first-turn message offers Feynman
   and Socratic, `/methods` lists both, `/method feynman` then
   `/method socratic` switches without losing prior context (inspect
@@ -248,10 +248,19 @@ dependency task(s).
   `[Teacher:socratic]>`).
   **Spec scenarios**: n/a (exploratory)
   **Dependencies**: 6.2
-  **Status**: BLOCKED on user — this task requires an interactive
-  terminal + live LLM invocation; the implementing agent cannot
-  perform it. Tick only after the user has run the smoke test and
-  confirms the behaviors above.
+
+  **Outcome (verified 2026-05-15)**: PASS. User-confirmed end-to-end
+  smoke test after the downstream conversation-memory fix landed
+  (commit `67795c2`, OpenSpec change `fix-harness-conversation-memory`,
+  closes #34). Prior iterations of this smoke test (2026-05-13/14)
+  surfaced four foundational bugs that were fixed as a chain: empty
+  AIMessage extraction (`e2b5058`), `/quit` help-line inconsistency
+  (`849cb9d`), method stickiness across turns (`a616178`), and the
+  Deep Agents SKILL.md subdirectory layout (`b93c7e0`). The final
+  blocker was the missing checkpointer + thread_id — without
+  conversation memory, every turn was a fresh thread and the sticky
+  reminder + persistence prompt had nothing to anchor to. With #34
+  resolved, multi-turn coherence works end-to-end.
 
 - [x] 6.4 Verify ACA-binding status (R5 in design.md). Inspect
   `discover_tools(...)` output for the `content_analyzer` source —
