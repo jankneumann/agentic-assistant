@@ -174,10 +174,10 @@ Added during plan revision after confirming MSAF is fully implemented (per the e
   **Spec scenarios**: web-server "Endpoint rejects non-JSON or malformed request bodies", "Endpoint rejects messages exceeding the maxLength bound"
   **Dependencies**: 5.3, 5.3b
 
-- [ ] 5.4 Write tests for harness-error path emitting terminal RUN_FINISHED (two-phase D8 contract)
-  **Goal**: Fake harness yields terminal `RunFinished(error="RuntimeError")` then re-raises `RuntimeError("quota exceeded")`. Assert the response stream contains exactly one `RUN_FINISHED` with `error == "RuntimeError"` (class name only), that no further events follow, and that the response generator returns cleanly (the mapper absorbs the re-raised exception per D8).
-  **Spec scenarios**: web-server "Endpoint emits RUN_FINISHED with error when harness fails"
-  **Design decisions**: D8 (two-phase contract, redaction rule)
+- [ ] 5.4 Write tests for harness-error path emitting terminal RUN_ERROR (two-phase D8 contract)
+  **Goal**: Fake harness yields terminal internal `RunFinished(error="RuntimeError")` then re-raises `RuntimeError("quota exceeded")`. Assert the response stream contains exactly one AG-UI `RUN_ERROR` event with `message == "RuntimeError"` and `code == "RuntimeError"` (class name only — NOT a `RUN_FINISHED` with an error field; the upstream `RunFinishedEvent` has no error field, so failures map to the separate `RunErrorEvent` shape per D8). Assert that no `RUN_FINISHED` event is emitted in the same stream, no further events follow `RUN_ERROR`, and that the response generator returns cleanly (the mapper absorbs the Phase-2 re-raised exception per D8).
+  **Spec scenarios**: web-server "Endpoint emits RUN_ERROR when harness fails"
+  **Design decisions**: D8 (two-phase contract, redaction rule, RUN_ERROR mapping)
   **Dependencies**: 4.6
 
 - [ ] 5.4b Write tests for client disconnect during streaming

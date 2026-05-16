@@ -66,7 +66,7 @@ Three genuinely distinct organizations of the new code. All three are constraine
 
 ### Approach 2 — Separated transport + emitter (Recommended)
 
-**Description.** Two new packages: `src/assistant/transports/ag_ui/` defines `HarnessEvent` (a small discriminated union: `RunStarted`, `RunFinished`, `TextDelta`, `ToolCallStart`, `ToolCallArgs`, `ToolCallEnd`) and the AG-UI mapper that consumes `HarnessEvent` and emits AG-UI events. `src/assistant/web/` is the FastAPI app that consumes the mapper. The harness's new `astream_invoke()` yields `HarnessEvent`, not LangChain events — the harness owns the LangChain→HarnessEvent translation; the AG-UI emitter owns HarnessEvent→AG-UI translation.
+**Description.** Two new packages plus a colocated event type. `HarnessEvent` (a small discriminated union: `RunStarted`, `RunFinished`, `TextDelta`, `ToolCallStart`, `ToolCallArgs`, `ToolCallEnd`) lives at `src/assistant/harnesses/sdk/events.py` next to the `SdkHarnessAdapter` base class — because the harnesses *construct* these events, the type must live in the harness layer per the D6 import-direction rule. `src/assistant/transports/ag_ui/` contains the AG-UI mapper that consumes `HarnessEvent` and emits AG-UI events. `src/assistant/web/` is the FastAPI app that consumes the mapper. The harness's new `astream_invoke()` yields `HarnessEvent`, not LangChain events — the harness owns the LangChain→HarnessEvent translation; the AG-UI emitter owns HarnessEvent→AG-UI translation.
 
 **Pros:**
 - Clean separation of concerns: harness produces harness-agnostic events, transport produces protocol-specific events, web serves them.
@@ -108,7 +108,7 @@ The decisive factor: MSAF integration is on the roadmap (P5+P10 pending), not hy
 
 **Approach 2 — Separated transport + emitter.** Selected at Gate 1 without modification on 2026-05-16. Plan was revised at Gate 2 (same day) to extend scope: MSAF streaming is included in this change after code inspection confirmed MSAF is already fully implemented (not stubbed as the explore agent had reported). All downstream artifacts (specs, tasks, design, contracts, work-packages) MUST implement this approach. Specifically:
 
-- Two new packages: `src/assistant/transports/ag_ui/` (emitter + HarnessEvent) and `src/assistant/web/` (FastAPI + SSE serving).
+- Two new packages: `src/assistant/transports/ag_ui/` (AG-UI mapper + upstream-type re-exports) and `src/assistant/web/` (FastAPI + SSE serving). A third addition lives in the existing harness package: `src/assistant/harnesses/sdk/events.py` defines the `HarnessEvent` discriminated union (kept in the harness layer per the D6 import-direction rule).
 - New `HarnessEvent` discriminated union (6 variants for v1: `RunStarted`, `RunFinished`, `TextDelta`, `ToolCallStart`, `ToolCallArgs`, `ToolCallEnd`).
 - `SdkHarnessAdapter.astream_invoke()` yields `HarnessEvent`, not raw LangChain or `agent_framework` stream events. Both DeepAgents and MSAF map their respective SDK stream events to the same `HarnessEvent` shape.
 - AG-UI event types come from the upstream `ag_ui` Python package (`ag_ui.core`), not in-repo types — confirmed installed.

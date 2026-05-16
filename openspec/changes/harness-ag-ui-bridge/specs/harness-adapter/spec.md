@@ -108,8 +108,11 @@ imports `HarnessEvent` from harnesses, never the reverse).
   class name only (e.g., `"RuntimeError"`, `"PermissionError"`)
 - **AND** the value MUST NOT contain the exception message body,
   any traceback, or any wrapped-exception detail
-- **AND** the value MUST match the pattern `^[A-Z][A-Za-z0-9_.]*$`
-  (Python class identifier with optional dotted qualifiers)
+- **AND** the value MUST match the pattern
+  `^(?:[a-z_][a-zA-Z0-9_]*\.)*[A-Z][A-Za-z0-9_]*$` (Python class
+  identifier with optional dotted module qualifier — allows lowercase
+  or underscore-leading module segments followed by an uppercase-
+  leading class name; matches the same pattern in both JSON schemas)
 
 ### Requirement: Deep Agents Streaming Invocation
 

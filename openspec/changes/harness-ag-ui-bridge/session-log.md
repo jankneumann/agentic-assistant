@@ -218,3 +218,70 @@ The multi-vendor PLAN_REVIEW phase is heavy infrastructure: subprocess dispatch 
 ### Context
 
 Round one dispatch completed cleanly: three vendors, three of three quorum, thirty-three unique findings after dedup. Inline fixes addressed all four high-impact themes (thread id flow, error contract, module boundary, message length) plus three medium polishings. Strict openspec validate passes after fixes. Round two will be dispatched next to verify convergence and surface anything new.
+
+---
+
+## Phase: Plan Review Round 2 (2026-05-16)
+
+**Agent**: claude_code (Opus 4.7 1M context) | **Session**: continuation
+
+### Decisions
+
+1. Round 2 dispatch succeeded with full quorum. Three vendor CLIs were invoked again against the round-1-patched plan artifacts plus the round-1 consensus as context. Claude returned five findings in five minutes fifteen seconds. Codex returned four findings in three minutes thirty-one seconds. Gemini returned four findings in one minute fifty-six seconds. The synthesizer ran with quorum two and produced thirteen unique findings: zero confirmed by text match, thirteen unconfirmed, zero disagreement, zero algorithmic-blocking. Findings trend dropped sharply from thirty-three to thirteen, signaling strong convergence on architectural issues.
+
+2. Round 2 surfaced four genuine regressions introduced by round-1 fixes plus two missed architectural issues. The most consequential was the RUN_ERROR migration. The upstream ag underscore ui core dot RunFinishedEvent has no error field; failures map to a separate RunErrorEvent with message and code fields. The round-1 D8 fix encoded a non-existent error field on RUN_FINISHED. Resolved by migrating to RUN_ERROR end-to-end: ag-ui-events schema gained a RunError variant and removed the error field from RunFinished; the ag-ui-emitter spec went from eight to nine event types with the Error Mapping requirement rewritten; design decision eight was updated with the corrected mapper behavior paragraph; the web-server spec harness-failure scenario was rewritten.
+
+3. The other round-2 fixes were mechanical completeness. The class-name regex was changed from start-uppercase-only to allow dotted lowercase module qualifiers like asyncio dot CancelledError, fixing both JSON schemas. The work-packages YAML file had three stale references to the old transports path for HarnessEvent which were corrected. The traced harness decorator location was corrected from src assistant observability to src assistant telemetry decorators. The SdkHarnessAdapter base class gained a new thread underscore id contract requirement so MSAF and Deep Agents both expose a stable thread identifier for the web transport to pass to the mapper. Task five point ten dependency list was corrected to include 3b dot 7. The SSE citation was corrected from a wrong RFC number to WHATWG HTML EventSource. Work-packages plan revision bumped two to three.
+
+### Alternatives Considered
+
+- Map failures to RUN_FINISHED with an additional out-of-band error event: rejected. The upstream protocol already provides RunErrorEvent for this exact purpose; using it preserves alignment with the upstream Pydantic models and avoids inventing custom shape.
+- Make thread underscore id a hidden private attribute on each harness: rejected. The web layer needs to access it, and making it private would force either name-mangling violations or a special-case API. Exposing it as a contract on the base class is cleaner.
+- Skip the regex fix and accept that asyncio dot CancelledError is not class-name-only: rejected. The redaction-rule purpose is to permit any Python class identifier; the regex was simply too restrictive.
+
+### Trade-offs
+
+- Accepted a larger event-type surface (eight to nine types) in exchange for upstream-protocol alignment. The nine-type set matches a subset of ag underscore ui core exactly; the eight-type set would have required either constructing AG-UI events that do not match the upstream Pydantic models or accepting an in-repo error event type that drifts from upstream.
+- Accepted bumping plan revision two to three rather than batching the round-1 and round-2 changes into one revision. Two revisions make the audit trail of fixes clearer.
+
+### Open Questions
+
+- [ ] Round 3 will check whether any round-2 fix introduced new regressions, particularly in implementation-driving artifacts like tasks.md and the OpenAPI contract.
+
+### Context
+
+Round 2 verified that the round-1 architectural fixes were largely correct but surfaced four downstream regressions in artifacts that round-1 fix application missed. The biggest learning is that mapping to upstream protocol types requires verifying actual upstream model fields rather than assuming a documented field exists. The fix-application discipline of multi-vendor review caught this where single-agent self-review would have shipped a broken contract. Strict openspec validate passes and work-packages validation passes after fixes. Round 3 dispatched.
+
+---
+
+## Phase: Plan Review Round 3 (2026-05-16)
+
+**Agent**: claude_code (Opus 4.7 1M context) | **Session**: continuation
+
+### Decisions
+
+1. Round 3 dispatch succeeded with full quorum. Claude returned three findings in four minutes eighteen seconds. Codex returned three findings in three minutes thirty-seven seconds. Gemini returned four findings in two minutes six seconds. The synthesizer produced ten unique findings: zero confirmed by text match, ten unconfirmed, zero disagreement, zero algorithmic-blocking. Findings trend continued downward from thirteen to ten, with no new architectural concerns.
+
+2. All ten round-3 findings were completeness gaps from round-2 fixes rather than new issues. Three vendors flagged the same theme from different angles: tasks dot md task five point four still encoded the old RUN_FINISHED-with-error contract in title and Goal text; the OpenAPI contract endpoint description and example still described RUN_FINISHED as the sole terminator; the harness-adapter spec class-name regex scenario still had the original start-uppercase-only pattern rather than the corrected dotted-lowercase pattern that the JSON schemas use; proposal dot md narrative still placed HarnessEvent in the transports path; design dot md forward-path sentence referenced the now-stale RUN underscore FINISHED dot error.
+
+3. Decision to apply mechanical fixes inline without dispatching a fourth round. The convergence-loop contract caps at three rounds. Going to a fourth round would dispatch the heavy multi-vendor pipeline again to verify that text references in five files now say RUN_ERROR instead of RUN_FINISHED with error. The marginal verification value is low given the changes are textual and easily inspected. Pragmatic call: apply the round-3 fixes, validate, declare convergence based on the trending evidence (thirty-three to thirteen to ten across three rounds with no new architectural concerns), and transition to implementation.
+
+4. Round-3 fixes applied: tasks dot md task five point four title and Goal rewritten to RUN_ERROR; the OpenAPI contract endpoint description rewritten and a failure-path example added next to the success example; harness-adapter spec class-name regex scenario updated to match the JSON-schema pattern; design dot md D8 redaction-rule sentence updated to use the same regex; design dot md forward-path sentence updated to reference RUN_ERROR; proposal dot md two narrative paragraphs about HarnessEvent location corrected to harnesses sdk events.
+
+### Alternatives Considered
+
+- Dispatch a fourth round to verify the round-3 fixes: rejected. The fixes are text changes in named files; the marginal verification cost is fifteen minutes of CLI dispatch and synthesis for confirmation of a mechanical edit pass. The post-fix grep is more efficient.
+- Defer the round-3 fixes to implementation phase: rejected. Stale text in tasks dot md and the OpenAPI contract would mislead the implementation agents; cleaning up now costs less than tracing the divergence at implementation time.
+
+### Trade-offs
+
+- Accepted being one round outside the formal convergence-loop contract in exchange for shipping a clean plan that has been thoroughly cross-vendor reviewed across three rounds.
+- Accepted leaving the session-log historical entries unchanged even though they reference the older RUN_FINISHED-with-error fix language. The log is a record of what happened in each round; rewriting it to match the current state would lose the audit trail.
+
+### Open Questions
+
+- [ ] None blocking. Two deferred items continue to follow-up tracking: wp-web-cli split as a single-vendor request, and the serve subcommand harness default as a single-vendor judgment call.
+
+### Context
+
+Three rounds of multi-vendor convergence completed. Findings trend: thirty-three to thirteen to ten. The round-3 findings were all completeness fixes of round-2 fix application rather than new architectural issues. Plan is convergent and ready for implementation. Total review surface across all rounds: thirty-three unique round-1 findings (six themes), thirteen round-2 findings (six themes), ten round-3 findings (one theme spread across four artifacts). Fix-application discipline was the main learning: every edit that names a path or a field needs to be re-greppable across all artifacts.
