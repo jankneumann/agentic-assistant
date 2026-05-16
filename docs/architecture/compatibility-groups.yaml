@@ -1,0 +1,25 @@
+groups:
+  - name: interrupt_resume
+    requires:
+      - primitive: HarnessAdapter
+        capability: interrupt_resume
+      - primitive: SessionStore
+        capability: checkpointing
+      - primitive: MemoryManager
+        capability: replay_safe
+  - name: tool_streaming
+    requires:
+      - primitive: HarnessAdapter
+        capability: streaming
+      - primitive: CapabilityRegistry
+        capability: projection_streaming
+      - primitive: Observability
+        capability: stream_span_propagation
+  - name: cross_persona_audit
+    requires:
+      - primitive: IdentityProvider
+        capability: audit_trail
+      - primitive: Observability
+        capability: retention
+      - primitive: MemoryManager
+        capability: forget

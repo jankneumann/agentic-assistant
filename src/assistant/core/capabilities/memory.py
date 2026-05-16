@@ -176,7 +176,11 @@ class PostgresGraphitiMemoryPolicy:
         engine = create_async_engine(persona)
         session_fac = async_session_factory(engine)
         graphiti = create_graphiti_client(persona)
-        self._manager = MemoryManager(session_fac, graphiti_client=graphiti)
+        self._manager = MemoryManager(
+            session_fac,
+            graphiti_client=graphiti,
+            persona_name=persona.name,
+        )
         self._persona_name = persona.name
 
     def resolve(self, persona: Any, harness_name: str) -> MemoryConfig:
@@ -187,7 +191,10 @@ class PostgresGraphitiMemoryPolicy:
         )
 
     def export_memory_context(self, persona: Any) -> str:
-        return _run_blocking(self._manager.export_memory(persona.name))
+        # persona is bound at construction (persona_name=persona.name), so
+        # passing None makes MemoryManager resolve to that bound persona --
+        # a caller cannot accidentally export a different persona's memory.
+        return _run_blocking(self._manager.export_memory(None))
 
     async def get_recent_snippets(
         self, persona: Any, role: Any, *, limit: int = 10
