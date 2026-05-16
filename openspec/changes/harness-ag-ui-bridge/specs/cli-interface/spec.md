@@ -86,3 +86,28 @@ exit code on `Ctrl-C` SHALL be 0.
 - **WHEN** the running server receives SIGINT
 - **THEN** the lifespan shutdown MUST run cleanly
 - **AND** the process MUST exit with status 0
+
+#### Scenario: serve rejects persona with no default_role when -r is omitted
+
+- **WHEN** `assistant serve -p some-persona` is executed without
+  `-r`
+- **AND** the persona's `default_role` field is missing or empty
+- **THEN** the exit code MUST be non-zero
+- **AND** stderr or stdout MUST identify the persona name and the
+  missing `default_role` field
+
+#### Scenario: serve rejects unknown harness names
+
+- **WHEN** `assistant serve -p personal -H nonexistent` is executed
+- **THEN** the exit code MUST be non-zero
+- **AND** the error MUST list the available harness names
+
+#### Scenario: serve warns when binding to a non-loopback host
+
+- **WHEN** `assistant serve -p personal --host 0.0.0.0` is executed
+  (or any non-`127.0.0.1`, non-`localhost` address)
+- **THEN** the CLI MUST emit a clearly-visible warning on stderr
+  before uvicorn starts, identifying that the server will be
+  network-accessible without authentication
+- **AND** the server MUST still start (the warning is informational,
+  not a refusal — single-user, local-trust-mode is the v1 contract)

@@ -29,7 +29,7 @@
   **Dependencies**: 1.3
 
 - [ ] 2.2 Add abstract `astream_invoke` to `src/assistant/harnesses/base.py`
-  **Goal**: Add abstract method to `SdkHarnessAdapter` returning `AsyncIterator[HarnessEvent]`. Existing `invoke()` MUST remain unchanged. MSAgentFrameworkHarness must keep working — stub `astream_invoke` with `NotImplementedError` matching existing pattern (until MSAF is fully implemented in a later change).
+  **Goal**: Add abstract method to `SdkHarnessAdapter` returning `AsyncIterator[HarnessEvent]`. Existing `invoke()` MUST remain unchanged. Both `DeepAgentsHarness` and `MSAgentFrameworkHarness` will implement this concretely in Sections 3 and 3b respectively — no NotImplementedError stub is acceptable on the base, since both real harnesses must satisfy the abstract contract before this change can merge.
   **Dependencies**: 2.1
 
 - [ ] 2.3 Write tests for `@traced_harness` async-generator support
@@ -162,9 +162,19 @@ Added during plan revision after confirming MSAF is fully implemented (per the e
   **Contracts**: contracts/openapi/v1.yaml
   **Dependencies**: 1.4
 
-- [ ] 5.4 Write tests for harness-error path emitting terminal RUN_FINISHED
+- [ ] 5.4 Write tests for harness-error path emitting terminal RUN_FINISHED (with class-name-only error redaction)
   **Spec scenarios**: web-server "Endpoint emits RUN_FINISHED with error when harness fails"
-  **Design decisions**: D8
+  **Design decisions**: D8 (redaction rule)
+  **Dependencies**: 4.6
+
+- [ ] 5.4b Write tests for client disconnect during streaming
+  **Goal**: Use FastAPI TestClient with manually-controlled stream closure (or `httpx.AsyncClient` with `stream=True` followed by early `aclose()`). Assert that the harness's async-generator `aclose()` is called, that no further events are emitted, and that the response handler does not raise.
+  **Spec scenarios**: web-server "Client disconnect during streaming cancels the harness"
+  **Design decisions**: D13
+  **Dependencies**: 4.6
+
+- [ ] 5.4c Write tests for empty harness response (lifecycle-only events)
+  **Spec scenarios**: web-server "Empty harness response emits lifecycle-only events"
   **Dependencies**: 4.6
 
 - [ ] 5.5 Write tests for lifespan single-harness construction at startup
@@ -179,6 +189,10 @@ Added during plan revision after confirming MSAF is fully implemented (per the e
 
 - [ ] 5.7 Write tests for lifespan rejecting host harnesses
   **Spec scenarios**: web-server "Lifespan rejects host harnesses"
+  **Dependencies**: 1.4
+
+- [ ] 5.7b Write tests for lifespan rejecting persona with disabled or missing harness config
+  **Spec scenarios**: web-server "Lifespan rejects persona with the chosen harness disabled"
   **Dependencies**: 1.4
 
 - [ ] 5.8 Write tests for `/health` endpoint
@@ -219,6 +233,20 @@ Added during plan revision after confirming MSAF is fully implemented (per the e
 
 - [ ] 6.6 Write tests for clean Ctrl-C exit (status 0)
   **Spec scenarios**: cli-interface "Ctrl-C exits with status 0"
+  **Dependencies**: 5.9
+
+- [ ] 6.6b Write tests for persona with no default_role (when -r omitted)
+  **Spec scenarios**: cli-interface "serve rejects persona with no default_role when -r is omitted"
+  **Dependencies**: 5.9
+
+- [ ] 6.6c Write tests for unknown harness name handling
+  **Spec scenarios**: cli-interface "serve rejects unknown harness names"
+  **Dependencies**: 5.9
+
+- [ ] 6.6d Write tests for non-loopback host warning
+  **Goal**: Capture stderr while invoking `assistant serve -p personal --host 0.0.0.0` and assert a warning is present before uvicorn starts. The server still starts; the test should verify the warning text + ordering, not refuse-to-start semantics.
+  **Spec scenarios**: cli-interface "serve warns when binding to a non-loopback host"
+  **Design decisions**: D12
   **Dependencies**: 5.9
 
 - [ ] 6.7 Write tests for `--help` mentioning `serve`
