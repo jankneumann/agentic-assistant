@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-assistant.local/schemas/ag-ui-events.v1.json",
+  "title": "AGUIEvent (v1 minimal scope)",
+  "description": "Discriminated union of AG-UI protocol v0.x events emitted by the ag-ui-emitter. Restricted to the v1 minimal set: lifecycle, text messages, and tool calls. STATE_DELTA and CUSTOM events are explicitly out of scope for v1.",
+  "type": "object",
+  "required": ["type"],
+  "oneOf": [
+    { "$ref": "#/$defs/RunStarted" },
+    { "$ref": "#/$defs/RunFinished" },
+    { "$ref": "#/$defs/TextMessageStart" },
+    { "$ref": "#/$defs/TextMessageContent" },
+    { "$ref": "#/$defs/TextMessageEnd" },
+    { "$ref": "#/$defs/ToolCallStart" },
+    { "$ref": "#/$defs/ToolCallArgs" },
+    { "$ref": "#/$defs/ToolCallEnd" }
+  ],
+  "$defs": {
+    "RunStarted": {
+      "type": "object",
+      "required": ["type", "threadId", "runId"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "RUN_STARTED" },
+        "threadId": { "type": "string", "minLength": 1 },
+        "runId": { "type": "string", "minLength": 1 }
+      },
+      "examples": [
+        { "type": "RUN_STARTED", "threadId": "t-abc", "runId": "r-001" }
+      ]
+    },
+    "RunFinished": {
+      "type": "object",
+      "required": ["type", "threadId", "runId"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "RUN_FINISHED" },
+        "threadId": { "type": "string", "minLength": 1 },
+        "runId": { "type": "string", "minLength": 1 },
+        "error": {
+          "description": "When present and non-null, the run failed. Carries at minimum the exception class name.",
+          "type": ["string", "null"]
+        }
+      },
+      "examples": [
+        { "type": "RUN_FINISHED", "threadId": "t-abc", "runId": "r-001" },
+        { "type": "RUN_FINISHED", "threadId": "t-abc", "runId": "r-001", "error": "RuntimeError" }
+      ]
+    },
+    "TextMessageStart": {
+      "type": "object",
+      "required": ["type", "messageId", "role"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "TEXT_MESSAGE_START" },
+        "messageId": { "type": "string", "minLength": 1 },
+        "role": {
+          "type": "string",
+          "enum": ["assistant"],
+          "description": "v1 scope only emits assistant messages; user messages are inbound, not streamed."
+        }
+      },
+      "examples": [
+        { "type": "TEXT_MESSAGE_START", "messageId": "m-001", "role": "assistant" }
+      ]
+    },
+    "TextMessageContent": {
+      "type": "object",
+      "required": ["type", "messageId", "delta"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "TEXT_MESSAGE_CONTENT" },
+        "messageId": { "type": "string", "minLength": 1 },
+        "delta": {
+          "type": "string",
+          "description": "Partial text chunk. Concatenating all deltas for a given messageId yields the full message."
+        }
+      },
+      "examples": [
+        { "type": "TEXT_MESSAGE_CONTENT", "messageId": "m-001", "delta": "Decorators are " }
+      ]
+    },
+    "TextMessageEnd": {
+      "type": "object",
+      "required": ["type", "messageId"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "TEXT_MESSAGE_END" },
+        "messageId": { "type": "string", "minLength": 1 }
+      },
+      "examples": [
+        { "type": "TEXT_MESSAGE_END", "messageId": "m-001" }
+      ]
+    },
+    "ToolCallStart": {
+      "type": "object",
+      "required": ["type", "toolCallId", "toolCallName"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "TOOL_CALL_START" },
+        "toolCallId": { "type": "string", "minLength": 1 },
+        "toolCallName": { "type": "string", "minLength": 1 }
+      },
+      "examples": [
+        { "type": "TOOL_CALL_START", "toolCallId": "c-001", "toolCallName": "search" }
+      ]
+    },
+    "ToolCallArgs": {
+      "type": "object",
+      "required": ["type", "toolCallId", "delta"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "TOOL_CALL_ARGS" },
+        "toolCallId": { "type": "string", "minLength": 1 },
+        "delta": {
+          "type": "string",
+          "description": "Partial chunk of the tool's JSON arguments. Concatenating all deltas for a given toolCallId yields the full JSON args payload."
+        }
+      },
+      "examples": [
+        { "type": "TOOL_CALL_ARGS", "toolCallId": "c-001", "delta": "{\"q\":\"py" }
+      ]
+    },
+    "ToolCallEnd": {
+      "type": "object",
+      "required": ["type", "toolCallId"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "TOOL_CALL_END" },
+        "toolCallId": { "type": "string", "minLength": 1 }
+      },
+      "examples": [
+        { "type": "TOOL_CALL_END", "toolCallId": "c-001" }
+      ]
+    }
+  }
+}

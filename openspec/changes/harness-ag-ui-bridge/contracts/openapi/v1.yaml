@@ -1,0 +1,175 @@
+openapi: 3.1.0
+info:
+  title: agentic-assistant AG-UI bridge
+  version: 0.1.0
+  summary: HTTP/SSE transport for the agentic-assistant Deep Agents harness, emitting AG-UI protocol events.
+  description: |
+    Single-user, loopback-bound server that exposes one persona+role binding
+    (selected at startup via `assistant serve -p <persona> -r <role>`) over a
+    single SSE endpoint. The streamed events conform to AG-UI protocol v0.x.
+
+    Authoritative event-payload schemas live in
+    `../events/ag-ui-events.schema.json`. This OpenAPI document describes
+    only the HTTP envelope.
+  license:
+    name: MIT
+
+servers:
+  - url: http://127.0.0.1:8765
+    description: Default loopback bind for `assistant serve` (single-user local).
+
+paths:
+  /chat:
+    post:
+      operationId: postChat
+      summary: Submit a user message and stream AG-UI events back over SSE.
+      description: |
+        Accepts a JSON request body with a `message` field. The response is
+        `text/event-stream` containing AG-UI protocol events serialized one
+        per `data:` line. The first event is always `RUN_STARTED` and the
+        last is always `RUN_FINISHED` (with an `error` field populated when
+        the underlying harness failed).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRequest"
+            examples:
+              simple:
+                summary: Plain text message
+                value:
+                  message: "Explain Python decorators"
+      responses:
+        "200":
+          description: SSE stream of AG-UI events. Connection stays open until RUN_FINISHED.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-cache
+            Connection:
+              schema:
+                type: string
+                const: keep-alive
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  Newline-framed SSE stream. Each event is serialized as
+                  `data: <json>\n\n` where `<json>` validates against the
+                  AG-UI v0.x event schema in
+                  `../events/ag-ui-events.schema.json`.
+              examples:
+                minimal:
+                  summary: Minimal RUN_STARTED → text → RUN_FINISHED sequence
+                  value: |
+                    data: {"type":"RUN_STARTED","threadId":"t-abc","runId":"r-001"}
+
+                    data: {"type":"TEXT_MESSAGE_START","messageId":"m-001","role":"assistant"}
+
+                    data: {"type":"TEXT_MESSAGE_CONTENT","messageId":"m-001","delta":"Hello"}
+
+                    data: {"type":"TEXT_MESSAGE_END","messageId":"m-001"}
+
+                    data: {"type":"RUN_FINISHED","threadId":"t-abc","runId":"r-001"}
+
+        "422":
+          description: Request body invalid (e.g., not JSON or missing `message`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /health:
+    get:
+      operationId: getHealth
+      summary: Liveness probe with active persona / role / harness identity.
+      description: Returns the active identity bound at server startup. Does not invoke the harness.
+      responses:
+        "200":
+          description: Server is alive and bound.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              examples:
+                bound:
+                  summary: Default personal/assistant/deep_agents
+                  value:
+                    persona: personal
+                    role: assistant
+                    harness: deep_agents
+
+components:
+  schemas:
+    ChatRequest:
+      type: object
+      required:
+        - message
+      additionalProperties: false
+      properties:
+        message:
+          type: string
+          minLength: 1
+          description: User message text to send to the bound persona+role.
+      example:
+        message: "Explain Python decorators"
+
+    HealthResponse:
+      type: object
+      required:
+        - persona
+        - role
+        - harness
+      additionalProperties: false
+      properties:
+        persona:
+          type: string
+          description: Active persona name bound at server startup.
+        role:
+          type: string
+          description: Active role name bound at server startup.
+        harness:
+          type: string
+          description: Active harness name bound at server startup.
+      example:
+        persona: personal
+        role: assistant
+        harness: deep_agents
+
+    Problem:
+      type: object
+      description: |
+        RFC 7807 problem details. Used for `422` responses when the request
+        body fails validation before SSE streaming begins.
+      required:
+        - type
+        - title
+        - status
+      additionalProperties: true
+      properties:
+        type:
+          type: string
+          format: uri
+          description: URI identifying the problem type. May be a relative reference.
+        title:
+          type: string
+          description: Short human-readable summary.
+        status:
+          type: integer
+          format: int32
+          description: HTTP status code.
+        detail:
+          type: string
+          description: Human-readable explanation specific to this occurrence.
+        instance:
+          type: string
+          format: uri
+          description: URI identifying this specific occurrence.
+      example:
+        type: "about:blank"
+        title: "Unprocessable Entity"
+        status: 422
+        detail: "Field required: message"
