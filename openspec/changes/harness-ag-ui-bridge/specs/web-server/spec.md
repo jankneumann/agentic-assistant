@@ -44,6 +44,31 @@ single `data:` line.
   event with the `error` field populated
 - **AND** the stream MUST close cleanly without leaving the SSE
   response half-open
+- **AND** the `error` field value MUST be the exception class name
+  only (e.g., `"RuntimeError"`) — not the exception message body —
+  to prevent leakage of file paths, stack frames, or secret-bearing
+  exception text to the client (full traceback is server-side logs only)
+
+#### Scenario: Client disconnect during streaming cancels the harness
+
+- **WHEN** a client closes the HTTP connection mid-stream (before
+  `RUN_FINISHED` is emitted)
+- **THEN** the server MUST detect the disconnect via
+  `sse-starlette`'s built-in detector
+- **AND** the underlying `astream_invoke` async generator MUST be
+  closed via `aclose()` so that any open resources are released
+- **AND** no further events MUST be emitted on the closed stream
+- **AND** the server MUST NOT raise to the response handler (the
+  cancellation is normal, not an error)
+
+#### Scenario: Empty harness response emits lifecycle-only events
+
+- **WHEN** the harness yields only `RunStarted` and `RunFinished`
+  with no text or tool-call events between them
+- **THEN** the response body MUST contain exactly one
+  `data: RUN_STARTED` line and one `data: RUN_FINISHED` line
+- **AND** no `TEXT_MESSAGE_*` or `TOOL_CALL_*` events MUST be
+  emitted
 
 ### Requirement: Startup-Time Persona Binding
 
@@ -77,6 +102,15 @@ thread (`thread_id`) across requests within a single server lifetime.
   `claude_code`)
 - **THEN** lifespan startup MUST raise an exception preventing the
   server from accepting requests
+
+#### Scenario: Lifespan rejects persona with the chosen harness disabled
+
+- **WHEN** the app factory is invoked for a persona whose
+  `harnesses.<harness_name>.enabled` is `false` (or whose harness
+  configuration is missing entirely)
+- **THEN** lifespan startup MUST raise a clear error identifying the
+  persona name, the harness name, and the disabled/missing state
+- **AND** the server MUST NOT begin accepting requests
 
 ### Requirement: Server Loopback Binding by Default
 

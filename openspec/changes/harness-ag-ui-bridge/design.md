@@ -125,13 +125,15 @@ src/assistant/harnesses/
 
 No end-to-end test against a real LLM in CI — that's reserved for manual `curl -N` smoke testing during validation (the success criterion in the proposal).
 
-### D8: Error mapping in v1 — emit RUN_FINISHED with error, then close stream
+### D8: Error mapping in v1 — emit RUN_FINISHED with redacted error, then close stream
 
 If the harness raises during `astream_invoke()`, the AG-UI emitter catches the exception, emits a `RUN_FINISHED` event with an `error` field populated, and closes the SSE stream cleanly (no further events). The HTTP layer also logs the exception with full traceback.
 
-**Rationale.** AG-UI v0.x has no dedicated error event in our minimal scope (D3 answer to Q3 excluded CUSTOM events). Stuffing the error into `RUN_FINISHED.error` keeps the stream well-formed and lets clients detect failure without protocol drift. Logs preserve the full traceback for debugging.
+**Redaction rule.** The `error` field value sent to the client MUST be the exception's class name only (e.g., `"RuntimeError"`, `"PermissionError"`) — not the exception message body, not the traceback, not any nested-exception detail. The full exception (with traceback) is logged server-side at ERROR level for debugging. This redaction prevents leakage of file paths, environment-variable values, secret-bearing exception messages (e.g., a wrapped LangChain exception that included an API key fragment), and stack-frame implementation details.
 
-**Forward path.** If AG-UI v1.x adds a dedicated error event type, we adopt it then. Until then, this is the right level of pragmatism for v1.
+**Rationale.** AG-UI v0.x has no dedicated error event in our minimal scope (D3 answer to Q3 excluded CUSTOM events). Stuffing the error into `RUN_FINISHED.error` keeps the stream well-formed and lets clients detect failure without protocol drift. The class-name-only redaction is the right balance between client observability ("something broke, and here is what kind") and server-side opacity ("but not the details").
+
+**Forward path.** If AG-UI v1.x adds a dedicated error event type with structured error-category fields, we adopt that. Until then, class name is the canonical detail level.
 
 ### D9: Use the existing `@traced_harness` decorator on `astream_invoke()` too
 
@@ -169,6 +171,26 @@ Microsoft's `agent-framework-ag-ui` package (installed as `agent_framework_ag_ui
 **Rationale.** Mirrors the Deep Agents translation table (which exists implicitly in the LangChain `astream` event types). Keeps the two harnesses' `HarnessEvent` output indistinguishable downstream — the AG-UI emitter cannot tell which harness produced a given event. Implementation will defensively use `getattr(update, ..., None)` with fallbacks since the SDK's `AgentResponseUpdate` shape has churned between minor versions (see `_stringify_run_result` in the existing MSAF harness, which already pattern-matches three different shapes).
 
 **Risk.** SDK shape drift across `agent-framework` minor versions. Tests pin the expected shape to the SDK version in `pyproject.toml`. The same `_stringify_run_result`-style defensive coding pattern is reused for streaming.
+
+### D12: Auth posture — loopback-only by default; non-loopback binding warns but does not require auth
+
+The server binds to `127.0.0.1` by default (D6, web-server spec "Server Loopback Binding by Default"). When the operator explicitly passes `--host 0.0.0.0` (or any non-loopback address), the server prints a clearly-visible warning on stderr identifying that the server will be network-accessible *without* authentication, but the server still starts.
+
+**Rationale.** v1 is explicitly single-user local-trust-mode (constraint C4 from the exploration doc). Adding mandatory authentication middleware for non-loopback binding would: (a) require introducing an auth scheme (bearer token, OAuth, mTLS) that has no use case in v1; (b) complicate the FastAPI app for a future case ("multi-user network deployment") that's explicitly deferred to a separate change; (c) provide a false sense of security if the operator binds to `0.0.0.0` thinking auth protects them — local-network listeners with bearer tokens are still trivially scannable. The warning gives operators a clear signal about the deployment posture without adding code that would need to be maintained or replaced when real auth lands.
+
+**Alternatives considered.** (a) Refuse to start on non-loopback unless `--auth-token` is supplied — rejected because it surprises operators who legitimately want to expose the loopback over SSH-forwarded ports (`ssh -L 8765:127.0.0.1:8765`) and still bind to `0.0.0.0` inside a container. (b) Mandatory auth middleware — rejected per Non-Goals (auth is a separate v2 concern). (c) Silent allow — rejected because the deployment-posture signal is genuinely important and cheap to emit.
+
+**Forward path.** When v2 introduces multi-user or remote-access scenarios, a dedicated auth design decision lands then; this D12 warning becomes a refuse-without-auth-token check at that point.
+
+### D13: Trust `sse-starlette` for backpressure and disconnect detection
+
+The mapper (`map_harness_to_ag_ui`) is an async generator. The web layer wraps it with `sse-starlette.EventSourceResponse`, which handles: (a) SSE framing (event-id, data:, retry hints), (b) disconnect detection (sets a `request.is_disconnected()` flag the response generator can check), (c) basic backpressure via its internal queue.
+
+We do not add custom backpressure logic, custom rate limiting, or custom connection-count guards in v1. The loopback-only default + single-user constraint makes these explicit non-goals.
+
+**Rationale.** `sse-starlette` is mature on this surface. Building parallel backpressure logic in v1 would be over-engineering for the documented scope. If the future Tauri + web frontend exposes the server to high-rate clients, those concerns get a dedicated design decision then.
+
+**Client-disconnect contract.** When `sse-starlette` reports the client disconnected (via `request.is_disconnected()` or by the underlying ASGI connection closing), the response handler must call `aclose()` on the harness's async-iterator return value so any open resources are released. The harness `astream_invoke` implementations MUST handle `GeneratorExit` cleanly (release locks, close any open SDK streams, do not emit further events). Tests for this scenario are added in the web-server spec and tasks.md.
 
 ## Risks / Trade-offs
 

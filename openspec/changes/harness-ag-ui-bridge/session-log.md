@@ -99,3 +99,53 @@ The user invoked plan-feature after a multi-turn exploration documented at the e
 ### Context
 
 User answered Gate 2 with the directive to check the code because MSAF was reported as implemented in P5 already. Code inspection confirmed MSAF.invoke is real and uses agent_framework.Agent.run; the SDK also exposes stream=True overload returning ResponseStream. This revision aligns the plan with the actual codebase state.
+
+---
+
+## Phase: Plan Iteration 1 (2026-05-16)
+
+**Agent**: claude_code (Opus 4.7 1M context) | **Session**: local
+
+Triggered by autopilot PLAN_ITERATE phase. Five parallel Explore agents analyzed the plan across five quality dimensions (completeness, clarity/consistency, feasibility/parallelizability, testability, security/performance) and produced 34 findings total. Triage selected six obvious gaps to address in this iteration; contentious or over-engineered findings (rate limiting, backpressure, wp-web-cli split, mandatory auth middleware) were deferred to vendor consensus in the PLAN_REVIEW phase or to explicit Non-Goals in design.
+
+### Decisions
+
+1. Add three new web-server scenarios: client disconnect during streaming cancels the harness (via aclose), empty harness response emits lifecycle-only events, and lifespan rejects persona with the chosen harness disabled. Plus the existing RUN_FINISHED-with-error scenario gains a class-name-only redaction clause.
+
+2. Add three new cli-interface scenarios: serve rejects persona with no default_role when -r is omitted, serve rejects unknown harness names, and serve warns (but does not refuse) when binding to a non-loopback host.
+
+3. Add design decision D12: loopback-only by default, warn but do not require auth when --host is non-loopback. Rationale: single-user local-trust-mode is the v1 contract; mandatory auth middleware is an explicit Non-Goal and would surprise legitimate operators tunneling through SSH.
+
+4. Add design decision D13: trust sse-starlette for backpressure and disconnect detection. Specify the client-disconnect contract: the response handler must call aclose on the harness async-iterator return value; harness implementations must handle GeneratorExit cleanly.
+
+5. Update D8 (error mapping): the RUN_FINISHED.error field MUST be the exception class name only, not the exception message body or traceback. Full traceback is server-side logs only. Prevents leakage of file paths, environment values, secret-bearing exception messages.
+
+6. Update Task 2.2 wording to remove the stale "MSAF stub" line. MSAF now implements astream_invoke in Section 3b, so the base-class abstract method must be honored uniformly; no stub is acceptable.
+
+7. New tasks added: 5.4b (disconnect test), 5.4c (empty response test), 5.7b (disabled harness test), 6.6b (no default_role test), 6.6c (unknown harness test), 6.6d (non-loopback warning test). All belong to existing work packages (wp-web-cli); no new packages or dependency edges.
+
+### Alternatives Considered
+
+- Add mandatory auth middleware for non-loopback binding: rejected. Explicit Non-Goal in design (auth is a v2 concern). Would surprise SSH-tunneling operators. Provides false sense of security if treated as a real auth layer.
+
+- Split wp-web-cli into wp-web + wp-cli-serve: deferred to vendor consensus. The feasibility analysis suggests this might recover parallelism, but the LOC estimate (350) is moderate and 18 tasks include 8 quick test stubs. Let multi-vendor review weigh in.
+
+- Add rate limiting / connection-count limits / unbounded queue guards: deferred per explicit Non-Goals in design (production-grade error semantics).
+
+- Pin ag-ui package version explicitly in specs: deferred to implementation Task 1.4 (dependency declaration is the right artifact, not the spec).
+
+### Trade-offs
+
+- Accepted six new scenarios and six new tasks for stronger edge-case coverage at modest plan-size cost.
+
+- Accepted explicit warning-not-refusal posture for non-loopback binding (D12) over a refusal-or-auth-required policy, in keeping with the single-user v1 contract.
+
+- Accepted class-name-only error redaction over richer client-facing error categories. Forward-compatible with AG-UI v1.x if it adds structured error categories.
+
+### Open Questions
+
+- Whether the future web-frontend-shell change should add an --auth-token flag (or similar) to switch the server from local-trust-mode to authenticated-mode. Deferred to that change.
+
+### Context
+
+PLAN_ITERATE addressed obvious gaps surfaced by parallel multi-dimension analysis. Six fixes applied; contentious findings deferred. Next: PLAN_REVIEW multi-vendor convergence (3 vendors, up to 3 rounds, quorum 2).

@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "change_id": "harness-ag-ui-bridge",
+  "current_phase": "PLAN_REVIEW",
+  "previous_phase": "PLAN_ITERATE",
+  "iteration": 1,
+  "total_iterations": 1,
+  "max_phase_iterations": 3,
+  "findings_trend": [34],
+  "blocking_findings": [],
+  "vendor_availability": {
+    "claude_code": true,
+    "codex": true,
+    "gemini": true
+  },
+  "packages_status": {
+    "wp-foundation": "pending",
+    "wp-deep-agents-stream": "pending",
+    "wp-msaf-stream": "pending",
+    "wp-ag-ui-emitter": "pending",
+    "wp-web-cli": "pending",
+    "wp-integration": "pending"
+  },
+  "package_authors": {},
+  "complexity_gate": {
+    "allowed_via_force": true,
+    "loc_estimate": 1230,
+    "package_count": 6,
+    "val_review_enabled": false,
+    "warnings": [
+      "Total LOC estimate (1230) exceeds threshold (500)",
+      "Package count (5) exceeds threshold (4)"
+    ]
+  },
+  "cli_review_enabled": true,
+  "coordinator_available": true,
+  "coordinator_capabilities": {
+    "can_lock": true,
+    "can_queue_work": true,
+    "can_discover": true,
+    "can_memory": true,
+    "can_handoff": true
+  },
+  "started_at": "2026-05-16T11:00:00Z",
+  "transitions": [
+    {
+      "from": "INIT",
+      "to": "PLAN_ITERATE",
+      "at": "2026-05-16T11:00:00Z",
+      "note": "PLAN already done (existing change-id); --force bypassed complexity gate (LOC 1230>500, packages 6>4); proceeding to self-review"
+    },
+    {
+      "from": "PLAN_ITERATE",
+      "to": "PLAN_REVIEW",
+      "at": "2026-05-16T11:20:00Z",
+      "note": "5 parallel Explore agents found 34 findings; 6 fixes applied (3 web-server scenarios, 3 cli-interface scenarios, 2 design decisions, 6 new tasks, Task 2.2 wording). Contentious findings (rate limiting, backpressure, wp-web-cli split, mandatory auth) deferred to vendor consensus. openspec validate strict passes."
+    }
+  ],
+  "plan_iterate_findings": {
+    "total": 34,
+    "by_dimension": {
+      "completeness": 7,
+      "clarity_consistency": 7,
+      "feasibility_parallelizability": 5,
+      "testability": 8,
+      "security_performance": 7
+    },
+    "by_criticality": {
+      "critical_high": 5,
+      "medium": 12,
+      "low": 17
+    },
+    "fixed_in_iteration_1": [
+      "client_disconnect_scenario",
+      "empty_response_scenario",
+      "no_enabled_harness_scenario",
+      "no_default_role_scenario",
+      "unknown_harness_scenario",
+      "non_loopback_warning_scenario",
+      "msaf_task22_wording",
+      "error_redaction_d8_update",
+      "d12_auth_posture",
+      "d13_sse_starlette_trust"
+    ],
+    "deferred_to_plan_review": [
+      "wp_web_cli_split",
+      "rate_limiting",
+      "backpressure",
+      "mandatory_auth_middleware",
+      "input_length_validation",
+      "scenario_ids_vs_names",
+      "ag_ui_version_pin_in_spec"
+    ]
+  }
+}
