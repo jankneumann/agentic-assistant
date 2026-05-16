@@ -50,10 +50,10 @@
             { "type": "null" },
             {
               "type": "string",
-              "pattern": "^[A-Z][A-Za-z0-9_.]*$",
+              "pattern": "^(?:[a-z_][a-zA-Z0-9_]*\\.)*[A-Z][A-Za-z0-9_]*$",
               "minLength": 1,
               "maxLength": 128,
-              "description": "Exception class name only (per D8 redaction rule). Pattern matches a Python class identifier with optional dotted qualifier (e.g., 'RuntimeError', 'asyncio.CancelledError'). MUST NOT contain message body, traceback, or wrapped-exception detail."
+              "description": "Exception class name only (per D8 redaction rule). Pattern matches a Python class identifier with optional dotted module qualifier — lowercase or underscore-leading module segments followed by an uppercase-leading class name. Examples: 'RuntimeError', 'asyncio.CancelledError', 'agent_framework.QuotaError'. MUST NOT contain message body, traceback, or wrapped-exception detail."
             }
           ],
           "description": "Null on success. On failure: exception class name only — never the message body."

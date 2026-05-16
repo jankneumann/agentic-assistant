@@ -8,9 +8,9 @@ returns a `text/event-stream` response containing AG-UI events
 produced by the active harness for that user message. The endpoint
 SHALL stream events as they are produced (no full-response
 buffering) and SHALL set `Content-Type: text/event-stream` on the
-response. The endpoint SHALL emit events using the SSE framing
-specified by RFC 8895, with each AG-UI event serialized as JSON on a
-single `data:` line.
+response. The endpoint SHALL emit events using the standard SSE
+framing (WHATWG HTML Living Standard, EventSource specification), with
+each AG-UI event serialized as JSON on a single `data:` line.
 
 #### Scenario: POST /chat returns text/event-stream content type
 
@@ -56,21 +56,24 @@ single `data:` line.
 - **AND** the `Content-Type` response header MUST be
   `application/problem+json`
 
-#### Scenario: Endpoint emits RUN_FINISHED with error when harness fails
+#### Scenario: Endpoint emits RUN_ERROR when harness fails
 
 - **WHEN** the harness's `astream_invoke` follows the two-phase D8
-  contract (yields terminal `RunFinished(error="RuntimeError")` and
-  then re-raises the original `RuntimeError`)
-- **THEN** the response stream MUST emit a terminal `RUN_FINISHED`
-  AG-UI event with `error == "RuntimeError"` (the class name only,
-  matching the harness's Phase 1 yield)
+  contract (yields terminal internal `RunFinished(error="RuntimeError")`
+  and then re-raises the original `RuntimeError`)
+- **THEN** the response stream MUST emit a terminal AG-UI `RUN_ERROR`
+  event with `message == "RuntimeError"` and `code == "RuntimeError"`
+  (NOT a `RUN_FINISHED` event with an error field — the upstream
+  `ag_ui.core.RunFinishedEvent` shape has no error field; failures
+  map to `RunErrorEvent`)
 - **AND** the stream MUST close cleanly without leaving the SSE
   response half-open (the mapper absorbs the Phase 2 re-raised
   exception per design.md D8)
-- **AND** the `error` field value MUST be the exception class name
-  only — not the exception message body — to prevent leakage of file
-  paths, stack frames, or secret-bearing exception text to the client
-  (full traceback is logged server-side at ERROR level)
+- **AND** the `message` and `code` field values MUST be the exception
+  class name only — not the exception message body — to prevent
+  leakage of file paths, stack frames, or secret-bearing exception
+  text to the client (full traceback is logged server-side via
+  `@traced_harness` at ERROR level)
 
 #### Scenario: Client disconnect during streaming cancels the harness
 

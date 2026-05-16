@@ -1,0 +1,46 @@
+{
+  "findings": [
+    {
+      "id": "harness-ag-ui-bridge-r2.1",
+      "type": "spec_contradiction",
+      "criticality": "critical",
+      "description": "The regex pattern `^[A-Z][A-Za-z0-9_.]*$` for the error field in both harness-event.schema.json and ag-ui-events.schema.json (and mentioned in design.md D8) requires an uppercase starting character. This contradicts the provided example `asyncio.CancelledError` and prevents valid dotted Python exception names where the module name (e.g., 'asyncio', 'openai', 'json') starts with a lowercase letter.",
+      "disposition": "fix",
+      "axis": "validity",
+      "severity": "error",
+      "reviewer_vendor": "gemini-2.0-flash-001",
+      "resolution": "Update the pattern to `^[A-Za-z][A-Za-z0-9_.]*$` in openspec/changes/harness-ag-ui-bridge/contracts/events/harness-event.schema.json, openspec/changes/harness-ag-ui-bridge/contracts/events/ag-ui-events.schema.json, and the redaction rule description in openspec/changes/harness-ag-ui-bridge/design.md D8 to allow lowercase starting characters in dotted qualifiers."
+    },
+    {
+      "id": "harness-ag-ui-bridge-r2.2",
+      "type": "invalid_logic",
+      "criticality": "low",
+      "description": "Design decision D8 states that exceptions are recorded 'via the FastAPI exception logger', but also requires the mapper to 'absorb the re-raise'. If the mapper absorbs the exception within the endpoint handler, the exception will not propagate to FastAPI's top-level exception handler/logger. Observability is still preserved via @traced_harness, but the claim about the FastAPI logger is technically inconsistent with the absorption requirement.",
+      "disposition": "fix",
+      "axis": "consistency",
+      "severity": "warning",
+      "reviewer_vendor": "gemini-2.0-flash-001",
+      "resolution": "Clarify in design.md D8 that exceptions are recorded primarily via the @traced_harness decorator and internal logging within the mapper, acknowledging that absorption prevents them from reaching the global FastAPI exception logger."
+    },
+    {
+      "id": "harness-ag-ui-bridge-r2.3",
+      "type": "naming_violation",
+      "criticality": "low",
+      "description": "The ToolCallStart variant in ag-ui-events.schema.json uses the property name `toolCallName`, whereas the internal HarnessEvent.ToolCallStart variant uses `tool_name`. While acceptable for protocol translation, the ag-ui-emitter spec scenarios also use `toolCallName`, which deviates from the upstream AG-UI v0.x protocol's more common use of `name` for the tool name property.",
+      "disposition": "accept",
+      "axis": "consistency",
+      "severity": "info",
+      "reviewer_vendor": "gemini-2.0-flash-001"
+    },
+    {
+      "id": "harness-ag-ui-bridge-r2.4",
+      "type": "contract_mismatch",
+      "criticality": "low",
+      "description": "The ChatRequest.message maxLength of 32768 is documented in design.md D12 as being for 'memory use' but the OpenAPI contract doesn't explicitly mention that this limit is in characters rather than bytes. In Python/FastAPI this will be interpreted as characters, which is correct for strings but should be noted given the memory-bounding rationale.",
+      "disposition": "accept",
+      "axis": "clarity",
+      "severity": "info",
+      "reviewer_vendor": "gemini-2.0-flash-001"
+    }
+  ]
+}
