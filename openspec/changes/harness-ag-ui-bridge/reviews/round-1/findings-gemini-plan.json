@@ -1,0 +1,89 @@
+{
+  "findings": [
+    {
+      "id": "harness-ag-ui-bridge.1",
+      "type": "contract",
+      "criticality": "critical",
+      "description": "The map_harness_to_ag_ui function signature in the emitter spec and tasks omits the thread_id argument, which is required to populate the mandatory threadId field in AG-UI events.",
+      "disposition": "fix",
+      "axis": "contract",
+      "severity": "critical",
+      "reviewer_vendor": "gemini-2.0-flash-thinking-exp",
+      "resolution": "Update the map_harness_to_ag_ui signature in openspec/changes/harness-ag-ui-bridge/specs/ag-ui-emitter/spec.md and Task 4.6 in tasks.md to: async def map_harness_to_ag_ui(stream: AsyncIterator[HarnessEvent], thread_id: str) -> AsyncIterator[AGUIEvent]. Ensure the mapper scenarios reflect that the provided thread_id is used for RUN_STARTED and RUN_FINISHED events."
+    },
+    {
+      "id": "harness-ag-ui-bridge.2",
+      "type": "security",
+      "criticality": "high",
+      "description": "ChatRequest.message lacks a maxLength constraint in the OpenAPI contract, which is a standard security gap even for local-trust v1 deployments.",
+      "disposition": "fix",
+      "axis": "security",
+      "severity": "high",
+      "reviewer_vendor": "gemini-2.0-flash-thinking-exp",
+      "resolution": "Add maxLength: 100000 to the message property of the ChatRequest schema in openspec/changes/harness-ag-ui-bridge/contracts/openapi/v1.yaml. This provides a sensible upper bound (approx 100k characters) for v1 inputs."
+    },
+    {
+      "id": "harness-ag-ui-bridge.3",
+      "type": "work-package",
+      "criticality": "medium",
+      "description": "The wp-web-cli work package is overweight, covering both the FastAPI application and the CLI subcommand across 18 tasks and multiple logical layers.",
+      "disposition": "fix",
+      "axis": "work-package",
+      "severity": "medium",
+      "reviewer_vendor": "gemini-2.0-flash-thinking-exp",
+      "resolution": "Split wp-web-cli into two packages: wp-web (covering tasks 5.1\u20135.10, locking src/assistant/web, priority 3) and wp-cli-serve (covering tasks 6.1\u20136.8, locking src/assistant/cli.py, priority 4, depending on wp-web). Update wp-integration to depend on wp-cli-serve."
+    },
+    {
+      "id": "harness-ag-ui-bridge.4",
+      "type": "contract",
+      "criticality": "high",
+      "description": "The JSON schemas for HarnessEvent and AGUIEvent describe the error field inconsistently with the redaction rule established in design decision D8.",
+      "disposition": "fix",
+      "axis": "contract",
+      "severity": "high",
+      "reviewer_vendor": "gemini-2.0-flash-thinking-exp",
+      "resolution": "Update the description of the error property in openspec/changes/harness-ag-ui-bridge/contracts/events/harness-event.schema.json (RunFinished definition) and openspec/changes/harness-ag-ui-bridge/contracts/events/ag-ui-events.schema.json (RunFinished definition) to explicitly state: 'MUST be the exception class name only (e.g., RuntimeError) per the redaction rule in D8'."
+    },
+    {
+      "id": "harness-ag-ui-bridge.5",
+      "type": "specification",
+      "criticality": "low",
+      "description": "Spec scenarios lack stable IDs, which degrades test traceability as the project grows.",
+      "disposition": "fix",
+      "axis": "specification",
+      "severity": "low",
+      "reviewer_vendor": "gemini-2.0-flash-thinking-exp",
+      "resolution": "Assign stable scenario IDs (e.g., #### Scenario [web-server.1]: ...) to all scenarios in the added spec deltas, following the project's emergent convention for structured testing."
+    },
+    {
+      "id": "harness-ag-ui-bridge.6",
+      "type": "performance",
+      "criticality": "low",
+      "description": "Rate limiting is correctly omitted for the v1 local-trust single-user scope.",
+      "disposition": "accept",
+      "axis": "performance",
+      "severity": "low",
+      "reviewer_vendor": "gemini-2.0-flash-thinking-exp"
+    },
+    {
+      "id": "harness-ag-ui-bridge.7",
+      "type": "resilience",
+      "criticality": "low",
+      "description": "Trusting sse-starlette for backpressure and disconnect detection is sufficient for the v1 local-bridge scope.",
+      "disposition": "accept",
+      "axis": "resilience",
+      "severity": "low",
+      "reviewer_vendor": "gemini-2.0-flash-thinking-exp"
+    },
+    {
+      "id": "harness-ag-ui-bridge.8",
+      "type": "security",
+      "criticality": "low",
+      "description": "The warn-not-refuse posture for non-loopback binding is appropriate for v1 utility while maintaining visibility of the security posture.",
+      "disposition": "accept",
+      "axis": "security",
+      "severity": "low",
+      "reviewer_vendor": "gemini-2.0-flash-thinking-exp"
+    }
+  ]
+}

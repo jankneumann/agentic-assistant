@@ -20,14 +20,20 @@ single `data:` line.
 - **AND** the `Content-Type` response header MUST start with
   `text/event-stream`
 
-#### Scenario: Response body contains AG-UI events
+#### Scenario: Response body contains a well-formed AG-UI event stream
 
 - **WHEN** a client POSTs `{"message": "hello"}` to `/chat` against a
-  fake harness that yields one `TextDelta("hi")` then `RunFinished`
-- **THEN** the response body MUST contain at least one `data:` line
-  whose JSON payload has `type == "RUN_STARTED"`
-- **AND** at least one `data:` line whose JSON payload has
-  `type == "TEXT_MESSAGE_CONTENT"` and `delta == "hi"`
+  fake harness that yields `RunStarted`, one `TextDelta("hi")`, then
+  `RunFinished`
+- **THEN** the response body MUST contain (in order) a `data:` line
+  with `type == "RUN_STARTED"`
+- **AND** a `data:` line with `type == "TEXT_MESSAGE_START"` and a
+  `messageId` matching the harness's emitted `message_id`
+- **AND** a `data:` line with `type == "TEXT_MESSAGE_CONTENT"`,
+  `delta == "hi"`, and the same `messageId`
+- **AND** a `data:` line with `type == "TEXT_MESSAGE_END"` and the
+  same `messageId` (the mapper's bracketing requirement is preserved
+  end-to-end through the SSE response)
 - **AND** the last `data:` line MUST have `type == "RUN_FINISHED"`
 
 #### Scenario: Endpoint rejects non-JSON or malformed request bodies
@@ -36,18 +42,35 @@ single `data:` line.
   without a `message` field, to `/chat`
 - **THEN** the response status MUST be `422`
 - **AND** the response body MUST NOT begin streaming SSE events
+- **AND** the `Content-Type` response header MUST be
+  `application/problem+json` (RFC 7807), produced by the app's custom
+  `RequestValidationError` exception handler
+
+#### Scenario: Endpoint rejects messages exceeding the maxLength bound
+
+- **WHEN** a client POSTs `{"message": "<32769 characters>"}` to
+  `/chat` (one byte over the OpenAPI `maxLength: 32768` cap)
+- **THEN** the response status MUST be `422`
+- **AND** the harness's `astream_invoke` MUST NOT be invoked (the
+  validation MUST happen before any harness work begins)
+- **AND** the `Content-Type` response header MUST be
+  `application/problem+json`
 
 #### Scenario: Endpoint emits RUN_FINISHED with error when harness fails
 
-- **WHEN** the harness's `astream_invoke` raises `RuntimeError`
+- **WHEN** the harness's `astream_invoke` follows the two-phase D8
+  contract (yields terminal `RunFinished(error="RuntimeError")` and
+  then re-raises the original `RuntimeError`)
 - **THEN** the response stream MUST emit a terminal `RUN_FINISHED`
-  event with the `error` field populated
+  AG-UI event with `error == "RuntimeError"` (the class name only,
+  matching the harness's Phase 1 yield)
 - **AND** the stream MUST close cleanly without leaving the SSE
-  response half-open
+  response half-open (the mapper absorbs the Phase 2 re-raised
+  exception per design.md D8)
 - **AND** the `error` field value MUST be the exception class name
-  only (e.g., `"RuntimeError"`) — not the exception message body —
-  to prevent leakage of file paths, stack frames, or secret-bearing
-  exception text to the client (full traceback is server-side logs only)
+  only — not the exception message body — to prevent leakage of file
+  paths, stack frames, or secret-bearing exception text to the client
+  (full traceback is logged server-side at ERROR level)
 
 #### Scenario: Client disconnect during streaming cancels the harness
 

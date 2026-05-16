@@ -76,11 +76,32 @@ paths:
                     data: {"type":"RUN_FINISHED","threadId":"t-abc","runId":"r-001"}
 
         "422":
-          description: Request body invalid (e.g., not JSON or missing `message`).
+          description: |
+            Request body invalid (e.g., not JSON, missing `message`,
+            message length below `minLength` or above `maxLength`).
+            The server registers a custom
+            `RequestValidationError` exception handler that converts
+            FastAPI's default validation-error shape to RFC 7807
+            `Problem` JSON for consistency with the rest of the API.
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+              examples:
+                missing_field:
+                  summary: Required field missing
+                  value:
+                    type: "about:blank"
+                    title: "Unprocessable Entity"
+                    status: 422
+                    detail: "Field required: message"
+                oversize_message:
+                  summary: message exceeds maxLength
+                  value:
+                    type: "about:blank"
+                    title: "Unprocessable Entity"
+                    status: 422
+                    detail: "String should have at most 32768 characters"
 
   /health:
     get:
@@ -113,7 +134,13 @@ components:
         message:
           type: string
           minLength: 1
-          description: User message text to send to the bound persona+role.
+          maxLength: 32768
+          description: |
+            User message text to send to the bound persona+role.
+            Capped at 32 KiB (32768 chars) even in single-user
+            local-trust mode to bound memory use from accidental
+            very-large pastes; oversize bodies are rejected with
+            HTTP 422 before any harness invocation.
       example:
         message: "Explain Python decorators"
 

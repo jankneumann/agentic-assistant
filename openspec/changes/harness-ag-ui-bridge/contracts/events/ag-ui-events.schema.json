@@ -38,8 +38,16 @@
         "threadId": { "type": "string", "minLength": 1 },
         "runId": { "type": "string", "minLength": 1 },
         "error": {
-          "description": "When present and non-null, the run failed. Carries at minimum the exception class name.",
-          "type": ["string", "null"]
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "string",
+              "pattern": "^[A-Z][A-Za-z0-9_.]*$",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          ],
+          "description": "When non-null, the run failed (Phase 1 of design.md D8). MUST be the exception class name only (Python identifier with optional dotted qualifier) — never the message body, traceback, or wrapped-exception detail."
         }
       },
       "examples": [

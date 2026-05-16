@@ -13,8 +13,8 @@
   **Design decisions**: D1
   **Dependencies**: 1.1
 
-- [ ] 1.3 Implement `src/assistant/transports/ag_ui/events.py`
-  **Goal**: Define `HarnessEvent` discriminated union (Pydantic) with the 6 variants: RunStarted, RunFinished, TextDelta, ToolCallStart, ToolCallArgs, ToolCallEnd. Field names must be harness-agnostic and protocol-agnostic per D1.
+- [ ] 1.3 Implement `src/assistant/harnesses/sdk/events.py`
+  **Goal**: Define `HarnessEvent` discriminated union (Pydantic) with the 6 variants: RunStarted, RunFinished, TextDelta, ToolCallStart, ToolCallArgs, ToolCallEnd. Field names must be harness-agnostic and protocol-agnostic per D1. Module lives in the harness layer (not transports/) so concrete harnesses can construct events without importing upward into transports/ — preserves D6 import-direction rule. The `RunFinished.error` field MUST match the class-name-only pattern per D8.
   **Dependencies**: 1.2
 
 - [ ] 1.4 Add runtime + dev dependencies to `pyproject.toml`
@@ -101,8 +101,8 @@ Added during plan revision after confirming MSAF is fully implemented (per the e
   **Design decisions**: D8, D11
   **Dependencies**: 2.2
 
-- [ ] 3b.6 Write tests for `@traced_harness` on MSAF streaming path
-  **Spec scenarios**: harness-adapter "MSAF astream_invoke applies @traced_harness"
+- [ ] 3b.6 Write tests for `@traced_harness` on MSAF streaming path (success + exception)
+  **Spec scenarios**: harness-adapter "MSAF astream_invoke applies @traced_harness", "MSAF astream_invoke is traced on exception"
   **Design decisions**: D9
   **Dependencies**: 2.4
 
@@ -118,8 +118,8 @@ Added during plan revision after confirming MSAF is fully implemented (per the e
   **Design decisions**: D5
   **Dependencies**: 1.3
 
-- [ ] 4.2 Write tests for HarnessEvent → AG-UI event mapping
-  **Spec scenarios**: ag-ui-emitter "RunStarted maps to RUN_STARTED", "TextDelta maps to TEXT_MESSAGE_CONTENT framed by START/END", "Tool call lifecycle maps to TOOL_CALL_* events", "RunFinished maps to RUN_FINISHED"
+- [ ] 4.2 Write tests for HarnessEvent → AG-UI event mapping (with thread_id propagation)
+  **Spec scenarios**: ag-ui-emitter "RunStarted maps to RUN_STARTED with thread_id", "Mapper rejects empty thread_id", "TextDelta maps to TEXT_MESSAGE_CONTENT framed by START/END", "Tool call lifecycle maps to TOOL_CALL_* events", "RunFinished maps to RUN_FINISHED with thread_id"
   **Contracts**: contracts/events/ag-ui-events.schema.json, contracts/events/harness-event.schema.json
   **Design decisions**: D1, D6
   **Dependencies**: 1.3
@@ -129,8 +129,8 @@ Added during plan revision after confirming MSAF is fully implemented (per the e
   **Design decisions**: D1
   **Dependencies**: 1.3
 
-- [ ] 4.4 Write tests for error mapping to terminal RUN_FINISHED
-  **Spec scenarios**: ag-ui-emitter "Harness exception surfaces as RUN_FINISHED with error", "RunFinished with error field is forwarded faithfully"
+- [ ] 4.4 Write tests for error mapping to terminal RUN_FINISHED (two-phase D8 contract)
+  **Spec scenarios**: ag-ui-emitter "Harness exception surfaces as RUN_FINISHED with class-name-only error", "Mapper does not synthesize on raw raise"
   **Design decisions**: D8
   **Dependencies**: 1.3
 
@@ -140,7 +140,7 @@ Added during plan revision after confirming MSAF is fully implemented (per the e
   **Dependencies**: 1.1, 4.1
 
 - [ ] 4.6 Implement `src/assistant/transports/ag_ui/mapper.py`
-  **Goal**: `async def map_harness_to_ag_ui(stream: AsyncIterator[HarnessEvent]) -> AsyncIterator[AGUIEvent]`. Streaming, deterministic, no full-stream buffering. Owns the TEXT_MESSAGE_START/END and TOOL_CALL_START/END bracketing logic per the ordering invariants.
+  **Goal**: `async def map_harness_to_ag_ui(stream: AsyncIterator[HarnessEvent], *, thread_id: str) -> AsyncIterator[AGUIEvent]`. Streaming, deterministic, no full-stream buffering. The `thread_id` is required keyword-only and populates the `threadId` field on every emitted `RUN_STARTED`/`RUN_FINISHED`. Raises `ValueError` on empty `thread_id`. Owns the TEXT_MESSAGE_START/END and TOOL_CALL_START/END bracketing logic. Implements two-phase D8 error handling: on receiving terminal `RunFinished(error=...)`, emits one `RUN_FINISHED` then catches/absorbs any subsequent re-raised exception from upstream (no synthetic events, no propagation).
   **Dependencies**: 4.2, 4.3, 4.4, 4.5
 
 ## 5. FastAPI Application + SSE Endpoint
@@ -151,20 +151,32 @@ Added during plan revision after confirming MSAF is fully implemented (per the e
   **Design decisions**: D2, D6
   **Dependencies**: 1.4
 
-- [ ] 5.2 Write tests for `/chat` response body containing AG-UI events
-  **Spec scenarios**: web-server "Response body contains AG-UI events"
+- [ ] 5.2 Write tests for `/chat` response body containing AG-UI events (full lifecycle bracketing)
+  **Spec scenarios**: web-server "Response body contains a well-formed AG-UI event stream"
   **Contracts**: contracts/openapi/v1.yaml, contracts/events/ag-ui-events.schema.json
   **Design decisions**: D2, D7
   **Dependencies**: 1.4
 
-- [ ] 5.3 Write tests for request validation (422 on malformed bodies)
+- [ ] 5.3 Write tests for request validation (422 on malformed bodies, RFC 7807 shape)
   **Spec scenarios**: web-server "Endpoint rejects non-JSON or malformed request bodies"
   **Contracts**: contracts/openapi/v1.yaml
   **Dependencies**: 1.4
 
-- [ ] 5.4 Write tests for harness-error path emitting terminal RUN_FINISHED (with class-name-only error redaction)
+- [ ] 5.3b Write tests for message length validation (oversize → 422)
+  **Goal**: Assert that a body with `message` of 32769 characters yields HTTP 422 with `Content-Type: application/problem+json`, and that the harness's `astream_invoke` is never called for that request.
+  **Spec scenarios**: web-server "Endpoint rejects messages exceeding the maxLength bound"
+  **Contracts**: contracts/openapi/v1.yaml (`ChatRequest.message.maxLength`)
+  **Dependencies**: 1.4
+
+- [ ] 5.3c Implement custom `RequestValidationError` exception handler in `src/assistant/web/app.py`
+  **Goal**: Register an `app.exception_handler(RequestValidationError)` that converts FastAPI's default validation-error payload into RFC 7807 `Problem` JSON with `Content-Type: application/problem+json`, matching the OpenAPI 422 contract. Include the first validation error's `msg` in `detail`. The handler MUST NOT leak field paths beyond the request body schema (no internal stack data).
+  **Spec scenarios**: web-server "Endpoint rejects non-JSON or malformed request bodies", "Endpoint rejects messages exceeding the maxLength bound"
+  **Dependencies**: 5.3, 5.3b
+
+- [ ] 5.4 Write tests for harness-error path emitting terminal RUN_FINISHED (two-phase D8 contract)
+  **Goal**: Fake harness yields terminal `RunFinished(error="RuntimeError")` then re-raises `RuntimeError("quota exceeded")`. Assert the response stream contains exactly one `RUN_FINISHED` with `error == "RuntimeError"` (class name only), that no further events follow, and that the response generator returns cleanly (the mapper absorbs the re-raised exception per D8).
   **Spec scenarios**: web-server "Endpoint emits RUN_FINISHED with error when harness fails"
-  **Design decisions**: D8 (redaction rule)
+  **Design decisions**: D8 (two-phase contract, redaction rule)
   **Dependencies**: 4.6
 
 - [ ] 5.4b Write tests for client disconnect during streaming
@@ -205,7 +217,7 @@ Added during plan revision after confirming MSAF is fully implemented (per the e
   **Dependencies**: 5.5, 5.6, 5.7
 
 - [ ] 5.10 Implement `src/assistant/web/routes.py` — `/chat` (SSE) and `/health` (JSON)
-  **Goal**: `/chat` calls `app.state.harness.astream_invoke(...)`, pipes through `map_harness_to_ag_ui`, serves as SSE via `sse-starlette`. `/health` returns persona/role/harness identity without touching the harness.
+  **Goal**: `/chat` calls `app.state.harness.astream_invoke(...)`, pipes through `map_harness_to_ag_ui(stream, thread_id=app.state.harness._thread_id)` (passing the bound harness's thread_id keyword-only per the updated mapper signature — this is how the AG-UI `threadId` field gets populated per design.md D4), serves as SSE via `sse-starlette`. `/health` returns persona/role/harness identity without touching the harness.
   **Dependencies**: 5.1, 5.2, 5.3, 5.4, 5.8, 5.9, 4.6, 3.6
 
 ## 6. CLI serve Subcommand

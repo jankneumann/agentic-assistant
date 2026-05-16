@@ -28,19 +28,32 @@ shape with the fields required by that protocol for the event type.
 ### Requirement: HarnessEvent to AG-UI Event Mapping
 
 The system SHALL provide a `map_harness_to_ag_ui(stream:
-AsyncIterator[HarnessEvent]) -> AsyncIterator[AGUIEvent]` async
-function in `src/assistant/transports/ag_ui/mapper.py` that consumes
-a stream of `HarnessEvent` instances and yields AG-UI protocol
-events. The mapping SHALL be deterministic and the emitter SHALL NOT
-buffer the entire stream before emitting.
+AsyncIterator[HarnessEvent], *, thread_id: str) -> AsyncIterator[AGUIEvent]`
+async function in `src/assistant/transports/ag_ui/mapper.py` that
+consumes a stream of `HarnessEvent` instances and yields AG-UI
+protocol events. The `thread_id` keyword-only argument MUST be passed
+on every call and MUST be a non-empty string; the mapper SHALL populate
+the `threadId` field (required by AG-UI v0.x) on every emitted
+`RUN_STARTED` and `RUN_FINISHED` event using this value. The mapping
+SHALL be deterministic and the emitter SHALL NOT buffer the entire
+stream before emitting.
 
-#### Scenario: RunStarted maps to RUN_STARTED
+#### Scenario: RunStarted maps to RUN_STARTED with thread_id
 
 - **WHEN** a `RunStarted(run_id="r1", started_at=...)` harness event
-  is fed into the mapper
+  is fed into the mapper called with `thread_id="t-abc"`
 - **THEN** the first AG-UI event yielded MUST have
   `type == "RUN_STARTED"`
 - **AND** `runId == "r1"`
+- **AND** `threadId == "t-abc"`
+
+#### Scenario: Mapper rejects empty thread_id
+
+- **WHEN** `map_harness_to_ag_ui` is called with `thread_id=""` (empty
+  string) or `thread_id=None`
+- **THEN** the mapper MUST raise `ValueError` before consuming the
+  first harness event
+- **AND** the error message MUST identify `thread_id` as the cause
 
 #### Scenario: TextDelta maps to TEXT_MESSAGE_CONTENT framed by START/END
 
@@ -66,12 +79,13 @@ buffer the entire stream before emitting.
   payloads
 - **AND** one `TOOL_CALL_END` with `toolCallId="c1"`
 
-#### Scenario: RunFinished maps to RUN_FINISHED
+#### Scenario: RunFinished maps to RUN_FINISHED with thread_id
 
 - **WHEN** a `RunFinished(run_id="r1", error=None)` event is the last
-  harness event in the stream
+  harness event in the stream and the mapper was called with
+  `thread_id="t-abc"`
 - **THEN** the last AG-UI event yielded MUST have
-  `type == "RUN_FINISHED"` and `runId == "r1"`
+  `type == "RUN_FINISHED"`, `runId == "r1"`, and `threadId == "t-abc"`
 
 ### Requirement: Run Lifecycle Event Ordering
 
@@ -108,27 +122,39 @@ is followed by zero or more `TOOL_CALL_ARGS` and exactly one
 
 ### Requirement: Error Mapping in v1
 
-The AG-UI emitter SHALL surface harness errors as a terminal
-`RUN_FINISHED` event with the `error` field populated (matching AG-UI
-v0.x error semantics), after which the iterator SHALL close cleanly
-and MUST NOT emit any further events. This error-mapping behavior
-SHALL apply both when the harness event stream raises an exception
-mid-stream and when it yields a `RunFinished` event whose `error`
-field is non-empty.
+The AG-UI emitter SHALL surface harness errors using the two-phase
+error contract defined in design.md D8: the harness yields a terminal
+`RunFinished(error=<class_name>)` event AND then re-raises the
+original exception. The mapper SHALL emit exactly one terminal
+`RUN_FINISHED` AG-UI event derived from the yielded `RunFinished`,
+SHALL absorb the re-raised exception (catching it and terminating the
+generator cleanly), and MUST NOT synthesize an additional
+`RUN_FINISHED` event of its own when the upstream iterator raises.
+The value placed in the AG-UI `error` field SHALL be the exception
+class name only (e.g., `"RuntimeError"`) — the mapper MUST NOT
+forward any exception message body, stack-frame data, or wrapped-
+exception detail. After the terminal `RUN_FINISHED` the iterator
+SHALL close cleanly and MUST NOT emit any further events.
 
-#### Scenario: Harness exception surfaces as RUN_FINISHED with error
+#### Scenario: Harness exception surfaces as RUN_FINISHED with class-name-only error
 
-- **WHEN** the harness stream raises `RuntimeError("quota exceeded")`
-  mid-stream
-- **THEN** the final AG-UI event MUST be `RUN_FINISHED` with an
-  `error` field whose value identifies the exception (at minimum the
-  exception class name)
+- **WHEN** the harness yields `RunFinished(run_id="r1",
+  finished_at=..., error="RuntimeError")` as its final event AND then
+  re-raises the underlying `RuntimeError("quota exceeded")`
+- **THEN** the final AG-UI event yielded by the mapper MUST be
+  `RUN_FINISHED` with `error == "RuntimeError"` (the class name only,
+  no message body)
+- **AND** the mapper MUST absorb the re-raised exception (it MUST NOT
+  propagate to the caller of the mapper iterator)
 - **AND** no further events MUST be emitted after the terminal
   `RUN_FINISHED`
 
-#### Scenario: RunFinished with error field is forwarded faithfully
+#### Scenario: Mapper does not synthesize on raw raise
 
-- **WHEN** a `RunFinished(error="RuntimeError: quota exceeded")` is
-  the last harness event
-- **THEN** the emitted `RUN_FINISHED` AG-UI event MUST contain that
-  error string in its `error` field
+- **WHEN** a misbehaving harness raises `RuntimeError` mid-stream
+  WITHOUT first yielding a terminal `RunFinished` event
+- **THEN** the mapper MUST NOT synthesize a `RUN_FINISHED` event of
+  its own to cover the gap (the well-formed-stream contract is a
+  harness obligation, enforced by the harness-adapter spec)
+- **AND** the exception MUST propagate to the caller of the mapper
+  iterator so the bug is observable upstream

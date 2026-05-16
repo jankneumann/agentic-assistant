@@ -43,13 +43,15 @@ method, which remains callable by the CLI REPL.
 ### Requirement: HarnessEvent Discriminated Union
 
 The system SHALL define a `HarnessEvent` discriminated union at
-`src/assistant/transports/ag_ui/events.py` (or an equivalent location
-shared by harness and transport layers) with exactly six variants for
-v1: `RunStarted`, `RunFinished`, `TextDelta`, `ToolCallStart`,
-`ToolCallArgs`, and `ToolCallEnd`. Each variant MUST be a Pydantic
-model with a discriminator field. The field names MUST be
-harness-agnostic (no LangChain-specific terminology) and
-protocol-agnostic (no AG-UI-specific terminology).
+`src/assistant/harnesses/sdk/events.py` (next to the
+`SdkHarnessAdapter` base class, in the harness layer) with exactly
+six variants for v1: `RunStarted`, `RunFinished`, `TextDelta`,
+`ToolCallStart`, `ToolCallArgs`, and `ToolCallEnd`. Each variant MUST
+be a Pydantic model with a discriminator field. The field names MUST
+be harness-agnostic (no LangChain-specific terminology) and
+protocol-agnostic (no AG-UI-specific terminology). The module
+location preserves the D6 import-direction rule (the transports layer
+imports `HarnessEvent` from harnesses, never the reverse).
 
 #### Scenario: HarnessEvent variants are exhaustive for v1
 
@@ -81,6 +83,17 @@ protocol-agnostic (no AG-UI-specific terminology).
 - **THEN** the `call_id` field of every event in that sequence MUST
   equal `"c1"`
 - **AND** `ToolCallStart` MUST include a `tool_name` field
+
+#### Scenario: RunFinished.error field is class-name-only when populated
+
+- **WHEN** a `RunFinished` event is constructed with a non-null
+  `error` field (i.e., on failure)
+- **THEN** the `error` field value MUST be the original exception's
+  class name only (e.g., `"RuntimeError"`, `"PermissionError"`)
+- **AND** the value MUST NOT contain the exception message body,
+  any traceback, or any wrapped-exception detail
+- **AND** the value MUST match the pattern `^[A-Z][A-Za-z0-9_.]*$`
+  (Python class identifier with optional dotted qualifiers)
 
 ### Requirement: Deep Agents Streaming Invocation
 
@@ -128,14 +141,19 @@ exactly as `invoke` does.
   parses to the original arguments
 - **AND** a `ToolCallEnd` event with the same `call_id`
 
-#### Scenario: astream_invoke emits RunFinished with error on exception
+#### Scenario: astream_invoke emits RunFinished with error on exception (two-phase)
 
 - **WHEN** the underlying `agent.astream` raises
-  `RuntimeError("quota exceeded")`
+  `RuntimeError("quota exceeded")` mid-stream
 - **THEN** the harness MUST yield a terminal `RunFinished` event
-  whose `error` field is populated with the exception type name
-- **AND** the original `RuntimeError` MUST be wrapped or re-raised
-  in a way that lets the AG-UI emitter close the stream cleanly
+  whose `error` field equals the exception class name only
+  (e.g., `"RuntimeError"`) — Phase 1 of the two-phase error contract
+  (design.md D8)
+- **AND** the harness MUST then re-raise the original `RuntimeError`
+  unchanged after yielding the terminal event — Phase 2 of the
+  two-phase error contract
+- **AND** the harness MUST NOT yield any further events after the
+  terminal `RunFinished`
 
 ### Requirement: MS Agent Framework Streaming Invocation
 
@@ -190,14 +208,19 @@ break the harness contract.
   parses to the original arguments
 - **AND** a `ToolCallEnd` event with the same `call_id`
 
-#### Scenario: MSAF astream_invoke emits RunFinished with error on exception
+#### Scenario: MSAF astream_invoke emits RunFinished with error on exception (two-phase)
 
 - **WHEN** the underlying `agent.run(stream=True)` raises
-  `RuntimeError("quota exceeded")`
+  `RuntimeError("quota exceeded")` mid-stream
 - **THEN** the harness MUST yield a terminal `RunFinished` event
-  whose `error` field is populated with the exception type name
-- **AND** the original `RuntimeError` MUST be wrapped or re-raised
-  in a way that lets the AG-UI emitter close the stream cleanly
+  whose `error` field equals the exception class name only
+  (e.g., `"RuntimeError"`) — Phase 1 of the two-phase error contract
+  (design.md D8)
+- **AND** the harness MUST then re-raise the original `RuntimeError`
+  unchanged after yielding the terminal event — Phase 2 of the
+  two-phase error contract
+- **AND** the harness MUST NOT yield any further events after the
+  terminal `RunFinished`
 
 #### Scenario: MSAF astream_invoke applies @traced_harness
 
@@ -235,7 +258,17 @@ metadata field indicating `streaming=True`.
 #### Scenario: Deep Agents astream_invoke is traced on exception
 
 - **WHEN** the underlying `agent.astream` raises `RuntimeError` mid-stream
-  and the exception propagates out of `astream_invoke`
+  and the exception propagates out of `astream_invoke` (Phase 2 of D8)
+- **THEN** `trace_llm_call` MUST be called once with
+  `metadata={"streaming": True, "error": "RuntimeError"}`
+- **AND** the original `RuntimeError` MUST propagate to the caller
+  unchanged
+
+#### Scenario: MSAF astream_invoke is traced on exception
+
+- **WHEN** the underlying `agent.run(stream=True)` raises `RuntimeError`
+  mid-stream and the exception propagates out of `astream_invoke`
+  (Phase 2 of D8)
 - **THEN** `trace_llm_call` MUST be called once with
   `metadata={"streaming": True, "error": "RuntimeError"}`
 - **AND** the original `RuntimeError` MUST propagate to the caller
