@@ -38,7 +38,7 @@
     },
     "RunFinished": {
       "type": "object",
-      "description": "Marks the end of a harness invocation. MUST be the last event. If error is non-null, the run failed.",
+      "description": "Marks the end of a harness invocation. MUST be the last event. If error is non-null, the run failed (Phase 1 of the design.md D8 two-phase error contract).",
       "required": ["kind", "run_id", "finished_at"],
       "additionalProperties": false,
       "properties": {
@@ -46,8 +46,17 @@
         "run_id": { "type": "string", "minLength": 1 },
         "finished_at": { "type": "string", "format": "date-time" },
         "error": {
-          "type": ["string", "null"],
-          "description": "Exception class name (or short error message) when the run failed; null on success."
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "string",
+              "pattern": "^[A-Z][A-Za-z0-9_.]*$",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "Exception class name only (per D8 redaction rule). Pattern matches a Python class identifier with optional dotted qualifier (e.g., 'RuntimeError', 'asyncio.CancelledError'). MUST NOT contain message body, traceback, or wrapped-exception detail."
+            }
+          ],
+          "description": "Null on success. On failure: exception class name only — never the message body."
         }
       },
       "examples": [

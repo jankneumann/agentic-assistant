@@ -99,23 +99,28 @@ Resolved during plan revision (2026-05-16): the upstream `ag_ui` Python package 
 ### D6: Module boundary discipline
 
 ```
+src/assistant/harnesses/
+├── base.py                             # add abstract astream_invoke()
+├── sdk/
+│   ├── base.py                         # SdkHarnessAdapter (extends HarnessAdapter)
+│   ├── events.py                       # HarnessEvent discriminated union (6 variants)
+│   ├── deep_agents.py                  # implement astream_invoke()
+│   └── ms_agent_fw.py                  # implement astream_invoke()
+
 src/assistant/transports/ag_ui/        # transport-agnostic AG-UI mapper
 ├── __init__.py
-├── types.py                            # AG-UI event Pydantic models (or shim if PyPI package)
-├── events.py                           # HarnessEvent discriminated union
-└── mapper.py                           # map_harness_to_ag_ui(stream) -> AsyncIterator[AGUIEvent]
+├── types.py                            # AG-UI event Pydantic models (re-exported from ag_ui.core)
+└── mapper.py                           # map_harness_to_ag_ui(stream, *, thread_id) -> AsyncIterator[AGUIEvent]
 
 src/assistant/web/                      # HTTP-specific
 ├── __init__.py
 ├── app.py                              # FastAPI factory: make_app(persona, role, harness) -> FastAPI
 └── routes.py                           # /chat SSE endpoint handler
-
-src/assistant/harnesses/
-├── base.py                             # add abstract astream_invoke()
-└── sdk/deep_agents.py                  # implement astream_invoke()
 ```
 
-**Rule.** Nothing in `harnesses/` may import from `transports/` or `web/`. Nothing in `transports/ag_ui/` may import from `web/` or know about HTTP. Nothing in `web/` may import LangChain types directly — it only sees `AGUIEvent` from the transport layer. Enforced by code review for v1; could be enforced by `ruff` `isort` rules or `import-linter` later if useful.
+**Rule.** Imports flow strictly downward: `web/` → `transports/ag_ui/` → `harnesses/sdk/`. Nothing in `harnesses/` may import from `transports/` or `web/`. Nothing in `transports/ag_ui/` may import from `web/` or know about HTTP. Nothing in `web/` may import LangChain types directly — it only sees `AGUIEvent` from the transport layer.
+
+**`HarnessEvent` placement.** The discriminated union lives in `harnesses/sdk/events.py` rather than `transports/ag_ui/events.py` because the harnesses themselves *construct* `HarnessEvent` instances inside `astream_invoke()`. Placing it in the transport layer would force harness implementations to import upward into `transports/`, violating the import-direction rule. The transport layer imports `HarnessEvent` from the harness layer (the natural direction: transports consume what harnesses produce). Enforced by code review for v1; could be enforced by `ruff` `isort` rules or `import-linter` later if useful.
 
 ### D7: Testing strategy — three layers
 
@@ -125,15 +130,21 @@ src/assistant/harnesses/
 
 No end-to-end test against a real LLM in CI — that's reserved for manual `curl -N` smoke testing during validation (the success criterion in the proposal).
 
-### D8: Error mapping in v1 — emit RUN_FINISHED with redacted error, then close stream
+### D8: Error mapping in v1 — two-phase error contract, class-name-only redaction
 
-If the harness raises during `astream_invoke()`, the AG-UI emitter catches the exception, emits a `RUN_FINISHED` event with an `error` field populated, and closes the SSE stream cleanly (no further events). The HTTP layer also logs the exception with full traceback.
+When the harness encounters an exception during `astream_invoke()`, error semantics flow in **two distinct phases** that the harness, the mapper, the `@traced_harness` decorator, and the HTTP layer all observe:
 
-**Redaction rule.** The `error` field value sent to the client MUST be the exception's class name only (e.g., `"RuntimeError"`, `"PermissionError"`) — not the exception message body, not the traceback, not any nested-exception detail. The full exception (with traceback) is logged server-side at ERROR level for debugging. This redaction prevents leakage of file paths, environment-variable values, secret-bearing exception messages (e.g., a wrapped LangChain exception that included an API key fragment), and stack-frame implementation details.
+**Phase 1 — event stream.** The harness MUST yield a terminal `RunFinished(error=<ClassName>)` event before the generator terminates abnormally. This is the user-facing protocol-level error signal. The `error` field is populated with the exception's **class name only** (e.g., `"RuntimeError"`, `"PermissionError"`) — never the message body, never a traceback, never any nested-exception detail.
 
-**Rationale.** AG-UI v0.x has no dedicated error event in our minimal scope (D3 answer to Q3 excluded CUSTOM events). Stuffing the error into `RUN_FINISHED.error` keeps the stream well-formed and lets clients detect failure without protocol drift. The class-name-only redaction is the right balance between client observability ("something broke, and here is what kind") and server-side opacity ("but not the details").
+**Phase 2 — exception propagation.** Immediately after yielding the Phase 1 terminal event, the harness MUST re-raise the **original** exception unchanged (no wrapping, no message rewriting). The `@traced_harness` decorator catches it for observability (sets `metadata["error"]=ClassName`) and re-raises so the caller can take operational action (close connection, log full traceback server-side).
 
-**Forward path.** If AG-UI v1.x adds a dedicated error event type with structured error-category fields, we adopt that. Until then, class name is the canonical detail level.
+**Mapper behavior.** The AG-UI mapper, on receiving the Phase 1 terminal `RunFinished`, emits exactly one `RUN_FINISHED` AG-UI event with `error` field set to the same class name. When the upstream iterator subsequently raises (Phase 2), the mapper **catches and absorbs** the exception, MUST NOT emit any additional events, and terminates its own iterator cleanly. The SSE handler that consumes the mapper sees a clean end-of-stream after `RUN_FINISHED`. The exception is recorded server-side via `@traced_harness` and via the FastAPI exception logger; it does not escape the response generator.
+
+**Redaction rule (explicit).** The class-name pattern is `^[A-Z][A-Za-z0-9_.]*$` (Python class identifier with optional dotted qualifier). This redaction prevents leakage of file paths, environment-variable values, secret-bearing exception messages (e.g., a wrapped LangChain exception that included an API key fragment), and stack-frame implementation details. The full exception with traceback is logged server-side at ERROR level for debugging.
+
+**Rationale.** A single-phase model (only yield, never raise — or only raise, never yield) was rejected because each loses an essential property: yield-only leaves `@traced_harness` blind to the failure (it sees a normal generator return), while raise-only leaves the mapper synthesizing a terminal event it never directly produced, opening duplicate-event and event-ordering corner cases. The two-phase contract satisfies all four obligations simultaneously: well-formed AG-UI event stream, observable exception for tracing, no duplicate terminal events, no client leakage.
+
+**Forward path.** If AG-UI v1.x adds a dedicated error event type with structured error-category fields, we adopt that. Until then, class name in `RUN_FINISHED.error` is the canonical detail level.
 
 ### D9: Use the existing `@traced_harness` decorator on `astream_invoke()` too
 

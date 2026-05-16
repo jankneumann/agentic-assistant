@@ -173,3 +173,48 @@ To resume the autopilot run in a fresh session, run `/autopilot harness-ag-ui-br
 ### Reason for checkpoint
 
 The multi-vendor PLAN_REVIEW phase is heavy infrastructure: subprocess dispatch to claude, codex, and gemini CLIs; per-round wall time 5-15 minutes per vendor; up to 3 rounds; fix application and re-dispatch between rounds. Running it interactively followed by IMPLEMENT (potentially many hours), IMPL_ITERATE, IMPL_REVIEW, VALIDATE, and SUBMIT_PR would consume the entire remaining context window without producing reliable checkpoints. The loop-state.json mechanism exists precisely for this resumption pattern.
+
+---
+
+## Phase: Plan Review Round 1 (2026-05-16)
+
+**Agent**: claude_code (Opus 4.7 1M context) | **Session**: resumed-from-checkpoint
+
+### Decisions
+
+1. Vendor dispatch succeeded with full quorum. The review dispatcher invoked three local CLI vendors in parallel against the plan artifacts. Claude returned fourteen findings in five minutes sixteen seconds. Codex returned twelve findings in three minutes thirty-four seconds. Gemini returned eight findings in forty-five seconds. The synthesizer ran with quorum two and produced thirty-three unique findings after dedup: zero confirmed via algorithmic text-match, thirty-two single-vendor, one match-with-disagreement at medium severity.
+
+2. Cross-vendor thematic clustering identified two strong-consensus issues that the algorithmic matcher missed because each vendor phrased the same issue differently. Both were fixed inline. The first cluster is the thread underscore id provenance gap. Claude finding one and gemini finding twenty-six both flagged that the AG-UI events require threadId on RUN underscore STARTED and RUN underscore FINISHED but the mapper signature in the emitter spec has no thread underscore id parameter. The mapper signature was updated to require a keyword-only thread underscore id argument, and the web route implementation task was updated to pass the harness internal thread underscore id at call time.
+
+3. The second cluster is the error-handling contradiction across four artifacts. Claude finding two, codex findings sixteen and seventeen, and gemini finding twenty-nine collectively pointed at the same root cause: the harness-adapter spec says yield-and-reraise, the ag-ui-emitter spec says emitter synthesizes on raise, and the redaction rule was not consistently encoded. Resolved by writing the explicit two-phase error contract into design decision eight. Phase one is the event stream: the harness yields a terminal RunFinished with error equal to class name only. Phase two is exception propagation: the harness re-raises the original exception, the trace harness decorator captures it for observability, the mapper catches and absorbs the re-raised exception so no duplicate terminal event is emitted. All four affected spec files and both JSON schemas were brought into alignment with this single contract.
+
+4. Module-boundary contradiction fixed. Codex finding fifteen pointed out that placing HarnessEvent in transports forces harnesses to import upward, violating design decision six. The discriminated union was relocated to harnesses sdk events, which is the natural place for harness-produced types. Design decision six was rewritten to make the import-direction rule explicit: web depends on transports depends on harnesses, never the reverse.
+
+5. Message length validation added. Three vendors raised the missing maxLength on the chat request message field at varying criticality. The OpenAPI contract was updated to require maxLength of thirty-two thousand seven hundred sixty-eight characters, the web-server spec was given an oversize-message scenario asserting that the harness is never invoked on rejected requests, and a new task was added for the custom validation exception handler that converts FastAPI default error shape into RFC seventy-eight-oh-seven Problem JSON.
+
+6. Three additional medium polishings applied. The disagreement on START and END bracketing in the web-server response scenario was resolved in favor of the more thorough assertion: the scenario now requires TEXT_MESSAGE_START before content and TEXT_MESSAGE_END after, matching the mapper bracketing contract. The MSAF observability scenario was extended to cover the exception path parallel to the Deep Agents scenario. The OpenAPI 422 response was updated to acknowledge the custom RFC seventy-eight-oh-seven handler is required and the corresponding implementation task was added.
+
+### Alternatives Considered
+
+- Single-phase error model: rejected as part of decision three. Yield-only would leave the trace harness decorator blind to failure since the generator returns normally. Raise-only would force the mapper to synthesize its own terminal RUN_FINISHED, which creates duplicate-event and ordering risks. The two-phase split satisfies all four constraints simultaneously.
+
+- Move the HarnessEvent module instead of relaxing the import rule: rejected as the inverse. Keeping the union in transports and weakening the import direction would invite every future harness to depend on the transport layer, fragmenting the harness boundary.
+
+- Run round two before transitioning to IMPLEMENT: see decision in this round about confirming convergence. The autopilot contract calls for verification.
+
+### Trade-offs
+
+- Accepted larger spec surface in exchange for resolved contradiction. The harness-adapter spec, the ag-ui-emitter spec, the web-server spec, and the two JSON schemas all now reference the same two-phase contract by name. This duplication is intentional: the contract is the cross-cutting agreement and each consumer needs to know its slice of it.
+
+- Accepted single-vendor signal on module boundary over deferral. Only codex flagged the import-direction violation. The fix is small, the alternative is letting it surface during IMPLEMENT as a compile error, which would cost more time than fixing it now.
+
+- Accepted maxLength cap of thirty-two kilobytes. This is generous for chat and tight enough to bound accidental memory spikes. The single-user local-trust posture still applies; this is not a DoS-mitigation bound.
+
+### Open Questions
+
+- [ ] Should wp-web-cli be split into wp-web and wp-cli? Single-vendor signal only; deferred to a follow-up issue rather than restructuring work packages in this round.
+- [ ] Should the serve subcommand default --harness from persona config rather than literal deep_agents? Single-vendor signal; deferred to a follow-up issue. Current default is fine for the personal persona where deep_agents is the only enabled harness.
+
+### Context
+
+Round one dispatch completed cleanly: three vendors, three of three quorum, thirty-three unique findings after dedup. Inline fixes addressed all four high-impact themes (thread id flow, error contract, module boundary, message length) plus three medium polishings. Strict openspec validate passes after fixes. Round two will be dispatched next to verify convergence and surface anything new.

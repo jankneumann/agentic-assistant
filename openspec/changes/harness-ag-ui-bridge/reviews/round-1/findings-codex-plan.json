@@ -1,0 +1,181 @@
+{
+  "review_type": "plan",
+  "target": "harness-ag-ui-bridge",
+  "reviewer_vendor": "gpt-5-codex",
+  "findings": [
+    {
+      "id": 1,
+      "type": "architecture",
+      "criticality": "high",
+      "description": "The plan places `HarnessEvent` in `src/assistant/transports/ag_ui/events.py` while D6 simultaneously says nothing in `harnesses/` may import from `transports/`. Because both `SdkHarnessAdapter.astream_invoke` and concrete harness implementations must type and construct `HarnessEvent`, the written module-boundary rule is impossible to satisfy.",
+      "disposition": "fix",
+      "axis": "architecture_alignment",
+      "severity": "blocking",
+      "resolution": "Move `HarnessEvent` to a neutral harness/core contract module such as `src/assistant/harnesses/events.py` or `src/assistant/core/harness_events.py`, then update design.md, harness-adapter spec, tasks, contracts, and work-packages so harnesses import only that neutral contract and AG-UI imports it for mapping.",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/design.md",
+      "line_range": {
+        "start": 99,
+        "end": 118
+      }
+    },
+    {
+      "id": 2,
+      "type": "contract_mismatch",
+      "criticality": "high",
+      "description": "Failure-stream ownership is contradictory: harness specs require the harness to yield `RunFinished(error=...)` on exception and also re-raise/wrap the original exception, while the AG-UI emitter spec also emits terminal `RUN_FINISHED` when the harness stream raises. Implementing this literally can produce duplicate terminal events and unclear tracing semantics.",
+      "disposition": "fix",
+      "axis": "contract_consistency",
+      "severity": "blocking",
+      "resolution": "Choose one error owner. Recommended: harness implementations emit `RunStarted` and normal lifecycle events, but let underlying exceptions propagate after cleanup; the AG-UI emitter catches the exception once, emits exactly one redacted terminal `RUN_FINISHED`, and closes. Update DeepAgents/MSAF exception scenarios, D8/D11, emitter scenarios, and tasks to assert no duplicate terminal event.",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/specs/harness-adapter/spec.md",
+      "line_range": {
+        "start": 131,
+        "end": 200
+      }
+    },
+    {
+      "id": 3,
+      "type": "security",
+      "criticality": "high",
+      "description": "The class-name-only redaction rule is not consistently reflected in the contracts. `harness-event.schema.json` allows an exception class name or short error message, and the AG-UI emitter spec explicitly forwards `RuntimeError: quota exceeded` faithfully to the client, contradicting D8 and the web-server spec's no-message/no-traceback requirement.",
+      "disposition": "fix",
+      "axis": "security",
+      "severity": "blocking",
+      "resolution": "Make client-visible error payloads class-name-only across all artifacts. Remove `or short error message` from the HarnessEvent schema, replace the AG-UI emitter `RunFinished(error=\"RuntimeError: quota exceeded\")` scenario with `RunFinished(error=\"RuntimeError\")`, and state that any exception-derived error string forwarded to AG-UI must already be redacted or must be redacted by the emitter.",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/specs/ag-ui-emitter/spec.md",
+      "line_range": {
+        "start": 109,
+        "end": 134
+      }
+    },
+    {
+      "id": 4,
+      "type": "contract_mismatch",
+      "criticality": "medium",
+      "description": "The OpenAPI contract declares 422 responses as `application/problem+json` with an RFC 7807 `Problem` schema, but the plan otherwise relies on ordinary FastAPI request validation, which defaults to `application/json` with FastAPI's validation-error shape unless a custom exception handler is added.",
+      "disposition": "fix",
+      "axis": "contract_consistency",
+      "severity": "blocking",
+      "resolution": "Either add a web-server requirement/task for a FastAPI validation exception handler that returns RFC 7807 `application/problem+json`, or change the OpenAPI 422 response to FastAPI's default validation-error response shape and content type.",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/contracts/openapi/v1.yaml",
+      "line_range": {
+        "start": 78,
+        "end": 83
+      }
+    },
+    {
+      "id": 5,
+      "type": "performance",
+      "criticality": "medium",
+      "description": "`ChatRequest.message` has `minLength: 1` but no upper bound. Even in single-user local-trust mode, an accidental very large paste can force unnecessary request-body memory use and downstream LLM/harness work before any validation boundary rejects it.",
+      "disposition": "fix",
+      "axis": "performance",
+      "severity": "blocking",
+      "resolution": "Add `maxLength: 65536` to `ChatRequest.message` in OpenAPI and add a web-server scenario/task asserting that over-limit messages return 422 before SSE streaming begins. 64 KiB is enough for v1 chat use while bounding accidental local DoS inputs.",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/contracts/openapi/v1.yaml",
+      "line_range": {
+        "start": 107,
+        "end": 116
+      }
+    },
+    {
+      "id": 6,
+      "type": "observability",
+      "criticality": "medium",
+      "description": "The streaming observability requirement applies to any `SdkHarnessAdapter.astream_invoke`, but the exception-path tracing scenario only covers Deep Agents. MSAF has a success tracing scenario and separate error-propagation scenario, but no assertion that `@traced_harness` emits the failure span with `metadata.error` when MSAF streaming raises.",
+      "disposition": "fix",
+      "axis": "observability",
+      "severity": "blocking",
+      "resolution": "Add an MSAF exception tracing scenario under `Streaming Harness Invocation Emits Observability Span` and a task extending 3b.6 or adding a new test to assert exactly one `trace_llm_call` with `metadata={\"streaming\": True, \"error\": \"RuntimeError\"}` when `agent.run(stream=True)` raises.",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/specs/harness-adapter/spec.md",
+      "line_range": {
+        "start": 202,
+        "end": 242
+      }
+    },
+    {
+      "id": 7,
+      "type": "architecture",
+      "criticality": "low",
+      "description": "Deferred question: keep `wp-web-cli` together. The current combined package is acceptable for v1 because the CLI work is a thin `uvicorn.run(make_app(...))` wrapper around the ASGI app, and splitting it would add coordination overhead for modest parallelism gain.",
+      "disposition": "accept",
+      "axis": "work_package_validity",
+      "severity": "info",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/work-packages.yaml",
+      "line_range": {
+        "start": 326,
+        "end": 388
+      }
+    },
+    {
+      "id": 8,
+      "type": "performance",
+      "criticality": "low",
+      "description": "Deferred question: do not require rate limiting on `/chat` for v1. The documented scope is single-user, loopback-default, single-process local trust; rate limiting would be production-hardening beyond the stated v1 boundary.",
+      "disposition": "accept",
+      "axis": "performance",
+      "severity": "info",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/design.md",
+      "line_range": {
+        "start": 30,
+        "end": 35
+      }
+    },
+    {
+      "id": 9,
+      "type": "resilience",
+      "criticality": "low",
+      "description": "Deferred question: D13's reliance on `sse-starlette` plus the explicit disconnect/aclose contract is sufficient for v1 backpressure and disconnect handling. No custom backpressure requirement is needed before a remote or multi-client deployment scope exists.",
+      "disposition": "accept",
+      "axis": "resilience",
+      "severity": "info",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/design.md",
+      "line_range": {
+        "start": 206,
+        "end": 217
+      }
+    },
+    {
+      "id": 10,
+      "type": "security",
+      "criticality": "low",
+      "description": "Deferred question: mandatory auth middleware should not be required for loopback or explicit non-loopback binding in this v1 plan. D12's warn-not-refuse posture matches the single-user local-trust contract; real auth should land with a future remote/multi-user design.",
+      "disposition": "accept",
+      "axis": "security",
+      "severity": "info",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/design.md",
+      "line_range": {
+        "start": 178,
+        "end": 204
+      }
+    },
+    {
+      "id": 11,
+      "type": "spec_gap",
+      "criticality": "low",
+      "description": "Deferred question: stable scenario IDs are not necessary for this v1 review. The task list already references scenario names, and adding IDs now would be traceability polish rather than a blocker.",
+      "disposition": "accept",
+      "axis": "specification_completeness",
+      "severity": "info",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/specs/web-server/spec.md",
+      "line_range": {
+        "start": 15,
+        "end": 70
+      }
+    },
+    {
+      "id": 12,
+      "type": "compatibility",
+      "criticality": "low",
+      "description": "Deferred question: do not pin the upstream `ag-ui` Python package version in the spec deltas. The spec should define protocol/event behavior; dependency bounds and the exact resolved version belong in `pyproject.toml` and `uv.lock`.",
+      "disposition": "accept",
+      "axis": "compatibility",
+      "severity": "info",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/design.md",
+      "line_range": {
+        "start": 84,
+        "end": 97
+      }
+    }
+  ]
+}
