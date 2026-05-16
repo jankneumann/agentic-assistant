@@ -149,3 +149,27 @@ Triggered by autopilot PLAN_ITERATE phase. Five parallel Explore agents analyzed
 ### Context
 
 PLAN_ITERATE addressed obvious gaps surfaced by parallel multi-dimension analysis. Six fixes applied; contentious findings deferred. Next: PLAN_REVIEW multi-vendor convergence (3 vendors, up to 3 rounds, quorum 2).
+
+---
+
+## Phase: Checkpoint (2026-05-16)
+
+**Agent**: claude_code (Opus 4.7 1M context) | **Session**: local
+
+Autopilot paused at the transition between PLAN_ITERATE and PLAN_REVIEW per user choice. PLAN_REVIEW is a 30-90 minute wall-clock operation dispatching 3 vendor CLIs (claude, codex, gemini) per round and converging across up to 3 rounds; doing it interactively in the current session would risk context-window compaction mid-flight.
+
+### State at checkpoint
+
+- loop-state.json: current_phase set to PLAN_REVIEW; previous_phase PLAN_ITERATE; total_iterations 1.
+- Branch openspec/harness-ag-ui-bridge is up to date with origin at commit 133a954.
+- Working tree clean.
+- All plan artifacts validated strict.
+- Six commits on the feature branch: exploration doc (044f5ae), schema sync (e36fc48), initial plan (3e94761), Gate-2 revision (c9642fc), iteration 1 (133a954), and this checkpoint (next).
+
+### Resume protocol
+
+To resume the autopilot run in a fresh session, run `/autopilot harness-ag-ui-bridge` again. The skill detects loop-state.json on entry and resumes at the recorded current_phase (PLAN_REVIEW). The fresh context budget lets the multi-vendor convergence loop run cleanly without compaction risk.
+
+### Reason for checkpoint
+
+The multi-vendor PLAN_REVIEW phase is heavy infrastructure: subprocess dispatch to claude, codex, and gemini CLIs; per-round wall time 5-15 minutes per vendor; up to 3 rounds; fix application and re-dispatch between rounds. Running it interactively followed by IMPLEMENT (potentially many hours), IMPL_ITERATE, IMPL_REVIEW, VALIDATE, and SUBMIT_PR would consume the entire remaining context window without producing reliable checkpoints. The loop-state.json mechanism exists precisely for this resumption pattern.
