@@ -60,7 +60,8 @@ two-tier conformance regime:
 
 - **Local conformance** — runs against real providers in CI on every
   PR. Local providers (Ollama, LangGraph checkpointers, OpenBao,
-  self-hosted Langfuse) are the conformance baseline.
+  self-hosted Langfuse, local Postgres + Graphiti) are the conformance
+  baseline.
 - **Managed conformance** — runs in two modes: against mocks of the
   managed provider in CI on every PR, and against the real managed
   provider in a periodic verification job (cadence per provider,
@@ -71,6 +72,15 @@ A provider's stability classification depends on which tier it can
 satisfy. A managed provider cannot reach **Stable** without an active,
 green periodic verification job. A managed provider's mock conformance
 can support **Provisional** but does not on its own justify higher.
+
+Conformance is always **per-deployment** (per bound persona), not
+multi-tenant. A provider proves it satisfies the interface for one
+persona at a time. This is a direct consequence of git-as-multi-tenancy
+(see `primitives-and-providers.md` → "What's actually novel"):
+multi-tenant scenarios are not part of the contract, because two
+personas never share a process. Cross-deployment behaviour
+(e.g. one persona delegating to another) is an A2A protocol concern,
+not a provider conformance concern.
 
 ## Cross-primitive constraints
 
@@ -190,14 +200,23 @@ Each entry below follows the same template:
 
 ### `CapabilityRegistry` (proposed)
 
-- **Code:** not yet — partial precursor in `HttpToolRegistry` (HTTP +
-  OpenAPI discovery from persona `tool_sources`)
-- **Stability:** **Pre-interface**
+- **Code:** not yet as a unified primitive; substantial precursor
+  exists as `HttpToolRegistry` from archived P3 http-tools-layer
+  (HTTP + OpenAPI discovery, `$ref` resolution, auth handling,
+  registry pattern, `--list-tools` CLI flag). `ToolPolicy` protocol
+  exists from P1.8 capability-protocols.
+- **Stability:** **Experimental** (precursor real and shipping;
+  lifting to a unified primitive with multiple projections is the
+  proposed `capability-registry` phase)
 - **Providers:**
   - `HttpToolRegistry` — partial implementation, current; four open
     follow-ups (#16–#19 in archived `http-tools-layer`)
+  - Extensions exposed via `as_langchain_tools()` /
+    `as_ms_agent_tools()` — current dual-surface pattern to be
+    replaced
   - Self-hosted MCP gateway — planned projection target
-  - CLI projection (`assistant tool …`) — planned
+  - CLI projection (`assistant tool …`) — partial today via
+    `--list-tools`
   - AgentCore Gateway — slot-compatible if the canonical form is
     OpenAPI-compatible
 - **Conformance suite:** not yet — design first.
@@ -225,45 +244,63 @@ Each entry below follows the same template:
 
 ---
 
-### `MemoryManager` (proposed)
+### `MemoryManager`
 
-- **Code:** not yet — `MemoryPolicy` exists in MSAF stub
-  (`harnesses/sdk/ms_agent_fw.py` D27 minimal-prepend) but is a workaround
-  pattern, not the eventual interface
-- **Stability:** **Pre-interface**
+- **Code:** `src/assistant/core/memory.py:20` (real, archived P2
+  memory-architecture); `MemoryPolicy` protocol in
+  `src/assistant/core/capabilities/` (real, archived P1.8
+  capability-protocols)
+- **Stability:** **Experimental** (real implementation exists; interface
+  shape has known load-bearing leaks; conformance suite not yet
+  written)
 - **Providers:**
-  - Local Postgres + Graphiti — planned in `memory-architecture` phase
-  - Letta self-host — candidate
-  - Zep self-host — candidate
+  - Postgres + Graphiti via `MemoryManager` (current);
+    `PostgresGraphitiMemoryPolicy` auto-selected when `database_url`
+    configured
+  - Letta self-host, Zep self-host, mem0 self-host — candidates
   - LangGraph `PostgresStore` — could back the local provider directly
-  - AgentCore Memory — managed slot once the work persona lands (P15)
+  - AgentCore Memory — managed slot once work persona lands (P15)
   - Foundry Memory — managed alternative for Azure-bound work persona
-- **Conformance suite:** not yet — design first.
-- **Known leaks (design-time):**
+- **Conformance suite:** not yet — `MemoryPolicy` has tests but no
+  cross-provider conformance harness exists. Required before lifting
+  to Provisional.
+- **Known leaks (load-bearing):**
+  - **Persona parameter on methods.** `get_context(persona, role, …)`,
+    `store_fact(persona, key, value)`, `store_interaction(persona, …)`,
+    and similar methods accept a `persona: str` parameter
+    (`memory.py:30, 65, etc.`). Under git-as-multi-tenancy this is
+    leakage — each instance is already persona-bound at construction
+    via the `session_factory`; the method parameter is a relic of a
+    multi-tenant assumption that doesn't apply (see
+    `primitives-and-providers.md` → "Privacy boundary"). Cleanup
+    folds into the `binding-manifest` phase: drop the parameter, the
+    instance is the persona's manager.
   - The MSAF "minimal-prepend" pattern (D27) treats memory as a
-    read-only context source. The full interface must support
+    read-only context source. The full interface supports
     write-through and async ingestion; the minimal-prepend pattern is
-    fine as a read implementation but must not constrain the interface
-    shape.
-  - Per-persona DB isolation is a hard constraint (CLAUDE.md): the
-    interface must make cross-persona reads physically impossible.
-    Concretely: `MemoryManager.__init__(persona: PersonaConfig)` binds
-    to that persona; there is no `manager.get(persona=other, ...)`
-    method. The privacy guard
-    (`tests/_privacy_guard_plugin.py`) enforces this at the test layer.
+    fine as a read implementation but must not constrain the
+    interface shape.
+- **Semantic conformance points (currently unspecified — gaps):**
+  - What does `get_context()` guarantee about freshness? Are writes
+    from the same turn visible to subsequent `get_context()` calls?
+    Not specified.
+  - What does `store_fact()` guarantee about durability — is the call
+    durable on return, or only after `session.commit()`? Implementation
+    commits, but not documented in the interface.
+  - Cross-thread / cross-process visibility within the same persona
+    (e.g. scheduler writes + REPL reads): not specified.
 - **Open questions:**
   - Distinction between session memory (this conversation) and
-    long-term memory (across conversations). AgentCore models them as
-    one service; Letta separates them; LangGraph treats checkpointers
-    and stores as distinct. Decision: separate primitives
-    (`SessionStore` vs `MemoryManager`) because their access patterns
-    differ enough to warrant distinct interfaces.
-  - Write-through vs async ingestion: Graphiti entity extraction is too
-    slow for the hot path. Architecture: write to a fast log (Postgres
-    table, or the harness's session store) synchronously; async
-    pipeline distills into the persona's graph. The interface should
-    expose both `ingest(events, sync=True|False)` and let providers
-    decide which is supported.
+    long-term memory (across conversations). AgentCore models them
+    as one service; Letta separates them; LangGraph treats
+    checkpointers and stores as distinct. Current code couples them
+    via `MemoryManager`; the binding-manifest phase should consider
+    splitting `SessionStore` out.
+  - Write-through vs async ingestion: Graphiti entity extraction is
+    too slow for the hot path. Architecture: write to a fast log
+    (Postgres `memory` table) synchronously; async pipeline distills
+    into the persona's graph. Currently both happen synchronously;
+    needs async pipeline for scale.
   - Forgetting: GDPR-shaped delete requests. Required for `personal`;
     likely required for `work` under employer policy. Define
     `MemoryManager.forget(query)` with provider-specific semantics.

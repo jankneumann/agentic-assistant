@@ -43,23 +43,39 @@ persona-and-role concept itself (multi-tenant agent platforms achieve
 analogous boundaries; role-as-system-prompt-fragment is well-explored).
 The unprecedented combination is:
 
-- **Public code, private config via per-persona git submodules.** The
+- **Git itself as the multi-tenancy mechanism.** Instead of building
+  `tenant_id` into every table, API call, cache key, and policy check,
+  the repo offloads multi-tenancy entirely to git access control,
+  filesystem isolation, and per-persona process boundaries. The
+  primitives are **single-tenant by design** because two personas
+  never share a process; cross-persona work is cross-process (A2A).
+  This mirrors how Unix achieves per-user isolation via the kernel
+  rather than per-application code, how Kubernetes namespaces are
+  enforced by the control plane rather than each operator, and how
+  email isolates users via per-mailbox storage rather than a
+  user-id column on a shared `messages` table. The choice collapses
+  an enormous category of complexity that managed multi-tenant
+  platforms (AgentCore, Foundry, OpenAI Assistants) have to carry.
+- **Public code, private config via per-persona git submodules** is
+  the mechanism that implements the architectural choice above. The
   public repo can ship open-source while every persona's credentials,
   role overrides, DB schema, and skill set live in independent private
-  submodules under `personas/<name>/`. No managed agent platform offers
-  this split because they assume cloud-hosted tenant isolation; no
-  open-source framework offers it because they assume a single user.
-- **A two-layer privacy guard** (`tests/_privacy_guard_plugin.py` plus
-  `tests/conftest.py`) that enforces the public/private split at test
-  collection time (substring scan for private-persona identifiers) and
-  at runtime (FS I/O patching against private paths). This is the
-  artifact that turns the submodule split from convention into
-  contract.
+  submodules under `personas/<name>/`. No managed agent platform
+  offers this split because they assume cloud-hosted tenant isolation;
+  no open-source framework offers it because they assume a single
+  user.
+- **A two-layer privacy guard** (`tests/_privacy_guard_plugin.py`
+  plus `tests/conftest.py`) is the dev-time discipline that catches
+  attempts to bake private content into public artifacts. It enforces
+  the public/private split at test collection time (substring scan
+  for private-persona identifiers) and at runtime (FS I/O patching
+  against private paths). This is the artifact that turns the
+  submodule split from convention into contract.
 
 Persona-as-execution-boundary, role-as-overlay, and SPI-shaped provider
 selection are the *delivery vehicle* for that novelty. They are not the
 novelty themselves; they are well-trodden patterns adapted to carry
-the privacy boundary cleanly.
+the git-as-multi-tenancy choice cleanly.
 
 ## The primitive table
 
@@ -133,41 +149,60 @@ the provider bindings differ.
 
 Honest accounting of the matrix as of writing:
 
-**Interfaces realized in code:**
+**Interfaces realized in code (real implementations shipping):**
 
-- `HarnessAdapter` and its two tiers (`harnesses/base.py:12,24,48`) — narrow,
-  but a planned shrink is expected once `AgentRegistry` and
-  `CapabilityRegistry` land (sub-agent spawning and tool wiring move out of
-  the adapter).
-- `Extension` protocol (`extensions/base.py:15`) — currently leaky: the
-  `as_langchain_tools()` / `as_ms_agent_tools()` dual-surface bakes consumer
-  identity into the protocol. Slated for replacement by a
-  `register(registry, persona)` shape once `CapabilityRegistry` exists.
-- HTTP tool registry (`HttpToolRegistry` + OpenAPI discovery from persona
-  `tool_sources`) — partial implementation of the future
-  `CapabilityRegistry`. Four open follow-ups (#16–#19) address known gaps.
-- Observability — fully real via Langfuse with OTel-shaped spans, opt-in.
+- `HarnessAdapter` and its two tiers (`harnesses/base.py:12,24,48`) —
+  narrow, but a planned shrink is expected once `AgentRegistry` and
+  `CapabilityRegistry` land (sub-agent spawning and tool wiring move
+  out of the adapter). DeepAgents harness implemented; MS Agent
+  Framework harness implemented in P5 (archived).
+- `Extension` protocol (`extensions/base.py:15`) — currently leaky:
+  the `as_langchain_tools()` / `as_ms_agent_tools()` dual-surface
+  bakes consumer identity into the protocol. Slated for replacement
+  by a `register(registry, persona)` shape once `CapabilityRegistry`
+  exists. Real MS extensions ship (P5 archived); Google extensions
+  pending (P14).
+- `MemoryManager` (`core/memory.py:20`) — real, archived P2
+  memory-architecture. Postgres + Graphiti dual-backed; auto-selects
+  `PostgresGraphitiMemoryPolicy` when `database_url` configured.
+  Known leak: methods take `persona: str` parameter that should not
+  exist under git-as-multi-tenancy (see "Privacy boundary" above).
+- `HttpToolRegistry` + OpenAPI discovery from persona `tool_sources`
+  — real, archived P3 http-tools-layer. Substantial precursor to the
+  unified `CapabilityRegistry` proposed below. Four open follow-ups
+  (#16–#19) address known gaps.
+- Observability — real, archived P4 observability. Langfuse-backed
+  with OTel-shaped spans on `HarnessAdapter.invoke()`,
+  `DelegationSpawner.delegate()`, and memory operations.
+- Capability protocols (`GuardrailProvider`, `SandboxProvider`,
+  `MemoryPolicy`, `ToolPolicy`, `ContextProvider`) and
+  `CapabilityResolver` — real, archived P1.8 capability-protocols.
 
-**Interfaces planned but not yet defined:**
+**Interfaces planned but not yet defined as unified primitives:**
 
-- `CapabilityRegistry` (canonical form + projections) — design work pending.
-- `MemoryManager` — interface shape sketched (read/ingest/search/forget);
-  Postgres + Graphiti provider planned for the `memory-architecture` phase.
-- `IdentityProvider` — OpenBao integration exists at the script level
-  (`bao-vault` skill) but no agent-facing interface yet.
-- `SessionStore` — LangGraph checkpointers are used directly by the
-  DeepAgents adapter; lift to a primitive once a second harness needs the
-  same capability.
-- `Sandbox` — currently per-harness (Pi has `bash` built in; DeepAgents has
-  none yet). Lift when sandbox use becomes cross-harness.
-- `AgentRegistry` — implicit in `spawn_sub_agent` today; should be lifted
-  out of `HarnessAdapter`.
+- `CapabilityRegistry` — unifying primitive over `HttpToolRegistry`
+  plus extension tools and MCP servers, with multiple consumer
+  projections (LangChain, MSAF, Pi, MCP, CLI). Design pending in
+  the proposed `capability-registry` phase.
+- `IdentityProvider` — OpenBao integration exists at the script
+  level (`bao-vault` skill) but no agent-facing interface yet.
+- `SessionStore` — LangGraph `InMemorySaver` used directly by the
+  DeepAgents adapter (per archived fix-harness-conversation-memory).
+  Lift to a primitive once a second harness needs the same
+  capability.
+- `Sandbox` — currently per-harness. Lift when sandbox use becomes
+  cross-harness.
+- `AgentRegistry` — implicit in `spawn_sub_agent` today; should be
+  lifted out of `HarnessAdapter`.
+- `BindingManifest` — declarative deployment artifact unifying
+  `persona.yaml` + harness config + capability bindings + sink
+  configuration. Proposed as a foundational phase.
 
 **Interfaces deferred:**
 
-- `SkillResolver` — `.agents/skills/` layout is stable and consumed
-  directly today; formal interface waits until dynamic skill loading per
-  turn matters.
+- `SkillResolver` — `.agents/skills/` layout is stable and
+  consumed directly today; formal interface waits until dynamic
+  skill loading per turn matters.
 
 ## Cross-cutting concerns the matrix hides
 
@@ -198,8 +233,10 @@ not rediscovered per integration:
   checkpoint support + memory replay safety). The capability matrix
   is per-interface; the binding validator must express constraints
   *across* interfaces or it cannot reject incompatible provider mixes
-  at startup. This is the largest known gap in the current design and
-  is the most likely place a future role exposes a real bug.
+  at startup. Compatibility groups are formalized as artifacts within
+  the proposed `binding-manifest` phase (the binding manifest is the
+  declarative artifact the validator runs against); until that lands,
+  they are documented here as a convention rather than enforced.
 
 These cross-cuts are not new primitives. They are conventions that
 several primitives must agree on. They live in this document and the
@@ -273,27 +310,61 @@ This pattern only delivers on its promise if three disciplines are followed:
 
 ## Privacy boundary
 
-The persona-as-sovereign-execution-boundary claim is not aspirational — it
-is enforced at three layers and must be preserved by any new provider
-binding:
+The persona-as-sovereign-execution-boundary is enforced by **deployment
+topology**, not by defensive code in the primitive interfaces. Each
+persona is a separate deployment with its own DB, its own credentials,
+its own process. Two personas never share an address space, a connection
+string, or a credential vault. Cross-persona reads are not "prevented by
+the interface" — they are *physically impossible* because the topology
+forbids shared infrastructure. The interfaces are single-persona by
+design because, by topology, they will only ever be constructed inside
+a process bound to exactly one persona.
 
-- **Code layer:** persona-specific config lives in private submodules under
-  `personas/<name>/`; the public repo never imports from them, only from
-  fixture copies under `tests/fixtures/personas/`.
-- **Data layer:** each persona has its own database; the `MemoryManager`
-  interface must make cross-persona reads physically impossible (instances
-  bind to a `PersonaConfig` at construction; there is no `manager.get(
-  persona=other, ...)`).
+This shifts what each layer of the privacy guard does:
+
+- **Topology layer (load-bearing):** each persona is its own
+  deployment — per-persona DB, per-persona vault, per-persona
+  process. Run two personas, get two processes (same machine,
+  separate hosts, separate clouds — all equivalent from the
+  architecture's perspective). The primitives observe one persona
+  at construction and never have a reason to know about others.
+- **Code layer:** persona-specific config lives in private git
+  submodules under `personas/<name>/`; the public repo never
+  imports from them, only from fixture copies under
+  `tests/fixtures/personas/`. This is the dev-time discipline that
+  prevents private content from being baked into public artifacts.
 - **Test layer:** the two-layer privacy guard
-  (`tests/conftest.py` + `tests/_privacy_guard_plugin.py`) enforces at
-  collection time (substring scan for private-persona names) and runtime
-  (FS I/O patching) that public tests never touch real submodule content.
+  (`tests/conftest.py` + `tests/_privacy_guard_plugin.py`) catches
+  dev-time leakage at test collection (substring scan for
+  private-persona identifiers) and at runtime (FS I/O patching).
+  Its job is **narrow** — catch developer mistakes that would bake
+  private content into public artifacts. It is not preventing
+  runtime cross-tenant access, because the topology has already made
+  that impossible.
 
-A managed provider that cannot honour the privacy boundary for a given
-persona must not be eligible for that persona's binding. AgentCore Memory
-holding `personal` long-term memory is a fine pattern in the abstract but
-violates `personal`'s explicit data-sovereignty constraint; the same
-provider is appropriate for `work` if employer policy permits.
+A managed provider that cannot honour the topology constraint for a
+given persona must not be eligible for that persona's binding.
+AgentCore Memory holding `personal` long-term memory violates
+`personal`'s explicit data-sovereignty constraint; the same provider is
+appropriate for `work` if employer policy permits.
+
+### A known interface leak
+
+`MemoryManager` at `src/assistant/core/memory.py:20` currently takes
+`persona: str` as a parameter on methods like `get_context()`,
+`store_fact()`, and similar (e.g. `memory.py:30, 65`). Under
+git-as-multi-tenancy this parameter is **leakage from a defunct
+multi-tenant assumption**: each `MemoryManager` instance is constructed
+inside a process that is already bound to exactly one persona (the
+`session_factory` is per-persona), so the method parameter cannot
+validly differ from the instance's persona. The caller shouldn't have
+to supply information the instance already knows.
+
+The cleanup is mechanical — drop the parameter, the instance is the
+persona's manager — and folds naturally into the `binding-manifest`
+phase. Tracked as a load-bearing leak in
+[`interface-stability.md`](./interface-stability.md) →
+`MemoryManager`.
 
 ## Non-goals
 
