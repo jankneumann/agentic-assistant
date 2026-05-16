@@ -26,9 +26,12 @@ paths:
       description: |
         Accepts a JSON request body with a `message` field. The response is
         `text/event-stream` containing AG-UI protocol events serialized one
-        per `data:` line. The first event is always `RUN_STARTED` and the
-        last is always `RUN_FINISHED` (with an `error` field populated when
-        the underlying harness failed).
+        per `data:` line. The first event is always `RUN_STARTED`; the
+        terminal event is either `RUN_FINISHED` (successful completion;
+        the upstream `RunFinishedEvent` shape carries no error field) OR
+        `RUN_ERROR` (failure; matches the upstream `RunErrorEvent` shape
+        with `message` and `code` fields, both set to the exception class
+        name per the D8 redaction rule) — never both, exactly one.
       requestBody:
         required: true
         content:
@@ -62,8 +65,8 @@ paths:
                   AG-UI v0.x event schema in
                   `../events/ag-ui-events.schema.json`.
               examples:
-                minimal:
-                  summary: Minimal RUN_STARTED → text → RUN_FINISHED sequence
+                success:
+                  summary: Successful run — terminates with RUN_FINISHED (no error field)
                   value: |
                     data: {"type":"RUN_STARTED","threadId":"t-abc","runId":"r-001"}
 
@@ -74,6 +77,12 @@ paths:
                     data: {"type":"TEXT_MESSAGE_END","messageId":"m-001"}
 
                     data: {"type":"RUN_FINISHED","threadId":"t-abc","runId":"r-001"}
+                failure:
+                  summary: Harness failure — terminates with RUN_ERROR (class-name-only message)
+                  value: |
+                    data: {"type":"RUN_STARTED","threadId":"t-abc","runId":"r-001"}
+
+                    data: {"type":"RUN_ERROR","message":"RuntimeError","code":"RuntimeError"}
 
         "422":
           description: |

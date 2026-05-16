@@ -1,0 +1,163 @@
+{
+  "schema_version": 1,
+  "review_type": "plan",
+  "target": "harness-ag-ui-bridge",
+  "reviewers": [
+    {
+      "vendor": "claude-opus-4-7[1m]",
+      "agent_id": "claude-opus-4-7[1m]",
+      "success": true,
+      "findings_count": 3,
+      "elapsed_seconds": 0.0,
+      "error": null
+    },
+    {
+      "vendor": "gpt-5-codex",
+      "agent_id": "gpt-5-codex",
+      "success": true,
+      "findings_count": 3,
+      "elapsed_seconds": 0.0,
+      "error": null
+    },
+    {
+      "vendor": "plan",
+      "agent_id": "plan",
+      "success": true,
+      "findings_count": 4,
+      "elapsed_seconds": 0.0,
+      "error": null
+    }
+  ],
+  "quorum_met": true,
+  "quorum_requested": 3,
+  "quorum_received": 3,
+  "consensus_findings": [
+    {
+      "id": 1,
+      "status": "unconfirmed",
+      "primary_vendor": "claude-opus-4-7[1m]",
+      "primary_finding_id": 1,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "contract_mismatch",
+      "agreed_criticality": "critical",
+      "recommended_disposition": "accept",
+      "description": "INCOMPLETE round-2 RUN_ERROR migration in tasks.md. Task 5.4 was not updated alongside the spec/schema/design fixes and still encodes the OLD RUN_FINISHED.error contract: (a) the task title is 'Write tests for harness-error path emitting terminal RUN_FINISHED (two-phase D8 contract)'; (b) the Goal says 'Assert the response stream contains exactly one `RUN_FINISHED` with `error == \"RuntimeError\"`'; (c) the cited Spec scenario name 'Endpoint emits RUN_FINISHED with error when harness fails' does not exist in web-server/spec.md anymore \u2014 the actual scenario (lines 59-76) is 'Endpoint emits RUN_ERROR when harness fails' and requires a terminal RUN_ERROR event with `message`/`code` fields (NOT a RUN_FINISHED.error field, because upstream `ag_ui.core.RunFinishedEvent` has no error field). An implementer following task 5.4 verbatim would write a test that asserts the opposite of what the spec, schema, and design.md D8 now require \u2014 the test would fail against any correct implementation, or worse, the implementer would 'fix' it by reverting the mapper to emit RUN_FINISHED.error and re-introduce the round-2 regression. This is exactly the kind of stale field reference that round-3 calibration calls out as blocking."
+    },
+    {
+      "id": 2,
+      "status": "unconfirmed",
+      "primary_vendor": "claude-opus-4-7[1m]",
+      "primary_finding_id": 2,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "contract_mismatch",
+      "agreed_criticality": "high",
+      "recommended_disposition": "accept",
+      "description": "INCOMPLETE round-2 RUN_ERROR migration in the OpenAPI contract. The `/chat` POST `description` field (lines 28-31) still states: 'The first event is always `RUN_STARTED` and the last is always `RUN_FINISHED` (with an `error` field populated when the underlying harness failed).' This directly contradicts the round-2 RUN_ERROR contract now established in ag-ui-events.schema.json (the RunFinished variant has no error field) and web-server/spec.md (failures emit RUN_ERROR instead). A frontend developer who reads the OpenAPI summary as the human-facing contract will build a client that listens for `RUN_FINISHED.error` and silently miss every failure (because the server now emits RUN_ERROR). The 200-response example block at lines 64-76 is internally consistent (no error field in the example RUN_FINISHED), making the description text the lone outlier \u2014 easy to miss in review but materially misleading to consumers."
+    },
+    {
+      "id": 3,
+      "status": "unconfirmed",
+      "primary_vendor": "claude-opus-4-7[1m]",
+      "primary_finding_id": 3,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "spec_contradiction",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "INCOMPLETE round-2 class-name regex fix. The JSON schemas (ag-ui-events.schema.json line 56, harness-event.schema.json line 53) were correctly updated to `^(?:[a-z_][a-zA-Z0-9_]*\\.)*[A-Z][A-Za-z0-9_]*$` so dotted module-qualified exceptions like `asyncio.CancelledError` validate. However the spec/design text was not updated to match: (a) harness-adapter spec line 111 in the 'RunFinished.error field is class-name-only when populated' scenario still says 'the value MUST match the pattern `^[A-Z][A-Za-z0-9_.]*$` (Python class identifier with optional dotted qualifiers)'; (b) design.md D8 line 143 says identically 'The class-name pattern is `^[A-Z][A-Za-z0-9_.]*$`'. The spec/design pattern requires the FIRST character to be uppercase, which would REJECT `asyncio.CancelledError` (the very example the schema's own description field calls out as valid). An implementer reading the spec scenario as their test fixture authority will either (i) write a stricter test than the schema requires, causing the mapper to fail validation against the schema's own examples, or (ii) constrain the harness to drop the module prefix when redacting, narrowing observability of asyncio cancellation and third-party exception classes. Not strictly a `validate --strict` blocker (validators check the schema, not the prose), but a real cross-artifact contradiction."
+    },
+    {
+      "id": 4,
+      "status": "unconfirmed",
+      "primary_vendor": "gpt-5-codex",
+      "primary_finding_id": 1,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "contract_mismatch",
+      "agreed_criticality": "critical",
+      "recommended_disposition": "accept",
+      "description": "The RUN_ERROR migration is not fully converged in implementation-driving artifacts. The web-server spec and ag-ui-emitter spec require failures to terminate with AG-UI RUN_ERROR, but tasks.md task 5.4 still instructs tests to assert exactly one RUN_FINISHED with error == \"RuntimeError\", and the OpenAPI /chat description still says the last event is always RUN_FINISHED with an error field on failure. An implementer following task 5.4 would write tests that contradict the updated mapper and web-server specs."
+    },
+    {
+      "id": 5,
+      "status": "unconfirmed",
+      "primary_vendor": "gpt-5-codex",
+      "primary_finding_id": 2,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "contract_mismatch",
+      "agreed_criticality": "critical",
+      "recommended_disposition": "accept",
+      "description": "The class-name regex fix is present in both JSON schemas but not in the normative prose. design.md D8 and the harness-adapter spec still require `^[A-Z][A-Za-z0-9_.]*$`, which rejects accepted dotted lowercase module prefixes such as `asyncio.CancelledError`. This contradicts the updated schemas and can lead implementation/tests to enforce the old invalid contract."
+    },
+    {
+      "id": 6,
+      "status": "unconfirmed",
+      "primary_vendor": "gpt-5-codex",
+      "primary_finding_id": 3,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "architecture",
+      "agreed_criticality": "high",
+      "recommended_disposition": "accept",
+      "description": "The proposal's selected approach still says `src/assistant/transports/ag_ui/` contains `HarnessEvent`, while the corrected design, harness-adapter spec, tasks, and work-packages place `HarnessEvent` at `src/assistant/harnesses/sdk/events.py`. Because the proposal states downstream artifacts MUST implement the selected approach, this remaining stale path keeps the top-level implementation instruction inconsistent with the corrected work package allowlists."
+    },
+    {
+      "id": 7,
+      "status": "unconfirmed",
+      "primary_vendor": "plan",
+      "primary_finding_id": "round3-1",
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "spec",
+      "agreed_criticality": "critical",
+      "recommended_disposition": "accept",
+      "description": "The OpenAPI contract at `contracts/openapi/v1.yaml` contains stale documentation and examples regarding the failure protocol. Line 26 claims the stream always ends with `RUN_FINISHED` (with an `error` field), and line 59 provides a success-only example that implies `RUN_FINISHED` is the sole terminator. This contradicts the `ag-ui-events.schema.json`, the `ag-ui-emitter` spec, and the upstream `ag_ui.core` Pydantic models, which all use `RUN_ERROR` as the terminal event for failures because the upstream `RunFinishedEvent` does not support an error field."
+    },
+    {
+      "id": 8,
+      "status": "unconfirmed",
+      "primary_vendor": "plan",
+      "primary_finding_id": "round3-2",
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "task",
+      "agreed_criticality": "high",
+      "recommended_disposition": "accept",
+      "description": "Task 5.4 in `tasks.md` encodes a stale failure contract in its Goal description. It instructs the implementer to assert that the response stream contains `RUN_FINISHED` with an `error` field, which contradicts the two-phase D8 error mapping requirement in Task 4.6, the `ag-ui-emitter` spec, and the actual JSON schemas."
+    },
+    {
+      "id": 9,
+      "status": "unconfirmed",
+      "primary_vendor": "plan",
+      "primary_finding_id": "round3-3",
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "design",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "Stale architectural prose in `proposal.md` and `design.md` contradicts the Round-2 module-boundary fix (D6). `proposal.md` (line 111) and `design.md` (line 12) still place the `HarnessEvent` union in `src/assistant/transports/ag_ui/`, whereas `work-packages.yaml`, `tasks.md`, and the `harness-adapter` spec have correctly converged on the harness layer (`src/assistant/harnesses/sdk/events.py`)."
+    },
+    {
+      "id": 10,
+      "status": "unconfirmed",
+      "primary_vendor": "plan",
+      "primary_finding_id": "round3-4",
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "spec",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "The `harness-adapter` spec contains a stale regex pattern for the `RunFinished.error` field (`^[A-Z][A-Za-z0-9_.]*$`). This is inconsistent with the corrected regex in both JSON schemas (`^(?:[a-z_][a-zA-Z0-9_]*\\.)*[A-Z][A-Za-z0-9_]*$`) which was updated in Round 2 to support dotted lowercase module prefixes (e.g., `asyncio.CancelledError`)."
+    }
+  ],
+  "summary": {
+    "total_unique_findings": 10,
+    "confirmed_count": 0,
+    "unconfirmed_count": 10,
+    "disagreement_count": 0,
+    "blocking_count": 0
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "review_type": "plan",
+  "target": "cli-dispatch",
+  "dispatches": [
+    {
+      "vendor": "claude_code",
+      "success": true,
+      "model_used": "(default)",
+      "models_attempted": [
+        "(default)"
+      ],
+      "elapsed_seconds": 257.990692708001,
+      "error": null,
+      "error_class": null
+    },
+    {
+      "vendor": "codex",
+      "success": true,
+      "model_used": "gpt-5.5",
+      "models_attempted": [
+        "gpt-5.5"
+      ],
+      "elapsed_seconds": 216.5553655839758,
+      "error": null,
+      "error_class": null
+    },
+    {
+      "vendor": "gemini",
+      "success": true,
+      "model_used": "gemini-3-flash-preview",
+      "models_attempted": [
+        "gemini-3-flash-preview"
+      ],
+      "elapsed_seconds": 125.54062920901924,
+      "error": null,
+      "error_class": null
+    }
+  ],
+  "quorum_requested": 3,
+  "quorum_received": 3
+}

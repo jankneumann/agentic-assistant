@@ -1,0 +1,48 @@
+{
+  "findings": [
+    {
+      "id": "round3-1",
+      "type": "spec",
+      "criticality": "critical",
+      "axis": "consistency",
+      "severity": "high",
+      "description": "The OpenAPI contract at `contracts/openapi/v1.yaml` contains stale documentation and examples regarding the failure protocol. Line 26 claims the stream always ends with `RUN_FINISHED` (with an `error` field), and line 59 provides a success-only example that implies `RUN_FINISHED` is the sole terminator. This contradicts the `ag-ui-events.schema.json`, the `ag-ui-emitter` spec, and the upstream `ag_ui.core` Pydantic models, which all use `RUN_ERROR` as the terminal event for failures because the upstream `RunFinishedEvent` does not support an error field.",
+      "disposition": "fix",
+      "resolution": "Update `contracts/openapi/v1.yaml` (lines 23-26, 46, and 59) to state that the stream ends with either `RUN_FINISHED` (success) or `RUN_ERROR` (failure). Replace the stale 'RUN_FINISHED with error' description with the correct 'RUN_ERROR' semantics. Add a failure-path example to the response body documentation.",
+      "reviewer_vendor": "gemini-1.5-pro"
+    },
+    {
+      "id": "round3-2",
+      "type": "task",
+      "criticality": "high",
+      "axis": "consistency",
+      "severity": "high",
+      "description": "Task 5.4 in `tasks.md` encodes a stale failure contract in its Goal description. It instructs the implementer to assert that the response stream contains `RUN_FINISHED` with an `error` field, which contradicts the two-phase D8 error mapping requirement in Task 4.6, the `ag-ui-emitter` spec, and the actual JSON schemas.",
+      "disposition": "fix",
+      "resolution": "Update the Goal of Task 5.4 in `tasks.md` to assert that the response stream emits a terminal `RUN_ERROR` event (not `RUN_FINISHED` with an error field) when the harness fails, aligning with the D8 mapper requirements.",
+      "reviewer_vendor": "gemini-1.5-pro"
+    },
+    {
+      "id": "round3-3",
+      "type": "design",
+      "criticality": "medium",
+      "axis": "structure",
+      "severity": "medium",
+      "description": "Stale architectural prose in `proposal.md` and `design.md` contradicts the Round-2 module-boundary fix (D6). `proposal.md` (line 111) and `design.md` (line 12) still place the `HarnessEvent` union in `src/assistant/transports/ag_ui/`, whereas `work-packages.yaml`, `tasks.md`, and the `harness-adapter` spec have correctly converged on the harness layer (`src/assistant/harnesses/sdk/events.py`).",
+      "disposition": "fix",
+      "resolution": "Update `proposal.md` (lines 11, 12, 111) and `design.md` (line 12) to correctly place `HarnessEvent` in the harness layer (`src/assistant/harnesses/sdk/events.py`) and include `RUN_ERROR` in all lists of AG-UI protocol events.",
+      "reviewer_vendor": "gemini-1.5-pro"
+    },
+    {
+      "id": "round3-4",
+      "type": "spec",
+      "criticality": "low",
+      "axis": "correctness",
+      "severity": "low",
+      "description": "The `harness-adapter` spec contains a stale regex pattern for the `RunFinished.error` field (`^[A-Z][A-Za-z0-9_.]*$`). This is inconsistent with the corrected regex in both JSON schemas (`^(?:[a-z_][a-zA-Z0-9_]*\\.)*[A-Z][A-Za-z0-9_]*$`) which was updated in Round 2 to support dotted lowercase module prefixes (e.g., `asyncio.CancelledError`).",
+      "disposition": "fix",
+      "resolution": "Update the regex pattern in the 'Scenario: RunFinished.error field is class-name-only when populated' section of `specs/harness-adapter/spec.md` to match the JSON schemas.",
+      "reviewer_vendor": "gemini-1.5-pro"
+    }
+  ]
+}
