@@ -28,8 +28,9 @@
   **Design decisions**: D1
   **Dependencies**: 1.3
 
-- [ ] 2.2 Add abstract `astream_invoke` to `src/assistant/harnesses/base.py`
-  **Goal**: Add abstract method to `SdkHarnessAdapter` returning `AsyncIterator[HarnessEvent]`. Existing `invoke()` MUST remain unchanged. Both `DeepAgentsHarness` and `MSAgentFrameworkHarness` will implement this concretely in Sections 3 and 3b respectively — no NotImplementedError stub is acceptable on the base, since both real harnesses must satisfy the abstract contract before this change can merge.
+- [ ] 2.2 Add abstract `astream_invoke` and `thread_id` to `src/assistant/harnesses/base.py`
+  **Goal**: Add abstract method to `SdkHarnessAdapter` returning `AsyncIterator[HarnessEvent]`. Existing `invoke()` MUST remain unchanged. Both `DeepAgentsHarness` and `MSAgentFrameworkHarness` will implement this concretely in Sections 3 and 3b respectively — no NotImplementedError stub is acceptable on the base, since both real harnesses must satisfy the abstract contract before this change can merge. Also add an abstract `thread_id: str` property (or attribute requirement) to `SdkHarnessAdapter` so the web transport can pass a stable thread identifier to the AG-UI mapper. Deep Agents implements it as `return self._thread_id`; MSAF synthesizes a UUID at construction time.
+  **Spec scenarios**: harness-adapter "SdkHarnessAdapter.astream_invoke returns async iterator of HarnessEvent", "SdkHarnessAdapter exposes a thread_id for transport binding"
   **Dependencies**: 2.1
 
 - [ ] 2.3 Write tests for `@traced_harness` async-generator support
@@ -129,8 +130,8 @@ Added during plan revision after confirming MSAF is fully implemented (per the e
   **Design decisions**: D1
   **Dependencies**: 1.3
 
-- [ ] 4.4 Write tests for error mapping to terminal RUN_FINISHED (two-phase D8 contract)
-  **Spec scenarios**: ag-ui-emitter "Harness exception surfaces as RUN_FINISHED with class-name-only error", "Mapper does not synthesize on raw raise"
+- [ ] 4.4 Write tests for error mapping to terminal RUN_ERROR (two-phase D8 contract)
+  **Spec scenarios**: ag-ui-emitter "Harness exception surfaces as RUN_ERROR with class-name-only message", "Mapper does not synthesize on raw raise", "Successful run emits RUN_FINISHED (no error fields)"
   **Design decisions**: D8
   **Dependencies**: 1.3
 
@@ -140,7 +141,7 @@ Added during plan revision after confirming MSAF is fully implemented (per the e
   **Dependencies**: 1.1, 4.1
 
 - [ ] 4.6 Implement `src/assistant/transports/ag_ui/mapper.py`
-  **Goal**: `async def map_harness_to_ag_ui(stream: AsyncIterator[HarnessEvent], *, thread_id: str) -> AsyncIterator[AGUIEvent]`. Streaming, deterministic, no full-stream buffering. The `thread_id` is required keyword-only and populates the `threadId` field on every emitted `RUN_STARTED`/`RUN_FINISHED`. Raises `ValueError` on empty `thread_id`. Owns the TEXT_MESSAGE_START/END and TOOL_CALL_START/END bracketing logic. Implements two-phase D8 error handling: on receiving terminal `RunFinished(error=...)`, emits one `RUN_FINISHED` then catches/absorbs any subsequent re-raised exception from upstream (no synthetic events, no propagation).
+  **Goal**: `async def map_harness_to_ag_ui(stream: AsyncIterator[HarnessEvent], *, thread_id: str) -> AsyncIterator[AGUIEvent]`. Streaming, deterministic, no full-stream buffering. The `thread_id` is required keyword-only and populates the `threadId` field on every emitted `RUN_STARTED`/`RUN_FINISHED`. Raises `ValueError` on empty `thread_id`. Owns the TEXT_MESSAGE_START/END and TOOL_CALL_START/END bracketing logic. Implements two-phase D8 error handling: on receiving terminal internal `RunFinished(error=<ClassName>)`, emits one `RUN_ERROR` event (mapping to upstream `ag_ui.core.RunErrorEvent` with `message` and `code` both set to the class name — NOT `RUN_FINISHED`, which has no error field in the upstream model). On `RunFinished(error=None)` emits `RUN_FINISHED` cleanly. After the terminal event, catches/absorbs any subsequent re-raised exception from upstream (no synthetic events, no propagation).
   **Dependencies**: 4.2, 4.3, 4.4, 4.5
 
 ## 5. FastAPI Application + SSE Endpoint
@@ -217,8 +218,8 @@ Added during plan revision after confirming MSAF is fully implemented (per the e
   **Dependencies**: 5.5, 5.6, 5.7
 
 - [ ] 5.10 Implement `src/assistant/web/routes.py` — `/chat` (SSE) and `/health` (JSON)
-  **Goal**: `/chat` calls `app.state.harness.astream_invoke(...)`, pipes through `map_harness_to_ag_ui(stream, thread_id=app.state.harness._thread_id)` (passing the bound harness's thread_id keyword-only per the updated mapper signature — this is how the AG-UI `threadId` field gets populated per design.md D4), serves as SSE via `sse-starlette`. `/health` returns persona/role/harness identity without touching the harness.
-  **Dependencies**: 5.1, 5.2, 5.3, 5.4, 5.8, 5.9, 4.6, 3.6
+  **Goal**: `/chat` calls `app.state.harness.astream_invoke(...)`, pipes through `map_harness_to_ag_ui(stream, thread_id=app.state.harness.thread_id)` (passing the bound harness's public `thread_id` attribute keyword-only per the updated mapper signature — the SdkHarnessAdapter base class requires every concrete harness to expose this attribute per the harness-adapter spec "SdkHarnessAdapter exposes a thread_id for transport binding" requirement). Serves as SSE via `sse-starlette`. `/health` returns persona/role/harness identity without touching the harness.
+  **Dependencies**: 5.1, 5.2, 5.3, 5.4, 5.8, 5.9, 4.6, 3.6, 3b.7
 
 ## 6. CLI serve Subcommand
 

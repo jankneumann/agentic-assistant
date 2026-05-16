@@ -1,0 +1,199 @@
+{
+  "schema_version": 1,
+  "review_type": "plan",
+  "target": "harness-ag-ui-bridge",
+  "reviewers": [
+    {
+      "vendor": "claude-opus-4-7[1m]",
+      "agent_id": "claude-opus-4-7[1m]",
+      "success": true,
+      "findings_count": 5,
+      "elapsed_seconds": 0.0,
+      "error": null
+    },
+    {
+      "vendor": "gpt-5-codex",
+      "agent_id": "gpt-5-codex",
+      "success": true,
+      "findings_count": 4,
+      "elapsed_seconds": 0.0,
+      "error": null
+    },
+    {
+      "vendor": "plan",
+      "agent_id": "plan",
+      "success": true,
+      "findings_count": 4,
+      "elapsed_seconds": 0.0,
+      "error": null
+    }
+  ],
+  "quorum_met": true,
+  "quorum_requested": 3,
+  "quorum_received": 3,
+  "consensus_findings": [
+    {
+      "id": 1,
+      "status": "unconfirmed",
+      "primary_vendor": "claude-opus-4-7[1m]",
+      "primary_finding_id": 1,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "contract_mismatch",
+      "agreed_criticality": "critical",
+      "recommended_disposition": "accept",
+      "description": "REGRESSION of round-1 fix to D6 / finding #15: work-packages.yaml still places HarnessEvent at the OLD path `src/assistant/transports/ag_ui/events.py`, but design.md D6, tasks.md task 1.3, and the harness-adapter spec were all updated to the new path `src/assistant/harnesses/sdk/events.py`. Four stale references remain in work-packages.yaml: line 42 (wp-foundation locks.files), line 54 (wp-foundation scope.write_allow), line 62 (test path `tests/transports/ag_ui/test_events.py` \u2014 should match the harness layer), line 88 (verification pytest command targets `tests/transports/ag_ui/test_events.py`), line 108 (outputs.artifacts). Because wp-foundation's scope.write_allow is an allowlist and does NOT include `src/assistant/harnesses/sdk/events.py`, an isolation-mode agent following the work package would be BLOCKED from writing HarnessEvent to the correct location \u2014 making the plan unimplementable as-stated. The lock would also fail to guard the correct file against concurrent edits."
+    },
+    {
+      "id": 2,
+      "status": "unconfirmed",
+      "primary_vendor": "claude-opus-4-7[1m]",
+      "primary_finding_id": 2,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "spec_gap",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "Task 5.10 reaches into `app.state.harness._thread_id` (a private attribute by naming convention) to pass into the mapper as the keyword-only `thread_id` argument, and design.md D4 explicitly relies on this access path. But neither the harness-adapter spec's Requirement: SDK Harness Adapter nor any added scenario establishes `thread_id` as part of the public adapter surface. The contract that the web layer depends on is therefore undocumented \u2014 a refactor that renames `_thread_id` (or moves it onto a per-call config object, which is a likely future direction once multi-conversation support arrives per D4's forward path) would silently break the web route without any spec scenario detecting the regression. This is not a v1 blocker (single-user, single-thread; both DeepAgents and MSAF currently expose `_thread_id`), but it bakes an implicit private-API dependency into the SSE bridge."
+    },
+    {
+      "id": 3,
+      "status": "unconfirmed",
+      "primary_vendor": "claude-opus-4-7[1m]",
+      "primary_finding_id": 3,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "style",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "Round-1 finding #8 (claude-opus) flagged that wp-foundation.description still reads `\"...sse-starlette, optional ag-ui-protocol)\"` \u2014 both `optional` (per revised D5 the package is non-optional, confirmed installed) and `ag-ui-protocol` (the PyPI name per D5 is `ag-ui`) are stale from the pre-Gate-2 plan revision. The round-1 fix list did not address this. It still reads the same way at line 36 of work-packages.yaml. Pure docs hygiene; no behavioral impact, but a future reader will be confused about whether `ag-ui` is truly required."
+    },
+    {
+      "id": 4,
+      "status": "unconfirmed",
+      "primary_vendor": "claude-opus-4-7[1m]",
+      "primary_finding_id": 4,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "spec_gap",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "Task 5.10's explicit `Dependencies:` list (5.1, 5.2, 5.3, 5.4, 5.8, 5.9, 4.6, 3.6) omits 3b.7 (MSAF astream_invoke implementation). Per work-packages.yaml, wp-web-cli depends on both wp-deep-agents-stream AND wp-msaf-stream, so the package-level DAG is correct. The web route itself is harness-agnostic (just calls `astream_invoke` polymorphically), so this is not a real blocker \u2014 the route can be implemented and tested with the DeepAgents harness alone. Calling it out for transparency, but disposition is accept: the package-level DAG is authoritative; the task-level dep list is informational and slightly incomplete in a non-blocking way."
+    },
+    {
+      "id": 5,
+      "status": "unconfirmed",
+      "primary_vendor": "claude-opus-4-7[1m]",
+      "primary_finding_id": 5,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "style",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "The Requirement: SSE Chat Endpoint still cites `RFC 8895` for SSE framing (round-1 finding #6). SSE is specified in the WHATWG HTML Living Standard, not an IETF RFC. Round-1 disposition was 'accept' (low criticality, no behavioral impact). It remains uncorrected in round-2, consistent with that disposition. Re-confirming the accept disposition; not raising as a fix in round-2."
+    },
+    {
+      "id": 6,
+      "status": "unconfirmed",
+      "primary_vendor": "gpt-5-codex",
+      "primary_finding_id": 1,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "architecture",
+      "agreed_criticality": "high",
+      "recommended_disposition": "accept",
+      "description": "The D6 module-boundary fix is not fully converged in the executable work plan. The harness-adapter spec and tasks now put `HarnessEvent` at `src/assistant/harnesses/sdk/events.py`, but `work-packages.yaml` still locks, allows writes to, tests, and reports `src/assistant/transports/ag_ui/events.py`. The selected approach in `proposal.md` also still says `transports/ag_ui/` contains `HarnessEvent`. A worker following the package scope cannot create the corrected module without leaving its write allowlist, so the round-1 module-boundary fix can still be implemented in the old, invalid location."
+    },
+    {
+      "id": 7,
+      "status": "unconfirmed",
+      "primary_vendor": "gpt-5-codex",
+      "primary_finding_id": 2,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "contract_mismatch",
+      "agreed_criticality": "high",
+      "recommended_disposition": "accept",
+      "description": "The thread_id handoff is still not defined for all in-scope SDK harnesses. D4 and task 5.10 require `/chat` to pass `thread_id=app.state.harness._thread_id`, but the MSAF streaming requirement only defines `agent.run(stream=True)` to `HarnessEvent` translation and does not require `MSAgentFrameworkHarness` or the base `SdkHarnessAdapter` to expose a stable `_thread_id`. Because MSAF is explicitly in v1 scope and `serve -H ms_agent_framework` is allowed, the web route can fail at runtime or be unable to populate mandatory AG-UI `threadId` for MSAF streams."
+    },
+    {
+      "id": 8,
+      "status": "unconfirmed",
+      "primary_vendor": "gpt-5-codex",
+      "primary_finding_id": 3,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "architecture",
+      "agreed_criticality": "high",
+      "recommended_disposition": "accept",
+      "description": "`wp-foundation` owns task 2.4 to extend `@traced_harness` for async generators, but its work-package write scope points at `src/assistant/observability/**`. In this repo the decorator lives under `src/assistant/telemetry/decorators.py`, and the foundation package does not allow writing that path. A worker following the package contract cannot implement the D9/two-phase observability fix, including the new MSAF exception tracing scenario."
+    },
+    {
+      "id": 9,
+      "status": "unconfirmed",
+      "primary_vendor": "gpt-5-codex",
+      "primary_finding_id": 4,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "contract_mismatch",
+      "agreed_criticality": "high",
+      "recommended_disposition": "accept",
+      "description": "The two-phase error contract now depends on `RUN_FINISHED.error`, but D5/task 4.5 still require `types.py` to be only a thin re-export from upstream `ag_ui.core` with no in-repo Pydantic definitions. The installed upstream `RunFinishedEvent` model does not define an `error` field; it defines `result` and allows extras. That means the authoritative local JSON schema constrains `error` with a class-name pattern, while the planned runtime type does not model or validate that field. The artifacts no longer contradict on the desired error semantics, but they still contradict on how those semantics are represented and enforced in the AG-UI type layer."
+    },
+    {
+      "id": 10,
+      "status": "unconfirmed",
+      "primary_vendor": "plan",
+      "primary_finding_id": "harness-ag-ui-bridge-r2.1",
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "spec_contradiction",
+      "agreed_criticality": "critical",
+      "recommended_disposition": "accept",
+      "description": "The regex pattern `^[A-Z][A-Za-z0-9_.]*$` for the error field in both harness-event.schema.json and ag-ui-events.schema.json (and mentioned in design.md D8) requires an uppercase starting character. This contradicts the provided example `asyncio.CancelledError` and prevents valid dotted Python exception names where the module name (e.g., 'asyncio', 'openai', 'json') starts with a lowercase letter."
+    },
+    {
+      "id": 11,
+      "status": "unconfirmed",
+      "primary_vendor": "plan",
+      "primary_finding_id": "harness-ag-ui-bridge-r2.2",
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "invalid_logic",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "Design decision D8 states that exceptions are recorded 'via the FastAPI exception logger', but also requires the mapper to 'absorb the re-raise'. If the mapper absorbs the exception within the endpoint handler, the exception will not propagate to FastAPI's top-level exception handler/logger. Observability is still preserved via @traced_harness, but the claim about the FastAPI logger is technically inconsistent with the absorption requirement."
+    },
+    {
+      "id": 12,
+      "status": "unconfirmed",
+      "primary_vendor": "plan",
+      "primary_finding_id": "harness-ag-ui-bridge-r2.3",
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "naming_violation",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "The ToolCallStart variant in ag-ui-events.schema.json uses the property name `toolCallName`, whereas the internal HarnessEvent.ToolCallStart variant uses `tool_name`. While acceptable for protocol translation, the ag-ui-emitter spec scenarios also use `toolCallName`, which deviates from the upstream AG-UI v0.x protocol's more common use of `name` for the tool name property."
+    },
+    {
+      "id": 13,
+      "status": "unconfirmed",
+      "primary_vendor": "plan",
+      "primary_finding_id": "harness-ag-ui-bridge-r2.4",
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "contract_mismatch",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "The ChatRequest.message maxLength of 32768 is documented in design.md D12 as being for 'memory use' but the OpenAPI contract doesn't explicitly mention that this limit is in characters rather than bytes. In Python/FastAPI this will be interpreted as characters, which is correct for strings but should be noted given the memory-bounding rationale."
+    }
+  ],
+  "summary": {
+    "total_unique_findings": 13,
+    "confirmed_count": 0,
+    "unconfirmed_count": 13,
+    "disagreement_count": 0,
+    "blocking_count": 0
+  }
+}

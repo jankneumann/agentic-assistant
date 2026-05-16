@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "review_type": "plan",
+  "target": "harness-ag-ui-bridge",
+  "reviewer_vendor": "gpt-5-codex",
+  "findings": [
+    {
+      "id": 1,
+      "type": "architecture",
+      "criticality": "high",
+      "description": "The D6 module-boundary fix is not fully converged in the executable work plan. The harness-adapter spec and tasks now put `HarnessEvent` at `src/assistant/harnesses/sdk/events.py`, but `work-packages.yaml` still locks, allows writes to, tests, and reports `src/assistant/transports/ag_ui/events.py`. The selected approach in `proposal.md` also still says `transports/ag_ui/` contains `HarnessEvent`. A worker following the package scope cannot create the corrected module without leaving its write allowlist, so the round-1 module-boundary fix can still be implemented in the old, invalid location.",
+      "disposition": "fix",
+      "axis": "architecture_alignment",
+      "severity": "blocking",
+      "resolution": "Update `proposal.md` selected-approach wording and `work-packages.yaml` so `wp-foundation` locks/writes/outputs `src/assistant/harnesses/sdk/events.py` and its tests live under harness/base streaming coverage, not `src/assistant/transports/ag_ui/events.py`. Keep `src/assistant/transports/ag_ui/types.py` for AG-UI re-exports and `mapper.py` for transport mapping only.",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/work-packages.yaml",
+      "line_range": {
+        "start": 40,
+        "end": 108
+      }
+    },
+    {
+      "id": 2,
+      "type": "contract_mismatch",
+      "criticality": "high",
+      "description": "The thread_id handoff is still not defined for all in-scope SDK harnesses. D4 and task 5.10 require `/chat` to pass `thread_id=app.state.harness._thread_id`, but the MSAF streaming requirement only defines `agent.run(stream=True)` to `HarnessEvent` translation and does not require `MSAgentFrameworkHarness` or the base `SdkHarnessAdapter` to expose a stable `_thread_id`. Because MSAF is explicitly in v1 scope and `serve -H ms_agent_framework` is allowed, the web route can fail at runtime or be unable to populate mandatory AG-UI `threadId` for MSAF streams.",
+      "disposition": "fix",
+      "axis": "contract_consistency",
+      "severity": "blocking",
+      "resolution": "Make the server-thread identifier a first-class SDK harness contract. Prefer adding a stable public `thread_id` property (or `conversation_thread_id`) initialized by `SdkHarnessAdapter` for all SDK harnesses, update Deep Agents to use it for LangGraph config, update MSAF to inherit/use it for AG-UI `threadId`, and change task 5.10 to use that property instead of private `_thread_id`. Add MSAF and web-server scenarios asserting `threadId` is populated for the MSAF serve path.",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/tasks.md",
+      "line_range": {
+        "start": 219,
+        "end": 221
+      }
+    },
+    {
+      "id": 3,
+      "type": "architecture",
+      "criticality": "high",
+      "description": "`wp-foundation` owns task 2.4 to extend `@traced_harness` for async generators, but its work-package write scope points at `src/assistant/observability/**`. In this repo the decorator lives under `src/assistant/telemetry/decorators.py`, and the foundation package does not allow writing that path. A worker following the package contract cannot implement the D9/two-phase observability fix, including the new MSAF exception tracing scenario.",
+      "disposition": "fix",
+      "axis": "work_package_validity",
+      "severity": "blocking",
+      "resolution": "Replace the `src/assistant/observability` lock/write scope with the actual telemetry decorator module path and relevant telemetry tests, for example `src/assistant/telemetry/decorators.py` and `tests/telemetry/**` or the new streaming-specific telemetry test file. Keep the existing foundation dependency ordering because both harness streaming implementations depend on the decorator change.",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/work-packages.yaml",
+      "line_range": {
+        "start": 40,
+        "end": 58
+      }
+    },
+    {
+      "id": 4,
+      "type": "contract_mismatch",
+      "criticality": "high",
+      "description": "The two-phase error contract now depends on `RUN_FINISHED.error`, but D5/task 4.5 still require `types.py` to be only a thin re-export from upstream `ag_ui.core` with no in-repo Pydantic definitions. The installed upstream `RunFinishedEvent` model does not define an `error` field; it defines `result` and allows extras. That means the authoritative local JSON schema constrains `error` with a class-name pattern, while the planned runtime type does not model or validate that field. The artifacts no longer contradict on the desired error semantics, but they still contradict on how those semantics are represented and enforced in the AG-UI type layer.",
+      "disposition": "fix",
+      "axis": "contract_consistency",
+      "severity": "blocking",
+      "resolution": "Either define a local wrapper/subclass/type adapter for the v1 `RunFinished` event that includes the constrained optional `error` field and serializes with `exclude_none`, or change the protocol contract to use an upstream-supported error event such as `RUN_ERROR`. If keeping `RUN_FINISHED.error`, update D5 and task 4.5 so `types.py` is not described as a pure re-export for that event, and add a mapper/type test that invalid error strings fail the local schema before SSE emission.",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/design.md",
+      "line_range": {
+        "start": 84,
+        "end": 97
+      }
+    }
+  ]
+}

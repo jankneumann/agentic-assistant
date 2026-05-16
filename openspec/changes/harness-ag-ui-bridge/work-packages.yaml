@@ -3,7 +3,7 @@ schema_version: 1
 feature:
   id: harness-ag-ui-bridge
   title: AG-UI bridge over FastAPI SSE
-  plan_revision: 2
+  plan_revision: 3
   created_by: jankneumann
   created_at: "2026-05-16T10:00:00Z"
 
@@ -30,17 +30,19 @@ packages:
     task_type: foundation
     description: |
       Establish the harness-agnostic foundation: define the HarnessEvent
-      discriminated union (6 variants), add the abstract astream_invoke method
-      to SdkHarnessAdapter, extend the @traced_harness decorator to dispatch on
-      async generators, and add runtime dependencies (fastapi, uvicorn,
-      sse-starlette, optional ag-ui-protocol). Covers tasks 1.1–1.4 and 2.1–2.4.
+      discriminated union (6 variants) at src/assistant/harnesses/sdk/events.py
+      (D6 import-direction rule), add the abstract astream_invoke method
+      to SdkHarnessAdapter, extend the @traced_harness decorator at
+      src/assistant/telemetry/decorators.py to dispatch on async generators,
+      and add runtime dependencies (fastapi, uvicorn, sse-starlette, ag-ui).
+      Covers tasks 1.1–1.4 and 2.1–2.4.
     priority: 1
     depends_on: []
     locks:
       files:
         - src/assistant/harnesses/base.py
-        - src/assistant/transports/ag_ui/events.py
-        - src/assistant/observability
+        - src/assistant/harnesses/sdk/events.py
+        - src/assistant/telemetry/decorators.py
         - pyproject.toml
         - uv.lock
       keys:
@@ -50,18 +52,15 @@ packages:
       reason: Foundation interfaces and event types — must complete before any parallel implementation work.
     scope:
       write_allow:
-        - "src/assistant/transports/ag_ui/__init__.py"
-        - "src/assistant/transports/ag_ui/events.py"
-        - "src/assistant/transports/__init__.py"
         - "src/assistant/harnesses/base.py"
-        - "src/assistant/observability/**"
+        - "src/assistant/harnesses/sdk/events.py"
+        - "src/assistant/telemetry/decorators.py"
         - "pyproject.toml"
         - "uv.lock"
-        - "tests/transports/__init__.py"
-        - "tests/transports/ag_ui/__init__.py"
-        - "tests/transports/ag_ui/test_events.py"
+        - "tests/harnesses/sdk/__init__.py"
+        - "tests/harnesses/sdk/test_events.py"
         - "tests/harnesses/test_base_streaming.py"
-        - "tests/observability/test_traced_harness_streaming.py"
+        - "tests/telemetry/test_traced_harness_streaming.py"
       read_allow:
         - "src/**"
         - "tests/**"
@@ -70,8 +69,8 @@ packages:
         - "CLAUDE.md"
       deny:
         - "src/assistant/harnesses/sdk/deep_agents.py"
-        - "src/assistant/transports/ag_ui/mapper.py"
-        - "src/assistant/transports/ag_ui/types.py"
+        - "src/assistant/harnesses/sdk/ms_agent_fw.py"
+        - "src/assistant/transports/**"
         - "src/assistant/web/**"
         - "src/assistant/cli.py"
     worktree:
@@ -85,7 +84,7 @@ packages:
       steps:
         - name: pytest-foundation
           kind: command
-          command: "uv run pytest tests/transports/ag_ui/test_events.py tests/harnesses/test_base_streaming.py tests/observability/test_traced_harness_streaming.py -x"
+          command: "uv run pytest tests/harnesses/sdk/test_events.py tests/harnesses/test_base_streaming.py tests/telemetry/test_traced_harness_streaming.py -x"
           evidence:
             artifacts: []
             result_keys: ["pytest_passed"]
@@ -105,8 +104,9 @@ packages:
       result_keys:
         - wp_foundation_complete
       artifacts:
-        - src/assistant/transports/ag_ui/events.py
+        - src/assistant/harnesses/sdk/events.py
         - src/assistant/harnesses/base.py
+        - src/assistant/telemetry/decorators.py
     metadata:
       loc_estimate: 250
       complexity: medium
@@ -249,9 +249,14 @@ packages:
     description: |
       Implement the AG-UI emitter: HarnessEvent → AG-UI v0.x event mapping with
       message/tool-call lifecycle bracketing. Re-exports from upstream ag_ui.core
-      Pydantic models (confirmed installed during plan revision). Covers tasks
-      4.1–4.6. Runs in parallel with wp-deep-agents-stream and wp-msaf-stream
-      (non-overlapping scopes).
+      Pydantic models (RunStartedEvent, RunFinishedEvent, RunErrorEvent,
+      TextMessage*, ToolCall*). Mapper signature takes thread_id keyword-only.
+      Two-phase D8 error contract: terminal internal RunFinished(error=...)
+      maps to RUN_ERROR (not RUN_FINISHED with an error field — the upstream
+      RunFinishedEvent has no error field). Covers tasks 4.1–4.6. Runs in
+      parallel with wp-deep-agents-stream and wp-msaf-stream (non-overlapping
+      scopes). Creates src/assistant/transports/ag_ui/__init__.py and
+      src/assistant/transports/__init__.py as part of new-package setup.
     priority: 2
     depends_on:
       - wp-foundation
@@ -266,8 +271,12 @@ packages:
       reason: AG-UI mapper + types — transport-agnostic event translation.
     scope:
       write_allow:
+        - "src/assistant/transports/__init__.py"
+        - "src/assistant/transports/ag_ui/__init__.py"
         - "src/assistant/transports/ag_ui/mapper.py"
         - "src/assistant/transports/ag_ui/types.py"
+        - "tests/transports/__init__.py"
+        - "tests/transports/ag_ui/__init__.py"
         - "tests/transports/ag_ui/test_mapper.py"
         - "tests/transports/ag_ui/test_types.py"
       read_allow:

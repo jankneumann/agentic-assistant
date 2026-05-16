@@ -38,6 +38,22 @@ method, which remains callable by the CLI REPL.
 - **AND** the stream MUST begin with a `RunStarted` event and end with
   a `RunFinished` event in every successful execution
 
+#### Scenario: SdkHarnessAdapter exposes a thread_id for transport binding
+
+- **WHEN** any concrete `SdkHarnessAdapter` instance is constructed by
+  the harness factory
+- **THEN** it MUST expose a stable `thread_id` attribute (or
+  property) returning a non-empty string identifying the conversation
+  thread bound to that adapter instance
+- **AND** the value MUST persist for the lifetime of the adapter
+  instance (i.e., across multiple `invoke` and `astream_invoke` calls)
+- **AND** the value MUST be readable by the web transport layer (the
+  SSE handler passes it to the AG-UI mapper as the `thread_id`
+  keyword argument); harnesses MAY synthesize it (e.g., MSAF
+  generates a UUID at construction) or derive it from an existing
+  internal field (e.g., Deep Agents reuses `self._thread_id` already
+  wired by the conversation-memory requirement)
+
 ## ADDED Requirements
 
 ### Requirement: HarnessEvent Discriminated Union
