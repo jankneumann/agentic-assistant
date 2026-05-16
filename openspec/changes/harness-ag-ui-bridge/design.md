@@ -19,7 +19,8 @@ The streaming substrate is already wired: the Deep Agents harness uses LangGraph
 - Define a harness-agnostic `HarnessEvent` discriminated union (6 variants for v1).
 - Add `SdkHarnessAdapter.astream_invoke()` as an abstract method yielding `HarnessEvent`.
 - Implement `astream_invoke()` for the Deep Agents harness by consuming `agent.astream(...)`.
-- Provide an AG-UI emitter that maps `HarnessEvent` to AG-UI protocol events.
+- Implement `astream_invoke()` for the MS Agent Framework harness by consuming `agent.run(messages, stream=True)`.
+- Provide an AG-UI emitter that maps `HarnessEvent` to AG-UI protocol events using the upstream `ag_ui` Python package.
 - Mount a FastAPI app with a single SSE endpoint that consumes the emitter and serves AG-UI events.
 - Add a `serve` CLI subcommand that mounts the app with startup-time persona/role binding.
 - All quality gates pass: `pytest tests/`, `ruff check src tests`, `mypy src tests`, `openspec validate --strict`.
@@ -28,7 +29,7 @@ The streaming substrate is already wired: the Deep Agents harness uses LangGraph
 - Any browser frontend, OpenUI Lang rendering, or web UI code.
 - Multi-persona-per-server, multi-tenancy, or auth beyond loopback binding.
 - AG-UI event types beyond the minimal set (no STATE_DELTA, no CUSTOM, no step events).
-- MSAF harness `astream_invoke()` implementation (out of scope until MSAF is real).
+- Adopting Microsoft's `agent_framework_ag_ui` integration (broken in current venv and would fragment the harness boundary — see D10).
 - Thread-id surfacing in HTTP requests (one thread per server process; clients cannot resume conversations across server restarts in v1).
 - WebSocket transport (SSE only for v1).
 - Production-grade error semantics (rate limiting, retry, backpressure beyond what `sse-starlette` provides natively).
@@ -80,13 +81,20 @@ In v1, the server has exactly one conversation thread. Clients cannot pass a `th
 
 **Forward path.** When multi-conversation arrives, the endpoint gains an optional `thread_id` query parameter or header; the harness gains a `with_thread_id()` factory or per-call override; the `InMemorySaver` is replaced with a `SqlSaver`. None of these break the AG-UI event format or the `serve` CLI.
 
-### D5: AG-UI Python types — use `ag-ui-protocol` PyPI package if available; else minimal in-repo types
+### D5: AG-UI Python types — use the upstream `ag_ui` package directly
 
-The implementation should first check whether `ag-ui-protocol` (or equivalent) is available on PyPI with a stable v0.x release. If yes, depend on it. If not, define the minimal AG-UI event types in `src/assistant/transports/ag_ui/types.py` as Pydantic models matching the v0.x spec.
+Resolved during plan revision (2026-05-16): the upstream `ag_ui` Python package is confirmed installed in the current venv. Its `ag_ui.core` submodule provides every event class the v1 minimal scope needs as Pydantic models:
 
-**Rationale.** Using the upstream package gives us spec-conformance for free. But if there's no Python implementation yet (or it's pre-alpha), an in-repo types module is small (~6 Pydantic classes for the v1 minimal set) and unambiguous. We tolerate the spec-drift risk because v0.x is pre-1.0 and AG-UI is small enough to track manually.
+- `RunStartedEvent`, `RunFinishedEvent`, `RunErrorEvent`
+- `TextMessageStartEvent`, `TextMessageContentEvent`, `TextMessageEndEvent`, `TextMessageChunkEvent`
+- `ToolCallStartEvent`, `ToolCallArgsEvent`, `ToolCallEndEvent`, `ToolCallChunkEvent`
+- `EventType` enum with string values matching the v0.x protocol spec
 
-**Verification step (implementation time).** Before adding `pyproject.toml` deps, run `uv pip install --dry-run ag-ui-protocol` (and any plausible variant names: `ag-ui`, `ag-ui-core`, `agui`) to confirm what's installable. If nothing is, ship the in-repo types module.
+`src/assistant/transports/ag_ui/types.py` becomes a thin re-export shim from `ag_ui.core` (no in-repo Pydantic definitions). Add `ag-ui` to `pyproject.toml` dependencies with a permissive version range and pin in `uv.lock`.
+
+**Rationale.** Spec conformance for free; ~80 lines of Pydantic we don't have to write or test; transparent upgrade path when AG-UI v1.0 lands. The original "ship in-repo fallback" option is no longer needed.
+
+**Alternatives considered.** (a) Ship in-repo Pydantic types — rejected because the upstream package exists and works. (b) Reuse the type definitions from inside `agent_framework_ag_ui` — rejected because that package is broken in the current venv (see D10), so re-exporting from it would be fragile.
 
 ### D6: Module boundary discipline
 
@@ -133,18 +141,48 @@ The `Requirement: Harness Invocation Emits Observability Span` in the existing `
 
 **Risk.** The current `@traced_harness` decorator wraps a coroutine returning `str`. An async generator has a different shape — the decorator implementation MUST be updated to dispatch on the wrapped function's coroutine-vs-async-generator kind. This is a small but non-trivial change to `observability` (or wherever the decorator lives); tasks.md tracks it explicitly.
 
+### D10: `agent_framework_ag_ui` acknowledged but unused in v1
+
+Microsoft's `agent-framework-ag-ui` package (installed as `agent_framework_ag_ui`) ships `add_agent_framework_fastapi_endpoint`, `AgentFrameworkAgent`, `AGUIChatClient`, and `AGUIEventConverter`. On paper, it could replace the entire MSAF-side of this change. We chose not to adopt it in v1 for two reasons:
+
+1. **Broken in current venv.** Importing it raises `ImportError: cannot import name 'SupportsAgentRun' from 'agent_framework'`. The root cause is the documented v1.0.1 namespace-package quirk (see `CLAUDE.md` "What's Not Yet Wired" — the meta package's `__init__.py` is empty because multiple connector packages race to claim the namespace; submodule imports succeed but top-level re-exports fail). The MSAF harness already works around this with lazy imports inside method bodies; `agent_framework_ag_ui._agent` does a top-level import and therefore breaks.
+2. **Fragments the harness boundary.** Adopting it for MSAF and keeping our custom emitter for DeepAgents would produce two distinct AG-UI emission paths, one per harness. The transport surface for the two harnesses would diverge in subtle ways (Microsoft's encoder vs. ours), making frontend integration harder to reason about.
+
+**Rationale for revisiting later.** When upstream `agent-framework` v1.x repairs the namespace-package shape (or we pin `agent-framework-core` directly), `agent_framework_ag_ui` becomes usable. At that point a follow-up may evaluate whether to switch MSAF over to Microsoft's path — at the cost of the asymmetry above. The benefit would be one less Pydantic translation layer.
+
+**Decisive factor.** The current uniform path (HarnessEvent → AG-UI via our mapper) preserves the architectural principle from Approach 2 (the harness boundary as the seam) AND works today. Microsoft's path is not yet a viable shortcut.
+
+### D11: MSAF `AgentResponseUpdate` → `HarnessEvent` translation
+
+`agent_framework.Agent.run(messages, stream=True)` returns a `ResponseStream[AgentResponseUpdate, AgentResponse[Any]]`. Iterating yields `AgentResponseUpdate` instances. Our MSAF `astream_invoke` translates each update to one or more `HarnessEvent` variants per the following table:
+
+| AgentResponseUpdate carries | Emit HarnessEvent |
+|---|---|
+| First update of a new run | `RunStarted(run_id, started_at)` (synthesized once, before the first update) |
+| Text content delta on `.text` / `.content` / `.delta` (whichever the SDK exposes) | `TextDelta(message_id, text)` — `message_id` is stable across all text updates within one message |
+| Tool invocation start (presence of new `tool_call_id` / `tool_calls` entry) | `ToolCallStart(call_id, tool_name)` |
+| Tool args delta | `ToolCallArgs(call_id, args_chunk)` |
+| Tool call complete | `ToolCallEnd(call_id, result=optional)` |
+| Stream exhausted normally | `RunFinished(run_id, finished_at, error=None)` |
+| Exception raised mid-stream | `RunFinished(run_id, finished_at, error=<class name>)` then close |
+
+**Rationale.** Mirrors the Deep Agents translation table (which exists implicitly in the LangChain `astream` event types). Keeps the two harnesses' `HarnessEvent` output indistinguishable downstream — the AG-UI emitter cannot tell which harness produced a given event. Implementation will defensively use `getattr(update, ..., None)` with fallbacks since the SDK's `AgentResponseUpdate` shape has churned between minor versions (see `_stringify_run_result` in the existing MSAF harness, which already pattern-matches three different shapes).
+
+**Risk.** SDK shape drift across `agent-framework` minor versions. Tests pin the expected shape to the SDK version in `pyproject.toml`. The same `_stringify_run_result`-style defensive coding pattern is reused for streaming.
+
 ## Risks / Trade-offs
 
 | Risk | Mitigation |
 |---|---|
-| `ag-ui-protocol` PyPI package may not exist or may be pre-alpha | D5 mitigation: ship in-repo Pydantic types as fallback; ~6 classes |
 | LangChain `astream` event vocabulary may evolve | LangGraph v0.x is mature on this surface; pin LangGraph version in `pyproject.toml`; freeze the mapper logic against an explicit list of event types we handle |
-| `HarnessEvent` shape may need adjustment when MSAF becomes real | Variants are minimal and protocol-agnostic; D1's exhaustive-match pattern makes new variants additive |
+| `agent_framework.AgentResponseUpdate` shape drifts across SDK versions | D11 mitigation: defensive `getattr` with fallbacks (mirrors existing `_stringify_run_result` pattern); pytest fixtures pin shape to installed SDK version |
+| `HarnessEvent` shape may need adjustment as new harnesses arrive | Variants are minimal and protocol-agnostic; D1's exhaustive-match pattern makes new variants additive |
 | `@traced_harness` decorator may not handle async generators correctly | D9-noted; tasks.md adds explicit step to extend the decorator with tests |
 | Single-user assumption bakes in single-thread-per-process | D4-acknowledged; documented forward path; not a v1 problem |
 | Discoverability of the new `serve` command | Update `--help` output for the CLI; mention in CLAUDE.md "Essential Commands" |
 | SSE proxy/firewall buffering may break streaming | Loopback-only binding in v1 sidesteps this; document for future Tauri deployment |
 | FastAPI / uvicorn add ~5 new transitive deps | Acceptable; both are mature, well-maintained |
+| `agent_framework_ag_ui` upstream namespace fix lands and changes the right move | D10 acknowledges the option; follow-up evaluates re-adoption after the SDK's namespace quirk is resolved |
 
 ## Migration Plan
 
@@ -156,7 +194,7 @@ For implementers of new SDK harnesses (e.g., the future MSAF implementation), th
 
 These are deferred to implementation time, not blockers for plan approval:
 
-1. **`ag-ui-protocol` Python package availability and quality.** Resolved during Task 1.x (dependency audit). If it exists and is usable, depend on it; else ship in-repo types.
-2. **Exact LangChain `astream` event names to filter.** LangGraph emits many event types (on_chain_start, on_llm_stream, on_tool_start, etc.); the mapper needs to know which to translate and which to drop. Resolved during Task 3.x (mapper implementation) by writing tests against the canonical event set the Deep Agents harness produces.
+1. **Exact LangChain `astream` event names to filter.** LangGraph emits many event types (on_chain_start, on_llm_stream, on_tool_start, etc.); the mapper needs to know which to translate and which to drop. Resolved during Task 3.x (DeepAgents mapper implementation) by writing tests against the canonical event set the Deep Agents harness produces.
+2. **Exact shape of `agent_framework.AgentResponseUpdate` for the installed SDK version.** D11 lays out the conceptual mapping; the exact attribute names (`.text` vs `.content` vs `.delta`) are resolved during Task 3b.x (MSAF mapper implementation) by reading the SDK source and writing fixture-driven tests.
 3. **Whether `--host` defaults to `127.0.0.1` or `localhost`.** Both work; `127.0.0.1` avoids IPv6 dual-stack confusion on some macOS configurations. Resolved during Task 5.x (CLI subcommand implementation).
 4. **Whether `Content-Type: text/event-stream` should include `; charset=utf-8`.** RFC 6455 doesn't require it; some clients prefer it; `sse-starlette` likely handles this. Resolved during Task 4.x (HTTP layer).

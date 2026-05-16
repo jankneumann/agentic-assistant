@@ -3,7 +3,7 @@ schema_version: 1
 feature:
   id: harness-ag-ui-bridge
   title: AG-UI bridge over FastAPI SSE
-  plan_revision: 1
+  plan_revision: 2
   created_by: jankneumann
   created_at: "2026-05-16T10:00:00Z"
 
@@ -175,14 +175,83 @@ packages:
       complexity: medium
       package_kind: integration
 
+  - package_id: wp-msaf-stream
+    title: MSAgentFrameworkHarness.astream_invoke implementation
+    task_type: implementation
+    description: |
+      Implement MSAgentFrameworkHarness.astream_invoke by calling
+      agent.run(messages, stream=True) on the agent-framework SDK
+      (returns a ResponseStream[AgentResponseUpdate, AgentResponse[Any]]).
+      Translate each AgentResponseUpdate to HarnessEvent variants per the
+      D11 mapping table. Defensive getattr with fallbacks for SDK shape
+      drift; keep lazy agent_framework imports for the v1.0.1 namespace
+      quirk. Apply @traced_harness. Covers tasks 3b.1–3b.7.
+      Runs in parallel with wp-deep-agents-stream and wp-ag-ui-emitter
+      (non-overlapping write scopes).
+    priority: 2
+    depends_on:
+      - wp-foundation
+    locks:
+      files:
+        - src/assistant/harnesses/sdk/ms_agent_fw.py
+      keys:
+        - feature:harness-ag-ui-bridge:msafstream
+      ttl_minutes: 120
+      reason: MSAF streaming path — touches a single harness implementation file.
+    scope:
+      write_allow:
+        - "src/assistant/harnesses/sdk/ms_agent_fw.py"
+        - "tests/harnesses/test_ms_agent_fw_astream.py"
+      read_allow:
+        - "src/**"
+        - "tests/**"
+        - "openspec/changes/harness-ag-ui-bridge/**"
+        - "openspec/specs/**"
+      deny:
+        - "src/assistant/harnesses/sdk/deep_agents.py"
+        - "src/assistant/web/**"
+        - "src/assistant/cli.py"
+        - "src/assistant/transports/**"
+    worktree:
+      name: wp-msaf-stream
+      mode: isolated
+    timeout_minutes: 90
+    retry_budget: 1
+    min_trust_level: 2
+    verification:
+      tier_required: B
+      steps:
+        - name: pytest-msaf-streaming
+          kind: command
+          command: "uv run pytest tests/harnesses/test_ms_agent_fw_astream.py -x"
+          evidence:
+            artifacts: []
+            result_keys: ["pytest_passed"]
+        - name: mypy
+          kind: command
+          command: "uv run mypy src tests"
+          evidence:
+            artifacts: []
+            result_keys: ["mypy_passed"]
+    outputs:
+      result_keys:
+        - wp_msaf_stream_complete
+      artifacts:
+        - src/assistant/harnesses/sdk/ms_agent_fw.py
+    metadata:
+      loc_estimate: 150
+      complexity: medium
+      package_kind: integration
+
   - package_id: wp-ag-ui-emitter
-    title: AG-UI event mapper and types
+    title: AG-UI event mapper and types (using upstream ag_ui package)
     task_type: implementation
     description: |
       Implement the AG-UI emitter: HarnessEvent → AG-UI v0.x event mapping with
-      message/tool-call lifecycle bracketing. Either re-export from upstream
-      ag-ui-protocol (if usable) or define types in-repo. Covers tasks 4.1–4.6.
-      Runs in parallel with wp-deep-agents-stream (non-overlapping scopes).
+      message/tool-call lifecycle bracketing. Re-exports from upstream ag_ui.core
+      Pydantic models (confirmed installed during plan revision). Covers tasks
+      4.1–4.6. Runs in parallel with wp-deep-agents-stream and wp-msaf-stream
+      (non-overlapping scopes).
     priority: 2
     depends_on:
       - wp-foundation
@@ -252,6 +321,7 @@ packages:
     priority: 3
     depends_on:
       - wp-deep-agents-stream
+      - wp-msaf-stream
       - wp-ag-ui-emitter
     locks:
       files:
