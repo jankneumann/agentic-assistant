@@ -490,10 +490,10 @@ mitigations, in increasing strength:
    `src/assistant/core/memory*` (when added),
    `src/assistant/telemetry/`, or related interface files must touch
    the corresponding ledger entry. Reviewers reject PRs that don't.
-2. **CI gate (planned):** a check that fails the build when an
-   interface-bearing file is modified without a corresponding
-   ledger touch. Implementation deferred; the obligation in (1) is
-   the working agreement until the gate lands.
+2. **CI gate (implemented):** `scripts/check-architecture-ledger-drift.py`
+   fails when interface-bearing files change without touching
+   `docs/architecture/interface-stability.md` or
+   `docs/architecture/primitives-and-providers.md`.
 
 The ledger is meant to be edited frequently. A stale entry is worse
 than a missing one — it silently lies to consumers about what they

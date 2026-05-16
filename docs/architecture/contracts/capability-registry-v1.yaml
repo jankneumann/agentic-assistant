@@ -1,0 +1,21 @@
+version: 1
+canonical_form: openapi-3.1
+extensions:
+  - x-aa-streaming
+  - x-aa-roles
+  - x-aa-auth
+capability_kinds:
+  - tool
+  - skill
+  - agent
+required_fields:
+  - id
+  - kind
+  - name
+  - description
+  - projection_targets
+projection_targets:
+  - langchain
+  - msaf
+  - mcp
+  - cli

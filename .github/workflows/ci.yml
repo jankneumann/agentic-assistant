@@ -49,6 +49,9 @@ jobs:
       - name: Ruff
         run: uv run ruff check .
 
+      - name: Architecture ledger drift gate
+        run: python scripts/check-architecture-ledger-drift.py
+
       - name: Mypy
         run: uv run mypy src tests
 
