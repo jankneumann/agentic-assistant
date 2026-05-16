@@ -1,11 +1,11 @@
 ## 1. Foundation — Dependencies and HarnessEvent
 
-- [ ] 1.1 Audit AG-UI Python package availability
-  **Goal**: Resolve design Open Question 1 / D5. Run `uv pip install --dry-run` against `ag-ui-protocol`, `ag-ui`, `ag-ui-core`, `agui` to determine which is installable. Document the choice (use upstream OR ship in-repo types).
-  **Spec scenarios**: (none — pre-implementation research)
-  **Contracts**: (none)
-  **Design decisions**: D5
+- [ ] 1.1 ~~Audit AG-UI Python package availability~~ (resolved during plan revision)
+  **Resolution**: Use upstream `ag-ui` (Python package). Confirmed installed in current venv; `ag_ui.core` exposes Pydantic-typed event classes for every v1-scoped type plus `EventType` enum. No in-repo types needed. Add `ag-ui` to `pyproject.toml` dependencies during Task 1.4.
+  **Spec scenarios**: (none — research task, resolved at plan time)
+  **Design decisions**: D5 (updated)
   **Dependencies**: None
+  **Status**: closed; superseded by Task 1.4
 
 - [ ] 1.2 Write tests for HarnessEvent discriminated union
   **Spec scenarios**: harness-adapter "HarnessEvent variants are exhaustive for v1", "RunStarted carries an opaque run identifier", "TextDelta carries partial text chunks", "Tool call lifecycle events share a call_id"
@@ -18,8 +18,8 @@
   **Dependencies**: 1.2
 
 - [ ] 1.4 Add runtime + dev dependencies to `pyproject.toml`
-  **Goal**: Add `fastapi`, `uvicorn[standard]`, `sse-starlette`. Conditionally add `ag-ui-protocol` (or chosen variant) if 1.1 found one usable. Run `uv sync` and verify the lockfile diff is sane.
-  **Dependencies**: 1.1
+  **Goal**: Add `fastapi`, `uvicorn[standard]`, `sse-starlette`, and `ag-ui` (the upstream AG-UI types package, confirmed installed during plan revision). Run `uv sync` and verify the lockfile diff is sane.
+  **Dependencies**: None
 
 ## 2. Harness Interface Evolution
 
@@ -71,6 +71,44 @@
 - [ ] 3.6 Implement `DeepAgentsHarness.astream_invoke` in `src/assistant/harnesses/sdk/deep_agents.py`
   **Goal**: Consume `agent.astream(...)` with the existing `_thread_id`; translate LangChain stream events into `HarnessEvent` variants. Open question: exact LangChain event names to filter — resolve by writing the implementation against an explicit allowlist. Apply `@traced_harness` decorator.
   **Dependencies**: 3.1, 3.2, 3.3, 3.4, 3.5, 2.4
+
+## 3b. MS Agent Framework Streaming Implementation
+
+Added during plan revision after confirming MSAF is fully implemented (per the existing `ms-agent-framework-harness` spec and `src/assistant/harnesses/sdk/ms_agent_fw.py`). Runs in parallel with Section 3 (different harness file). Both depend on Section 2 foundation.
+
+- [ ] 3b.1 Write tests for MSAF `astream_invoke` calling `agent.run(stream=True)`
+  **Spec scenarios**: harness-adapter "MSAF astream_invoke calls agent.run with stream=True"
+  **Design decisions**: D11
+  **Dependencies**: 2.2
+
+- [ ] 3b.2 Write tests for MSAF lifecycle bracketing (RunStarted/RunFinished)
+  **Spec scenarios**: harness-adapter "MSAF astream_invoke emits RunStarted then RunFinished"
+  **Design decisions**: D1, D11
+  **Dependencies**: 2.2
+
+- [ ] 3b.3 Write tests for `AgentResponseUpdate` → `TextDelta` mapping
+  **Spec scenarios**: harness-adapter "MSAF astream_invoke translates text updates to TextDelta"
+  **Design decisions**: D11
+  **Dependencies**: 2.2
+
+- [ ] 3b.4 Write tests for MSAF tool-call lifecycle translation
+  **Spec scenarios**: harness-adapter "MSAF astream_invoke translates tool calls to lifecycle events"
+  **Design decisions**: D11
+  **Dependencies**: 2.2
+
+- [ ] 3b.5 Write tests for MSAF error propagation (exception → terminal RunFinished with error)
+  **Spec scenarios**: harness-adapter "MSAF astream_invoke emits RunFinished with error on exception"
+  **Design decisions**: D8, D11
+  **Dependencies**: 2.2
+
+- [ ] 3b.6 Write tests for `@traced_harness` on MSAF streaming path
+  **Spec scenarios**: harness-adapter "MSAF astream_invoke applies @traced_harness"
+  **Design decisions**: D9
+  **Dependencies**: 2.4
+
+- [ ] 3b.7 Implement `MSAgentFrameworkHarness.astream_invoke` in `src/assistant/harnesses/sdk/ms_agent_fw.py`
+  **Goal**: Call `agent.run(messages, stream=True)`, iterate the returned `ResponseStream`, translate `AgentResponseUpdate` instances to `HarnessEvent` per the D11 mapping table. Use defensive `getattr` with fallbacks (mirror `_stringify_run_result`). Keep lazy `agent_framework` imports (v1.0.1 namespace quirk workaround). Apply `@traced_harness` decorator.
+  **Dependencies**: 3b.1, 3b.2, 3b.3, 3b.4, 3b.5, 3b.6, 2.4
 
 ## 4. AG-UI Emitter
 

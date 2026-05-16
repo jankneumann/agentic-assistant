@@ -53,3 +53,49 @@
 ### Context
 
 The user invoked plan-feature after a multi-turn exploration documented at the explore directory under openspec. That exploration eliminated Thesys C1, Vercel AI SDK with RSC, and CopilotKit on stack-fit and privacy grounds. It selected AG-UI for transport and OpenUI Lang for rendering as the two open standards to adopt. This change implements the first phase of that plan: the transport-only AG-UI bridge over HTTP and SSE, with no frontend yet. Success is verified with curl against the new endpoint.
+
+---
+
+## Phase: Plan revision (2026-05-16)
+
+**Agent**: claude_code (Opus 4.7 1M context) | **Session**: local
+
+### Decisions
+
+1. Extend scope to include MSAF streaming. The explore agent had reported MSAF as stubbed (working from a stale CLAUDE.md note), but the actual code at src/assistant/harnesses/sdk/ms_agent_fw.py is a fully wired SdkHarnessAdapter using agent_framework.Agent with capability resolver, memory prepend, tool policy filtering, and lazy imports for the v1.0.1 namespace quirk. Making astream_invoke abstract on the base class without implementing it on MSAF would regress the spec consistency (MSAF.invoke is real but MSAF.astream_invoke would raise NotImplementedError). Decision: implement MSAF streaming in this change.
+
+2. Use the upstream ag_ui Python package. Confirmed installed in the current venv. ag_ui.core provides Pydantic-typed RunStartedEvent, RunFinishedEvent, TextMessageStartEvent, TextMessageContentEvent, TextMessageEndEvent, ToolCallStartEvent, ToolCallArgsEvent, ToolCallEndEvent plus the EventType enum. Replaces the in-repo Pydantic types fallback option in D5. The original open question (does the package exist) is closed.
+
+3. Acknowledge Microsoft agent_framework_ag_ui but do not adopt in v1. The package is installed and ships add_agent_framework_fastapi_endpoint, AgentFrameworkAgent, AGUIChatClient, AGUIEventConverter. However: importing it fails today with "cannot import name SupportsAgentRun from agent_framework", a consequence of the v1.0.1 namespace-package quirk. Even if it worked, adopting it would fragment the harness boundary (Microsoft path for MSAF, custom path for DeepAgents). Documented as D10 with a follow-up reconsideration once upstream packaging is fixed.
+
+4. MSAF stream translation table documented as D11. Maps AgentResponseUpdate fields (with defensive getattr fallbacks) to HarnessEvent variants. Mirrors the existing _stringify_run_result defensive coding pattern for SDK shape drift.
+
+5. Bump plan_revision to 2 in work-packages.yaml to reflect material plan change.
+
+### Alternatives Considered
+
+- Defer MSAF streaming to a follow-up issue and make astream_invoke non-abstract with a NotImplementedError default. Rejected because it ships a spec inconsistency (MSAF would have only partial SdkHarnessAdapter compliance after this change) and would force the CLI serve subcommand to reject MSAF at runtime, which is a regression.
+- Adopt Microsoft agent_framework_ag_ui for MSAF and keep our custom emitter for DeepAgents. Rejected because the package is broken in the current venv (v1.0.1 namespace quirk) and even if fixed it would fragment the harness boundary.
+- Investigate fixing the agent_framework_ag_ui import (potentially upstream PR). Rejected for this change because the fix is not scoped here and the current uniform-HarnessEvent path works today. Filed mentally as a future evaluation when upstream resolves the packaging issue.
+
+### Trade-offs
+
+- Accepted ~150 additional lines and one more work package (wp-msaf-stream) for spec consistency across both currently-real harnesses.
+- Accepted the SDK-shape-drift risk for agent_framework.AgentResponseUpdate. Mitigation: defensive getattr fallbacks plus version-pinned test fixtures.
+- Accepted the slightly longer parallel layer (3 packages: wp-deep-agents-stream, wp-msaf-stream, wp-ag-ui-emitter) instead of 2. Parallel zone validation already confirms no scope overlap.
+
+### Open Questions
+
+- Exact attribute names on agent_framework.AgentResponseUpdate (text vs content vs delta, tool_calls list shape). Resolved during Task 3b.7 by reading the SDK source and writing fixture-driven tests.
+
+### Procedural Notes
+
+- proposal.md updated: What Changes adds MSAF MODIFIED bullet; Impact updates the modified files list and rephrases MSAF future impact to MSAF current impact; Selected Approach mentions the revision; out-of-scope drops the now-included MSAF item.
+- design.md updated: D5 rewritten (use upstream ag_ui); D10 added (Microsoft package broken in venv plus harness-boundary fragmentation concern); D11 added (MSAF translation table); Risks updated; Open Question 1 dropped.
+- specs/harness-adapter/spec.md updated: new ADDED Requirement "MS Agent Framework Streaming Invocation" with six scenarios paralleling the Deep Agents one.
+- tasks.md updated: Task 1.1 marked closed (research resolved at plan time); Task 1.4 dropped its dependency on 1.1; new Section 3b added with seven MSAF tasks (six tests plus one implementation).
+- work-packages.yaml updated: plan_revision bumped to 2; new wp-msaf-stream package added between wp-deep-agents-stream and wp-ag-ui-emitter; wp-web-cli.depends_on extended with wp-msaf-stream.
+
+### Context
+
+User answered Gate 2 with the directive to check the code because MSAF was reported as implemented in P5 already. Code inspection confirmed MSAF.invoke is real and uses agent_framework.Agent.run; the SDK also exposes stream=True overload returning ResponseStream. This revision aligns the plan with the actual codebase state.

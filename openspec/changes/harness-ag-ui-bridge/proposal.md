@@ -9,9 +9,10 @@ This change implements that first slice. It is off-roadmap (P1–P5+P9 are archi
 - **NEW** `serve` CLI subcommand: `uv run assistant serve -p <persona> -r <role> -H <harness> --host 127.0.0.1 --port 8765` mounts a FastAPI ASGI app with persona/role bound at startup time.
 - **NEW** FastAPI app at `src/assistant/web/` exposing a single SSE endpoint (`POST /chat` → `text/event-stream`) that accepts a user message and streams AG-UI events back.
 - **NEW** AG-UI emitter at `src/assistant/transports/ag_ui/` that maps harness-internal events to AG-UI protocol events (`RUN_STARTED`, `TEXT_MESSAGE_START`/`_CONTENT`/`_END`, `TOOL_CALL_START`/`_ARGS`/`_END`, `RUN_FINISHED`).
-- **MODIFIED** `SdkHarnessAdapter`: adds an additive abstract method `astream_invoke(agent, message) -> AsyncIterator[HarnessEvent]`. Existing `invoke() -> str` is unchanged. **Not a breaking change** for the CLI (still uses `invoke()`). New for any harness implementer.
+- **MODIFIED** `SdkHarnessAdapter`: adds an additive abstract method `astream_invoke(agent, message) -> AsyncIterator[HarnessEvent]`. Existing `invoke() -> str` is unchanged. **Not a breaking change** for the CLI (still uses `invoke()`). New for every concrete harness implementer.
 - **MODIFIED** Deep Agents harness: implements `astream_invoke()` by consuming `agent.astream(...)` from LangGraph (the substrate is already wired via `InMemorySaver` per commit `67795c2`).
-- New runtime deps: `fastapi`, `uvicorn[standard]`, `sse-starlette`, and one of `ag-ui-protocol` (if a Python package exists) or a small in-repo `ag_ui` types module.
+- **MODIFIED** MS Agent Framework harness: implements `astream_invoke()` by consuming `agent.run(messages, stream=True)` from `agent-framework` (which returns a `ResponseStream[AgentResponseUpdate, AgentResponse[Any]]` — the typed overload at `_agents.py:1631-1645`). Required for the abstract method to be honored on every concrete SdkHarnessAdapter, and verified during plan revision after the explore agent reported MSAF as stubbed (it is fully wired since P5).
+- New runtime deps: `fastapi`, `uvicorn[standard]`, `sse-starlette`, and `ag-ui` (the upstream AG-UI Python types package — confirmed installed; `ag_ui.core` provides Pydantic-typed `RunStartedEvent`, `RunFinishedEvent`, `TextMessage{Start,Content,End}Event`, `ToolCall{Start,Args,End}Event`).
 - New dev deps: none — `httpx` and `pytest-asyncio` are already present and used for SSE client testing.
 
 **Out of scope (deferred to follow-up changes):**
@@ -19,7 +20,7 @@ This change implements that first slice. It is off-roadmap (P1–P5+P9 are archi
 - Multi-persona-per-server, auth, multi-tenancy.
 - AG-UI events beyond the minimal set (no `STATE_DELTA`, no custom events) — answer to discovery Q3.
 - Thread-id surfacing to clients (single conversation per server process is implied by startup-time persona binding).
-- MSAF harness streaming implementation (lands when MSAF is real; this change defines the abstract contract MSAF will implement).
+- Adopting Microsoft's `agent_framework_ag_ui` package directly (it is installed but currently broken in the venv due to the v1.0.1 namespace-package quirk; also would fragment the harness boundary). Acknowledged in design.md D10 as a future option if the upstream packaging issue is resolved.
 
 ## Capabilities
 
@@ -36,10 +37,10 @@ This change implements that first slice. It is off-roadmap (P1–P5+P9 are archi
 ## Impact
 
 - **New code surface:** `src/assistant/transports/ag_ui/` (new package), `src/assistant/web/` (new package), one new CLI subcommand in `src/assistant/cli.py`.
-- **Modified files:** `src/assistant/harnesses/base.py` (new abstract method), `src/assistant/harnesses/sdk/deep_agents.py` (implement astream_invoke), `src/assistant/cli.py` (new subcommand), `pyproject.toml` (new deps).
-- **Tests:** `tests/transports/ag_ui/` (mapper unit tests), `tests/web/` (httpx-driven SSE client tests against a TestClient-mounted app), `tests/harnesses/test_deep_agents_streaming.py` (streaming variant of existing harness tests).
-- **External deps:** adds FastAPI + uvicorn + sse-starlette to runtime; verify availability of `ag-ui-protocol` PyPI package (open question, addressed during implementation).
-- **MSAF future impact:** When the MSAF harness becomes real (post-P5), it must implement `astream_invoke()`. Until then, MSAF stays stubbed; the abstract method on the base class enforces this for any new harness.
+- **Modified files:** `src/assistant/harnesses/base.py` (new abstract method), `src/assistant/harnesses/sdk/deep_agents.py` (implement astream_invoke), `src/assistant/harnesses/sdk/ms_agent_fw.py` (implement astream_invoke), `src/assistant/cli.py` (new subcommand), `pyproject.toml` (new deps).
+- **Tests:** `tests/transports/ag_ui/` (mapper unit tests), `tests/web/` (httpx-driven SSE client tests against a TestClient-mounted app), `tests/harnesses/test_deep_agents_astream.py` and `tests/harnesses/test_ms_agent_fw_astream.py` (streaming variants of the existing harness tests).
+- **External deps:** adds FastAPI + uvicorn + sse-starlette + `ag-ui` to runtime. The `ag-ui` package is confirmed installed in the current venv; `pyproject.toml` will declare it explicitly so future installs pin it.
+- **MSAF impact (corrected during plan revision):** MSAF is already fully implemented (per the existing `ms-agent-framework-harness` spec and `src/assistant/harnesses/sdk/ms_agent_fw.py`); this change adds `astream_invoke()` to MSAF as well, wrapping `agent.run(messages, stream=True)`. The abstract method on the base class is honored uniformly across both harnesses today, not just future-MSAF.
 - **Privacy boundary:** No changes. Server binds to `127.0.0.1` by default; persona scoping is the same as the CLI (startup-time selection). No persona-specific code in the new modules; the privacy guard remains intact.
 - **Off-roadmap acknowledgment:** This is the first concrete deliverable from the generative-UI exploration. Future follow-ups (`web-frontend-shell` and onward) extend this transport rather than replace it.
 
@@ -105,9 +106,11 @@ The decisive factor: MSAF integration is on the roadmap (P5+P10 pending), not hy
 
 ### Selected Approach
 
-**Approach 2 — Separated transport + emitter.** Selected at Gate 1 without modification on 2026-05-16. All downstream artifacts (specs, tasks, design, contracts, work-packages) MUST implement this approach. Specifically:
+**Approach 2 — Separated transport + emitter.** Selected at Gate 1 without modification on 2026-05-16. Plan was revised at Gate 2 (same day) to extend scope: MSAF streaming is included in this change after code inspection confirmed MSAF is already fully implemented (not stubbed as the explore agent had reported). All downstream artifacts (specs, tasks, design, contracts, work-packages) MUST implement this approach. Specifically:
 
 - Two new packages: `src/assistant/transports/ag_ui/` (emitter + HarnessEvent) and `src/assistant/web/` (FastAPI + SSE serving).
 - New `HarnessEvent` discriminated union (6 variants for v1: `RunStarted`, `RunFinished`, `TextDelta`, `ToolCallStart`, `ToolCallArgs`, `ToolCallEnd`).
-- `SdkHarnessAdapter.astream_invoke()` yields `HarnessEvent`, not raw LangChain stream events.
+- `SdkHarnessAdapter.astream_invoke()` yields `HarnessEvent`, not raw LangChain or `agent_framework` stream events. Both DeepAgents and MSAF map their respective SDK stream events to the same `HarnessEvent` shape.
+- AG-UI event types come from the upstream `ag_ui` Python package (`ag_ui.core`), not in-repo types — confirmed installed.
+- Microsoft's `agent_framework_ag_ui` package (which provides `add_agent_framework_fastapi_endpoint`) is acknowledged but not used in v1; see design.md D10 for the rationale.
 - Approaches 1 and 3 are documented above for the historical record and are not in scope.

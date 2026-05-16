@@ -137,6 +137,77 @@ exactly as `invoke` does.
 - **AND** the original `RuntimeError` MUST be wrapped or re-raised
   in a way that lets the AG-UI emitter close the stream cleanly
 
+### Requirement: MS Agent Framework Streaming Invocation
+
+The `MSAgentFrameworkHarness` SHALL implement `astream_invoke(agent,
+message)` by invoking `agent.run(messages, stream=True)` from the
+`agent-framework` SDK (which returns a `ResponseStream[AgentResponseUpdate,
+AgentResponse[Any]]`) and translating each `AgentResponseUpdate` instance
+into the appropriate `HarnessEvent` variant per the mapping table in
+design.md D11. The implementation MUST emit `RunStarted` synthetically
+before iterating the response stream, MUST emit `RunFinished` after the
+stream is exhausted (or on exception), and MUST defensively access the
+update's text and tool-call fields via attribute lookup with fallbacks
+(mirroring the existing `_stringify_run_result` defensive pattern) so
+that SDK shape drift across `agent-framework` minor versions does not
+break the harness contract.
+
+#### Scenario: MSAF astream_invoke calls agent.run with stream=True
+
+- **WHEN** `MSAgentFrameworkHarness.astream_invoke(agent, "hi")` is
+  iterated
+- **THEN** the underlying `agent.run` MUST be called with
+  `stream=True` as a keyword argument
+- **AND** the call MUST pass the user message in the `messages`
+  parameter shape that the agent expects
+
+#### Scenario: MSAF astream_invoke emits RunStarted then RunFinished
+
+- **WHEN** `MSAgentFrameworkHarness.astream_invoke(agent, "hi")` is
+  iterated against a fake agent whose `run(stream=True)` yields a single
+  text update
+- **THEN** the first event yielded MUST be a `RunStarted` instance
+- **AND** the last event yielded MUST be a `RunFinished` instance
+  with the `error` field set to `None`
+
+#### Scenario: MSAF astream_invoke translates text updates to TextDelta
+
+- **WHEN** an `AgentResponseUpdate` carrying text content `"Hello"` is
+  produced by `agent.run(stream=True)`
+- **THEN** the harness MUST yield a `TextDelta` event whose `text`
+  field equals `"Hello"`
+- **AND** the `message_id` MUST be stable across consecutive text
+  updates belonging to the same assistant message
+
+#### Scenario: MSAF astream_invoke translates tool calls to lifecycle events
+
+- **WHEN** the underlying `agent.run(stream=True)` emits a sequence
+  representing a tool invocation named `"search"` with arguments
+  `{"q": "decorators"}`
+- **THEN** the harness MUST yield a `ToolCallStart` with `tool_name`
+  equal to `"search"`
+- **AND** at least one `ToolCallArgs` event whose accumulated payload
+  parses to the original arguments
+- **AND** a `ToolCallEnd` event with the same `call_id`
+
+#### Scenario: MSAF astream_invoke emits RunFinished with error on exception
+
+- **WHEN** the underlying `agent.run(stream=True)` raises
+  `RuntimeError("quota exceeded")`
+- **THEN** the harness MUST yield a terminal `RunFinished` event
+  whose `error` field is populated with the exception type name
+- **AND** the original `RuntimeError` MUST be wrapped or re-raised
+  in a way that lets the AG-UI emitter close the stream cleanly
+
+#### Scenario: MSAF astream_invoke applies @traced_harness
+
+- **WHEN** `MSAgentFrameworkHarness.astream_invoke(agent, "hi")` is
+  fully consumed
+- **THEN** the `@traced_harness` decorator MUST be applied to the
+  concrete method
+- **AND** `trace_llm_call` MUST be called exactly once after the
+  generator is exhausted, with `metadata={"streaming": True}`
+
 ### Requirement: Streaming Harness Invocation Emits Observability Span
 
 The system SHALL emit exactly one `trace_llm_call` observability span
