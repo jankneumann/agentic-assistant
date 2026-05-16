@@ -1,0 +1,328 @@
+# Primitives and Providers
+
+This document is the architectural statement of `agentic-assistant`. It names
+the agent-platform **primitives** the repo abstracts over, the **interfaces**
+those primitives present, and the **providers** (local reference
+implementations, third-party open-source projects, and managed services) that
+can be plugged in behind each interface on a per-persona basis.
+
+The single sentence: **the repo's value is not any one implementation; it is
+the persona-scoped composition of selected providers behind stable interfaces,
+with a privacy boundary between personas.**
+
+## Architectural framing
+
+This is the Service Provider Interface (SPI) pattern applied to agent
+primitives. The same pattern shows up across software history:
+
+- **JDBC / Python DB-API** — interface over relational databases; drivers per
+  vendor; conformance test kits ensure swap-ability.
+- **Kubernetes CRI/CNI/CSI** — interfaces over container runtime, networking,
+  and storage; operators pick providers per cluster.
+- **SQLAlchemy dialects** — one ORM surface, N database backends.
+- **Terraform providers** — one config language, N cloud and SaaS targets.
+- **OpenTelemetry exporters** — one instrumentation surface, N backends.
+
+The pattern earns its keep when three disciplines are honoured: interfaces
+stay narrow (every method is a coupling point), conformance tests verify
+that any implementation satisfies the contract, and feature matrices
+acknowledge legitimate per-provider divergence without polluting the core
+interface.
+
+A **persona** in this repo is a configuration bundle — which model, which
+harness, which memory backend, which identity store, which tool catalog, which
+observability backend — bound together with a private config repo (mounted as
+a submodule under `personas/<name>/`) and its own database. A **role** is a
+behavioural overlay (prompt, delegation rules, preferred tools) that runs
+on top of whatever provider mix the persona selects.
+
+### What's actually novel
+
+Narrowed honestly: the load-bearing novelty in this repo is not the
+persona-and-role concept itself (multi-tenant agent platforms achieve
+analogous boundaries; role-as-system-prompt-fragment is well-explored).
+The unprecedented combination is:
+
+- **Public code, private config via per-persona git submodules.** The
+  public repo can ship open-source while every persona's credentials,
+  role overrides, DB schema, and skill set live in independent private
+  submodules under `personas/<name>/`. No managed agent platform offers
+  this split because they assume cloud-hosted tenant isolation; no
+  open-source framework offers it because they assume a single user.
+- **A two-layer privacy guard** (`tests/_privacy_guard_plugin.py` plus
+  `tests/conftest.py`) that enforces the public/private split at test
+  collection time (substring scan for private-persona identifiers) and
+  at runtime (FS I/O patching against private paths). This is the
+  artifact that turns the submodule split from convention into
+  contract.
+
+Persona-as-execution-boundary, role-as-overlay, and SPI-shaped provider
+selection are the *delivery vehicle* for that novelty. They are not the
+novelty themselves; they are well-trodden patterns adapted to carry
+the privacy boundary cleanly.
+
+## The primitive table
+
+Each row is a primitive. Each row defines an **interface** (the abstract
+contract the repo owns), names current and prospective **providers** for it,
+and notes whether the interface is currently realized in code, planned, or
+still under design. Stability classification per interface lives in
+[`interface-stability.md`](./interface-stability.md).
+
+| Primitive | Interface (repo-owned contract) | Local / OSS providers | Managed providers |
+|---|---|---|---|
+| **Models** (LLMs) | `ChatModel` — init, invoke, stream, tool-calling, vision, thinking budget | Ollama, vLLM, llama.cpp; LiteLLM or Pi-ai as cross-provider façades | Anthropic, OpenAI, Google, Bedrock, Vertex, Azure OpenAI, xAI, Groq, Fireworks, Together |
+| **Harness / Framework** | `HarnessAdapter` (`src/assistant/harnesses/base.py:12`); SDK and Host tiers | DeepAgents/LangGraph (implemented), MSAF (stub → P5), Pi (proposed), Strands, ADK, OpenAI Agents SDK, CrewAI, AutoGen | AgentCore Runtime, Bedrock Agents, OpenAI Assistants, Azure AI Foundry Agents, Vertex Agent Builder, Anthropic managed agents (when shipped) |
+| **Capability Registry** | `CapabilityRegistry` (proposed) — publish, discover, project; OpenAPI canonical form with streaming and scoping extensions | `HttpToolRegistry` (current, partial); self-hosted MCP gateway projecting OpenAPI; CLI projection | AgentCore Gateway, OpenAI Tools, Azure Foundry Connectors |
+| **Memory** | `MemoryManager` (proposed) — read by query, ingest event, semantic search, forget, per-persona isolation | Postgres + Graphiti (planned), Letta, Zep self-host, mem0 self-host, Cognee, LangGraph `PostgresStore` | AgentCore Memory, OpenAI Threads/Memory, Foundry Memory, Anthropic memory primitives (when shipped) |
+| **Identity** | `IdentityProvider` (proposed) — credential vault for agent-to-tool/agent-to-service auth, workload identity | OpenBao / HashiCorp Vault (`bao-vault` skill); local OAuth flows | AgentCore Identity, Azure Managed Identity, AWS IAM, Workload Identity Federation, OpenAI service accounts |
+| **Sessions / Checkpointing** | `SessionStore` (proposed) — persist conversation state, fork, branch, resume | LangGraph `InMemorySaver` (current), `SqliteSaver`, `PostgresSaver`, Pi `SessionManager` (JSON-L) | AgentCore session state, OpenAI Threads, Foundry runs |
+| **Observability** | OpenTelemetry gen-ai semantic conventions; thin `Tracer` wrapper at boundaries | Langfuse self-hosted (current, see [`observability.md`](../observability.md)), Phoenix, Jaeger | AgentCore Observability, Datadog, Honeycomb, LangSmith |
+| **Sandboxes** (code, browser) | `Sandbox` (proposed) — bounded execution surface, capability-gated | Docker + Playwright, e2b.dev self-host, Pi built-in `bash` | AgentCore Code Interpreter, AgentCore Browser, OpenAI Code Interpreter, e2b.dev managed |
+| **Agent Registry** | `AgentRegistry.spawn(...)` (proposed) — local in-process fast path; A2A for cross-process / cross-runtime | In-process Python registry; A2A bridge for cross-runtime | AgentCore Runtime invocations, OpenAI Assistants handoffs, Foundry agent orchestration |
+| **Skill discovery** | `SkillResolver` (proposed) — given query, return matching skills; consume `~/.agents/skills/` and `.agents/skills/` layouts | In-repo skill walker (synced from `agentic-coding-tools/skills/`); Pi's native skill discovery | (No managed equivalent today) |
+
+The repo holds the interface column. Providers in the local/OSS column are
+either implemented, planned, or candidates the repo is positioned to adopt
+without core changes. Providers in the managed column are slot-compatible
+once interface adapters exist; they are not preconditions for the local
+column to be useful.
+
+## Example persona compositions
+
+The provider selection is per-persona, not global. Two illustrative
+compositions:
+
+### `personal` persona — local-first, sovereign
+
+| Primitive | Provider |
+|---|---|
+| Models | Claude via Anthropic API; Ollama for offline fallback |
+| Harness | DeepAgents (LangGraph) for general reasoning; Pi for code/file/shell tasks (post-integration) |
+| Capability Registry | Self-hosted MCP gateway over the repo's HTTP+OpenAPI tool registry |
+| Memory | Local Postgres + Graphiti, scoped to `personas/personal/` DB |
+| Identity | OpenBao vault holding personal API keys |
+| Sessions | LangGraph `PostgresSaver` against persona-local Postgres |
+| Observability | Self-hosted Langfuse (per `docs/observability.md`) |
+| Sandboxes | Local Docker for code execution; Playwright for browser |
+| Agent Registry | In-process Python registry |
+| Skill discovery | Repo `.agents/skills/` synced from `agentic-coding-tools` |
+
+### `work` persona — employer-cloud, leverage managed services
+
+| Primitive | Provider |
+|---|---|
+| Models | Whichever frontier models the employer licenses (Claude / GPT / Gemini via Bedrock / Azure / Vertex) |
+| Harness | MSAF for M365-shaped work; AgentCore Runtime for serverless agents |
+| Capability Registry | AgentCore Gateway federating internal APIs and employer SaaS |
+| Memory | AgentCore Memory (or Foundry Memory on Azure shops) |
+| Identity | AgentCore Identity bridged to employer SSO / Azure Managed Identity |
+| Sessions | AgentCore session state |
+| Observability | AgentCore Observability → employer APM (Datadog / Splunk / etc.) |
+| Sandboxes | AgentCore Code Interpreter, AgentCore Browser |
+| Agent Registry | AgentCore Runtime + A2A for cross-process spawning |
+| Skill discovery | Same as `personal` (skills are persona-portable) |
+
+The role catalog (`roles/researcher`, `roles/triage`, `roles/coder`, etc.),
+the persona × role prompt composition (`src/assistant/core/composition.py`),
+the privacy guard (`tests/_privacy_guard_plugin.py`), the OpenSpec workflow,
+and the skill discovery layer are **identical across both personas**. Only
+the provider bindings differ.
+
+## What's filled today vs. aspirational
+
+Honest accounting of the matrix as of writing:
+
+**Interfaces realized in code:**
+
+- `HarnessAdapter` and its two tiers (`harnesses/base.py:12,24,48`) — narrow,
+  but a planned shrink is expected once `AgentRegistry` and
+  `CapabilityRegistry` land (sub-agent spawning and tool wiring move out of
+  the adapter).
+- `Extension` protocol (`extensions/base.py:15`) — currently leaky: the
+  `as_langchain_tools()` / `as_ms_agent_tools()` dual-surface bakes consumer
+  identity into the protocol. Slated for replacement by a
+  `register(registry, persona)` shape once `CapabilityRegistry` exists.
+- HTTP tool registry (`HttpToolRegistry` + OpenAPI discovery from persona
+  `tool_sources`) — partial implementation of the future
+  `CapabilityRegistry`. Four open follow-ups (#16–#19) address known gaps.
+- Observability — fully real via Langfuse with OTel-shaped spans, opt-in.
+
+**Interfaces planned but not yet defined:**
+
+- `CapabilityRegistry` (canonical form + projections) — design work pending.
+- `MemoryManager` — interface shape sketched (read/ingest/search/forget);
+  Postgres + Graphiti provider planned for the `memory-architecture` phase.
+- `IdentityProvider` — OpenBao integration exists at the script level
+  (`bao-vault` skill) but no agent-facing interface yet.
+- `SessionStore` — LangGraph checkpointers are used directly by the
+  DeepAgents adapter; lift to a primitive once a second harness needs the
+  same capability.
+- `Sandbox` — currently per-harness (Pi has `bash` built in; DeepAgents has
+  none yet). Lift when sandbox use becomes cross-harness.
+- `AgentRegistry` — implicit in `spawn_sub_agent` today; should be lifted
+  out of `HarnessAdapter`.
+
+**Interfaces deferred:**
+
+- `SkillResolver` — `.agents/skills/` layout is stable and consumed
+  directly today; formal interface waits until dynamic skill loading per
+  turn matters.
+
+## Cross-cutting concerns the matrix hides
+
+The primitive table draws clean per-row separations. Real systems have
+wiring between rows, and these cross-cuts are where SPI patterns
+classically leak. Naming the cross-cuts explicitly here so they are
+not rediscovered per integration:
+
+- **Event-schema agreement** between `HarnessAdapter` (emits) and
+  `MemoryManager` (consumes). The two interfaces share a vocabulary —
+  user message, assistant message, tool call, tool result, plan delta —
+  that neither interface "owns." A normalized event envelope must live
+  at the architecture level, not inside any one provider.
+- **Span propagation** across `HarnessAdapter` → `CapabilityRegistry` →
+  `IdentityProvider` → external API. OTel context propagation
+  conventions must be shared and enforced; otherwise traces fracture
+  at the first cross-primitive boundary.
+- **Identity reference vocabulary.** When `CapabilityRegistry` projects
+  an HTTP tool that requires OAuth, the projection layer must call
+  `IdentityProvider` with a stable identifier for "which credential
+  for this persona/role/projection." That identifier is shared
+  vocabulary; both primitives must agree on its shape.
+- **Session ↔ memory write hook.** `SessionStore` writes feed
+  `MemoryManager` ingestion. Each harness must not re-implement the
+  bridge; define the hook once.
+- **Compatibility groups.** Some role requirements span multiple
+  primitives (e.g. `interrupt_resume` needs harness support + session
+  checkpoint support + memory replay safety). The capability matrix
+  is per-interface; the binding validator must express constraints
+  *across* interfaces or it cannot reject incompatible provider mixes
+  at startup. This is the largest known gap in the current design and
+  is the most likely place a future role exposes a real bug.
+
+These cross-cuts are not new primitives. They are conventions that
+several primitives must agree on. They live in this document and the
+stability ledger; they do not get their own interface.
+
+## Role portability — with caveats
+
+The doc's strongest claim — that role definitions are persona-portable —
+holds at the prompt and tool catalog layers but **not unconditionally
+at the execution layer**. The same role YAML produces:
+
+- **Identical prompts** on any binding (composition is provider-agnostic).
+- **Identical tool catalogs** when the bound capability registry has the
+  required capabilities (matrix check at startup).
+- **Divergent execution semantics** for advanced features. A role with
+  `delegation.allowed_sub_roles` spawns via graph nodes on LangGraph,
+  via handoffs on MSAF, via extension-built routing on Pi. The *outcome*
+  is similar in shape; the *guarantees* differ (graph spawn can run in
+  parallel; handoff is sequential by default).
+
+Portability discipline: roles declare their required capabilities
+explicitly; the binding validator rejects persona configurations whose
+provider mix cannot supply them; provider-specific behaviour is opt-in
+via capability declarations, never silent.
+
+## Binding-shaped vs migration-shaped primitives
+
+Not every provider swap is a config change. Distinguishing:
+
+- **Swap-shaped** (binding is config; the change is hot or near-hot):
+  Models (no state), Observability (sinks accept arbitrary streams),
+  Sandboxes (per-invocation, stateless from the architecture's view),
+  Capability Registry (provider catalogs can be merged or swapped),
+  Skill discovery (filesystem is filesystem).
+- **Migration-shaped** (binding implies a deployment event; data or
+  state must move): Memory (long-term storage of facts, entities,
+  timelines), Sessions (resumable conversation state), Identity
+  (tokens and credentials must be re-issued in the new vault).
+- **Borderline** (mostly swap, with state in some implementations):
+  Harness / Framework — runtime is stateless per-session, but bound
+  sessions in flight don't survive a swap mid-session.
+
+Treat migration-shaped primitives accordingly in operational planning:
+they need a migration runbook per provider pair, not a config diff.
+
+This pattern only delivers on its promise if three disciplines are followed:
+
+1. **Conformance test suites per primitive.** Every interface has a test
+   suite (`tests/conformance/test_<primitive>.py`) that any provider
+   implementation must pass. JDBC has a TCK; Python's DB-API has a smaller
+   one; this repo needs its own. Without conformance tests, the interface
+   becomes documentation rather than a contract. The existing privacy guard
+   (`tests/_privacy_guard_plugin.py`) is a precedent for cross-implementation
+   conformance enforcement.
+
+2. **Capability matrices, not feature parity.** Providers will diverge on
+   advanced features (semantic search support, interrupt/resume, streaming
+   shape, multi-modal input). Don't force the interface to the lowest
+   common denominator. Each provider advertises capabilities
+   (`MemoryManager.supports("semantic_search")`,
+   `HarnessAdapter.supports("interrupt_resume")`); roles declare
+   requirements; the persona's binding is rejected at startup if a required
+   capability isn't supplied by its chosen providers.
+
+3. **Narrow interfaces.** Each method on an SPI is a permanent coupling
+   point. Before adding a method, ask whether it could be a capability on
+   an existing method, a method on a different primitive, or pushed into a
+   provider as a non-portable extension. The `Extension` protocol's
+   dual-surface methods are an example of what *not* to do: they encoded
+   consumer identity into the protocol and now have to be unwound.
+
+## Privacy boundary
+
+The persona-as-sovereign-execution-boundary claim is not aspirational — it
+is enforced at three layers and must be preserved by any new provider
+binding:
+
+- **Code layer:** persona-specific config lives in private submodules under
+  `personas/<name>/`; the public repo never imports from them, only from
+  fixture copies under `tests/fixtures/personas/`.
+- **Data layer:** each persona has its own database; the `MemoryManager`
+  interface must make cross-persona reads physically impossible (instances
+  bind to a `PersonaConfig` at construction; there is no `manager.get(
+  persona=other, ...)`).
+- **Test layer:** the two-layer privacy guard
+  (`tests/conftest.py` + `tests/_privacy_guard_plugin.py`) enforces at
+  collection time (substring scan for private-persona names) and runtime
+  (FS I/O patching) that public tests never touch real submodule content.
+
+A managed provider that cannot honour the privacy boundary for a given
+persona must not be eligible for that persona's binding. AgentCore Memory
+holding `personal` long-term memory is a fine pattern in the abstract but
+violates `personal`'s explicit data-sovereignty constraint; the same
+provider is appropriate for `work` if employer policy permits.
+
+## Non-goals
+
+Calling out things this architecture deliberately does **not** try to do:
+
+- **Lowest-common-denominator features across providers.** Roles should
+  declare what they need; bindings that can't supply it are rejected, not
+  silently downgraded.
+- **One-binding-per-repo.** The whole point is per-persona variation;
+  pressure to "just pick a stack" should be resisted unless the second
+  persona genuinely never materializes.
+- **Reimplementing managed services for parity.** The local providers exist
+  for sovereignty, learning, dev-loop speed, and air-gap scenarios — not
+  to match feature-for-feature with AgentCore Memory or Foundry. Where
+  the managed thing is dramatically better, the persona that needs it
+  should bind to it.
+- **Hiding provider identity from roles.** Roles can opt to require a
+  specific provider when behaviour is provider-specific (e.g. a role that
+  uses AgentCore Browser's session features). The capability matrix surfaces
+  this rather than hiding it.
+
+## Cross-references
+
+- [`interface-stability.md`](./interface-stability.md) — per-interface
+  stability classification and conformance status.
+- [`../gotchas.md`](../gotchas.md) — subtle traps, several of which
+  (G2, G6, G7) bear on the privacy boundary.
+- [`../observability.md`](../observability.md) — the only primitive
+  currently with end-to-end provider docs; templates the shape future
+  primitive docs should follow.
+- [`../../openspec/roadmap.md`](../../openspec/roadmap.md) — phase
+  sequence; P5/P11/P15/P16 are where most provider-binding work lands.
