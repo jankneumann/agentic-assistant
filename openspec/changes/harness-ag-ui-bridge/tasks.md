@@ -77,37 +77,37 @@
 
 Added during plan revision after confirming MSAF is fully implemented (per the existing `ms-agent-framework-harness` spec and `src/assistant/harnesses/sdk/ms_agent_fw.py`). Runs in parallel with Section 3 (different harness file). Both depend on Section 2 foundation.
 
-- [ ] 3b.1 Write tests for MSAF `astream_invoke` calling `agent.run(stream=True)`
+- [x] 3b.1 Write tests for MSAF `astream_invoke` calling `agent.run(stream=True)`
   **Spec scenarios**: harness-adapter "MSAF astream_invoke calls agent.run with stream=True"
   **Design decisions**: D11
   **Dependencies**: 2.2
 
-- [ ] 3b.2 Write tests for MSAF lifecycle bracketing (RunStarted/RunFinished)
+- [x] 3b.2 Write tests for MSAF lifecycle bracketing (RunStarted/RunFinished)
   **Spec scenarios**: harness-adapter "MSAF astream_invoke emits RunStarted then RunFinished"
   **Design decisions**: D1, D11
   **Dependencies**: 2.2
 
-- [ ] 3b.3 Write tests for `AgentResponseUpdate` → `TextDelta` mapping
+- [x] 3b.3 Write tests for `AgentResponseUpdate` → `TextDelta` mapping
   **Spec scenarios**: harness-adapter "MSAF astream_invoke translates text updates to TextDelta"
   **Design decisions**: D11
   **Dependencies**: 2.2
 
-- [ ] 3b.4 Write tests for MSAF tool-call lifecycle translation
+- [x] 3b.4 Write tests for MSAF tool-call lifecycle translation
   **Spec scenarios**: harness-adapter "MSAF astream_invoke translates tool calls to lifecycle events"
   **Design decisions**: D11
   **Dependencies**: 2.2
 
-- [ ] 3b.5 Write tests for MSAF error propagation (exception → terminal RunFinished with error)
+- [x] 3b.5 Write tests for MSAF error propagation (exception → terminal RunFinished with error)
   **Spec scenarios**: harness-adapter "MSAF astream_invoke emits RunFinished with error on exception"
   **Design decisions**: D8, D11
   **Dependencies**: 2.2
 
-- [ ] 3b.6 Write tests for `@traced_harness` on MSAF streaming path (success + exception)
+- [x] 3b.6 Write tests for `@traced_harness` on MSAF streaming path (success + exception)
   **Spec scenarios**: harness-adapter "MSAF astream_invoke applies @traced_harness", "MSAF astream_invoke is traced on exception"
   **Design decisions**: D9
   **Dependencies**: 2.4
 
-- [ ] 3b.7 Implement `MSAgentFrameworkHarness.astream_invoke` in `src/assistant/harnesses/sdk/ms_agent_fw.py`
+- [x] 3b.7 Implement `MSAgentFrameworkHarness.astream_invoke` in `src/assistant/harnesses/sdk/ms_agent_fw.py`
   **Goal**: Call `agent.run(messages, stream=True)`, iterate the returned `ResponseStream`, translate `AgentResponseUpdate` instances to `HarnessEvent` per the D11 mapping table. Use defensive `getattr` with fallbacks (mirror `_stringify_run_result`). Keep lazy `agent_framework` imports (v1.0.1 namespace quirk workaround). Apply `@traced_harness` decorator.
   **Dependencies**: 3b.1, 3b.2, 3b.3, 3b.4, 3b.5, 3b.6, 2.4
 
