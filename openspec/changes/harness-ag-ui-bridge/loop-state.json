@@ -14,14 +14,16 @@
     "gemini": true
   },
   "packages_status": {
-    "wp-foundation": "pending",
+    "wp-foundation": "completed",
     "wp-deep-agents-stream": "pending",
     "wp-msaf-stream": "pending",
     "wp-ag-ui-emitter": "pending",
     "wp-web-cli": "pending",
     "wp-integration": "pending"
   },
-  "package_authors": {},
+  "package_authors": {
+    "wp-foundation": "claude_code"
+  },
   "complexity_gate": {
     "allowed_via_force": true,
     "loc_estimate": 1230,

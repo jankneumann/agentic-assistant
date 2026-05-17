@@ -285,3 +285,75 @@ Round 2 verified that the round-1 architectural fixes were largely correct but s
 ### Context
 
 Three rounds of multi-vendor convergence completed. Findings trend: thirty-three to thirteen to ten. The round-3 findings were all completeness fixes of round-2 fix application rather than new architectural issues. Plan is convergent and ready for implementation. Total review surface across all rounds: thirty-three unique round-1 findings (six themes), thirteen round-2 findings (six themes), ten round-3 findings (one theme spread across four artifacts). Fix-application discipline was the main learning: every edit that names a path or a field needs to be re-greppable across all artifacts.
+
+
+---
+
+## Phase: Implementation — Layer 1 (wp-foundation) (2026-05-16)
+
+**Agent**: claude_code (general-purpose subagent in isolated worktree) | **Session**: a89d80461b178c5a5
+
+### Decisions
+
+1. **Dispatched wp-foundation as a single subagent in isolation worktree** — autopilot resumed at IMPLEMENT phase after PLAN_REVIEW convergence; coordinator detected (HTTP transport, all caps green) so coordinated-tier selected; layer-1 root package dispatched alone before any parallel work could safely start.
+
+2. **Agent preferred authoritative contract over orchestrator brief** — orchestrator brief abbreviated field shapes from memory (discriminator named type, fields named delta and tool_call_id and args_delta); agent cross-checked against contracts events harness-event.schema.json and used the contract's actual names (kind, text, call_id, args_chunk). Tasks dot md task lines also explicitly point at the schema as authority.
+
+3. **astream_invoke and thread_id on the base class as concrete methods raising NotImplementedError** rather than at abstractmethod — agent chose this pattern matching the existing harness base style (where one method is abstract and the property is concrete-with-raise). Trade-off: forces failure at call time rather than at instantiation time. Behaviorally equivalent for the spec scenario "subclasses MUST implement" but weaker as a static-typing check.
+
+4. **PyPI package name ag-ui-protocol, not ag-ui** — proposal narrative said the dependency name was ag-ui; agent verified at install time and used the actual PyPI name ag-ui-protocol with import path ag_ui (the latter is the importable module name). Pinned at greater-than-equal-zero-point-one less-than-one.
+
+### Alternatives Considered
+
+- Dispatch all six work packages as parallel agents at once: rejected. The DAG requires wp-foundation first; dispatching layer-1 alone gives a stable contract surface for layer-2 agents to build against.
+
+- Use Agent isolation equal to worktree to fully isolate the agent's commits, then merge back after verification: actually attempted, but the worktree dot py setup script reused the parent feature branch since it was already checked out elsewhere. Net effect: agent committed directly to openspec slash harness-ag-ui-bridge and pushed. Scope was nonetheless correct per write-allow gate.
+
+- Make astream_invoke an abstractmethod on the base class: not selected because the existing thread-id method matches the concrete-with-raise pattern; consistency mattered more than the slightly stronger contract enforcement.
+
+### Trade-offs
+
+- Accepted full feature-branch direct commits over isolated branch plus merge-back, because the end state (eight commits on origin slash openspec slash harness-ag-ui-bridge, push-clean) is identical and the agent's diff stays inside write-allow.
+
+- Accepted concrete-method-with-raise over at abstractmethod for astream-invoke and thread-id, because consistency with the existing base class shape outweighed the slightly stronger contract enforcement.
+
+- Accepted not running the full pytest suite after the agent reported eight hundred forty-eight passes, because the agent ran the full suite already and the per-package subset I ran independently was forty-one of forty-one green.
+
+### Open Questions
+
+- [ ] None blocking layer 2.
+- [ ] Coordinator issue-close endpoint server-side bug: datetime-as-string passed where datetime instance expected. issue-update with status closed works as a workaround. Filed as follow-up.
+
+### Completed Work
+
+- HarnessEvent discriminated union at src slash assistant slash harnesses slash sdk slash events dot py (six variants per contracts events harness-event schema, 120 LOC)
+- Abstract astream-invoke and thread-id on SdkHarnessAdapter at src slash assistant slash harnesses slash base dot py (additive, plus 60 LOC)
+- traced-harness decorator extended to dispatch on coroutine vs async-generator at src slash assistant slash telemetry slash decorators dot py (additive, plus 78 LOC)
+- Runtime dependencies added to pyproject dot toml: fastapi greater-than-equal-0-point-115 less-than-0-point-116, uvicorn-square-bracket-standard greater-than-equal-0-point-30 less-than-0-point-40, sse-starlette greater-than-equal-2-point-1 less-than-3-point-0, ag-ui-protocol greater-than-equal-0-point-1 less-than-1-point-0; uv-lock updated
+- Tests: tests slash harnesses slash sdk slash test-events dot py (247 LOC), tests slash harnesses slash test-base-streaming dot py (234 LOC), tests slash telemetry slash test-traced-harness-streaming dot py (266 LOC); forty-one of forty-one green in zero-point-nine-six seconds
+- tasks dot md checkboxes flipped: 1.1, 1.2, 1.3, 1.4, 2.1, 2.2, 2.3, 2.4
+- Eight commits 6ac311a through f0468be on openspec slash harness-ag-ui-bridge, pushed to origin
+- Eight coordinator issues for tasks 1.1 through 2.4 marked completed
+- loop-state dot json updated: packages-status wp-foundation completed, package-authors wp-foundation claude-code
+
+### In Progress
+
+- Layer 2 (wp-deep-agents-stream, wp-msaf-stream, wp-ag-ui-emitter) ready for parallel dispatch in next session.
+
+### Next Steps
+
+- Layer 2: dispatch wp-deep-agents-stream, wp-msaf-stream, wp-ag-ui-emitter as three parallel subagents (non-overlapping write-allow scopes).
+- After layer 2 returns: scope-check each agent's diff, run integrated pytest run, update coordinator issues 3.1 through 3.6, 3b.1 through 3b.7, 4.1 through 4.6.
+- Layer 3: wp-web-cli sequentially after the three layer-2 packages converge.
+- Layer 4: wp-integration last.
+
+### Relevant Files
+
+- src slash assistant slash harnesses slash sdk slash events dot py — new discriminated-union module
+- src slash assistant slash harnesses slash base dot py — astream-invoke and thread-id additive surface
+- src slash assistant slash telemetry slash decorators dot py — async-gen dispatch branch
+- openspec slash changes slash harness-ag-ui-bridge slash loop-state dot json — packages-status and package-authors updated
+
+### Context
+
+Coordinated tier (HTTP transport, full coordinator caps) dispatched a single Claude general-purpose subagent for the layer-1 root package. Agent ran twenty-one minutes wall time, one-hundred-fifty-three tool uses, produced eight commits in strict TDD order (test then impl pairs) and self-pushed to origin. Scope-check pass: all eleven modified files within wp-foundation write-allow. Verification pass: pytest forty-one of forty-one, ruff clean, mypy clean across one-hundred-fifty files. The agent correctly preferred the authoritative JSON schema over the orchestrator brief when the two disagreed on field naming — a useful behavior signal for downstream layers.
