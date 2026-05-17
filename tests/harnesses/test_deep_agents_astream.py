@@ -510,20 +510,25 @@ async def test_astream_invoke_exception_yields_terminal_run_finished_with_error(
 @pytest.mark.asyncio
 async def test_astream_invoke_exception_reraises_original() -> None:
     """Phase 2: the original exception MUST be re-raised after Phase 1 terminal event
-    (harness-ag-ui-bridge 3.5)."""
+    (harness-ag-ui-bridge 3.5).
+
+    Uses a class whose name matches the D8 redaction pattern so Pydantic
+    validation of RunFinished.error passes (class names starting with '_'
+    are not valid Python identifiers in the pattern).
+    """
     harness = _make_harness()
 
-    class _CustomError(Exception):
+    class CustomTestError(Exception):
         pass
 
-    exc = _CustomError("test error")
+    exc = CustomTestError("test error")
     agent = _make_raising_agent(exc)
 
     caught: BaseException | None = None
     try:
         async for _ in harness.astream_invoke(agent, "hi"):
             pass
-    except _CustomError as e:
+    except CustomTestError as e:
         caught = e
 
     assert caught is exc, (

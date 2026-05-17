@@ -44,33 +44,33 @@
 
 ## 3. Deep Agents Streaming Implementation
 
-- [ ] 3.1 Write tests for `DeepAgentsHarness.astream_invoke` lifecycle bracketing
+- [x] 3.1 Write tests for `DeepAgentsHarness.astream_invoke` lifecycle bracketing
   **Spec scenarios**: harness-adapter "astream_invoke emits RunStarted then RunFinished"
   **Design decisions**: D1, D7
   **Dependencies**: 2.2
 
-- [ ] 3.2 Write tests for thread_id propagation in streaming path
+- [x] 3.2 Write tests for thread_id propagation in streaming path
   **Spec scenarios**: harness-adapter "astream_invoke passes thread_id to LangGraph"
   **Design decisions**: D3, D4
   **Dependencies**: 2.2
 
-- [ ] 3.3 Write tests for LangChain text-chunk → TextDelta mapping
+- [x] 3.3 Write tests for LangChain text-chunk → TextDelta mapping
   **Spec scenarios**: harness-adapter "astream_invoke translates LangChain text chunks to TextDelta"
   **Design decisions**: D1
   **Dependencies**: 2.2
 
-- [ ] 3.4 Write tests for tool-call lifecycle translation
+- [x] 3.4 Write tests for tool-call lifecycle translation
   **Spec scenarios**: harness-adapter "astream_invoke translates tool calls to lifecycle events"
   **Design decisions**: D1
   **Dependencies**: 2.2
 
-- [ ] 3.5 Write tests for error propagation (harness exception → terminal RunFinished with error)
+- [x] 3.5 Write tests for error propagation (harness exception → terminal RunFinished with error)
   **Spec scenarios**: harness-adapter "astream_invoke emits RunFinished with error on exception"
   **Design decisions**: D8
   **Dependencies**: 2.2
 
-- [ ] 3.6 Implement `DeepAgentsHarness.astream_invoke` in `src/assistant/harnesses/sdk/deep_agents.py`
-  **Goal**: Consume `agent.astream(...)` with the existing `_thread_id`; translate LangChain stream events into `HarnessEvent` variants. Open question: exact LangChain event names to filter — resolve by writing the implementation against an explicit allowlist. Apply `@traced_harness` decorator.
+- [x] 3.6 Implement `DeepAgentsHarness.astream_invoke` in `src/assistant/harnesses/sdk/deep_agents.py`
+  **Goal**: Consume `agent.astream_events(version="v2")` with the existing `_thread_id`; translate LangChain stream events into `HarnessEvent` variants via an explicit allowlist (on_chat_model_stream→TextDelta, on_tool_start→ToolCallStart+ToolCallArgs, on_tool_end→ToolCallEnd). Applied `@traced_harness` decorator. Added `thread_id` property returning `self._thread_id`. `_thread_id` now initialized to a UUID at `__init__` time (overwritten at `create_agent` time).
   **Dependencies**: 3.1, 3.2, 3.3, 3.4, 3.5, 2.4
 
 ## 3b. MS Agent Framework Streaming Implementation
