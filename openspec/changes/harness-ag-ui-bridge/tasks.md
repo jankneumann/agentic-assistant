@@ -1,6 +1,6 @@
 ## 1. Foundation — Dependencies and HarnessEvent
 
-- [ ] 1.1 ~~Audit AG-UI Python package availability~~ (resolved during plan revision)
+- [x] 1.1 ~~Audit AG-UI Python package availability~~ (resolved during plan revision)
   **Resolution**: Use upstream `ag-ui` (Python package). Confirmed installed in current venv; `ag_ui.core` exposes Pydantic-typed event classes for every v1-scoped type plus `EventType` enum. No in-repo types needed. Add `ag-ui` to `pyproject.toml` dependencies during Task 1.4.
   **Spec scenarios**: (none — research task, resolved at plan time)
   **Design decisions**: D5 (updated)
