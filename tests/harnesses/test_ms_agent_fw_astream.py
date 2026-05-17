@@ -1,4 +1,4 @@
-"""Tests for MSAgentFrameworkHarness.astream_invoke (harness-ag-ui-bridge tasks 3b.1–3b.6).
+"""Tests for MSAgentFrameworkHarness.astream_invoke (harness-ag-ui-bridge tasks 3b.1-3b.6).
 
 TDD: these tests are written BEFORE the implementation in
 ``src/assistant/harnesses/sdk/ms_agent_fw.py``. They will fail (RED) until
@@ -31,10 +31,9 @@ Implementation notes:
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -229,7 +228,7 @@ async def test_astream_invoke_calls_agent_run_with_stream_true() -> None:
     agent = MagicMock()
     agent.run.return_value = _make_fake_stream()  # empty stream
 
-    events = [ev async for ev in h.astream_invoke(agent, "hello")]
+    _ = [ev async for ev in h.astream_invoke(agent, "hello")]
 
     agent.run.assert_called_once()
     _, kwargs = agent.run.call_args
@@ -631,7 +630,7 @@ async def test_traced_harness_emits_trace_on_success(
     agent = MagicMock()
     agent.run.return_value = _make_fake_stream(_FakeUpdate(text="hello"))
 
-    events = [ev async for ev in h.astream_invoke(agent, "hi")]
+    _ = [ev async for ev in h.astream_invoke(agent, "hi")]
 
     calls = spy.calls["trace_llm_call"]
     assert len(calls) == 1, f"Expected exactly 1 trace_llm_call on success; got {len(calls)}"
