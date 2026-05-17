@@ -7,7 +7,7 @@
   **Dependencies**: None
   **Status**: closed; superseded by Task 1.4
 
-- [ ] 1.2 Write tests for HarnessEvent discriminated union
+- [x] 1.2 Write tests for HarnessEvent discriminated union
   **Spec scenarios**: harness-adapter "HarnessEvent variants are exhaustive for v1", "RunStarted carries an opaque run identifier", "TextDelta carries partial text chunks", "Tool call lifecycle events share a call_id"
   **Contracts**: contracts/events/harness-event.schema.json
   **Design decisions**: D1
@@ -23,7 +23,7 @@
 
 ## 2. Harness Interface Evolution
 
-- [ ] 2.1 Write tests for `SdkHarnessAdapter.astream_invoke` abstract signature
+- [x] 2.1 Write tests for `SdkHarnessAdapter.astream_invoke` abstract signature
   **Spec scenarios**: harness-adapter "SdkHarnessAdapter.astream_invoke returns async iterator of HarnessEvent"
   **Design decisions**: D1
   **Dependencies**: 1.3
@@ -33,12 +33,12 @@
   **Spec scenarios**: harness-adapter "SdkHarnessAdapter.astream_invoke returns async iterator of HarnessEvent", "SdkHarnessAdapter exposes a thread_id for transport binding"
   **Dependencies**: 2.1
 
-- [ ] 2.3 Write tests for `@traced_harness` async-generator support
+- [x] 2.3 Write tests for `@traced_harness` async-generator support
   **Spec scenarios**: harness-adapter "Deep Agents astream_invoke is traced on success", "Deep Agents astream_invoke is traced on exception"
   **Design decisions**: D9
   **Dependencies**: 2.2
 
-- [ ] 2.4 Extend `@traced_harness` decorator to dispatch on coroutine vs async-generator
+- [x] 2.4 Extend `@traced_harness` decorator to dispatch on coroutine vs async-generator
   **Goal**: Detect whether the wrapped function returns a coroutine or an async generator. For generators, measure duration across full consumption (success) or until the exception escapes (failure). Emit `trace_llm_call` exactly once in either case. Add `streaming=True` to metadata for the generator path per D9.
   **Dependencies**: 2.3
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 
 import pytest
+from pydantic import TypeAdapter, ValidationError
 
 # Collection-time import — will ImportError until task 1.3 creates events.py.
 from assistant.harnesses.sdk.events import (
@@ -30,7 +31,6 @@ from assistant.harnesses.sdk.events import (
     ToolCallEnd,
     ToolCallStart,
 )
-from pydantic import TypeAdapter, ValidationError
 
 # ---------------------------------------------------------------------------
 # Helpers
