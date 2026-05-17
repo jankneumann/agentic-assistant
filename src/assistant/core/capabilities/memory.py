@@ -59,7 +59,11 @@ class PostgresGraphitiMemoryPolicy:
         engine = create_async_engine(persona)
         session_fac = async_session_factory(engine)
         graphiti = create_graphiti_client(persona)
-        self._manager = MemoryManager(session_fac, graphiti_client=graphiti)
+        self._manager = MemoryManager(
+            session_fac,
+            graphiti_client=graphiti,
+            persona_name=persona.name,
+        )
         self._persona_name = persona.name
 
     def resolve(self, persona: Any, harness_name: str) -> MemoryConfig:
@@ -75,9 +79,9 @@ class PostgresGraphitiMemoryPolicy:
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor() as pool:
                 return pool.submit(
-                    asyncio.run, self._manager.export_memory(persona.name)
+                    asyncio.run, self._manager.export_memory(None)
                 ).result()
-        return asyncio.run(self._manager.export_memory(persona.name))
+        return asyncio.run(self._manager.export_memory(None))
 
     def get_recent_snippets(
         self, persona: Any, role: Any, *, limit: int = 10
