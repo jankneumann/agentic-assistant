@@ -20,11 +20,22 @@ Design references (``openspec/changes/ms-graph-extension``):
 
 from __future__ import annotations
 
+import uuid
+from collections.abc import AsyncIterator
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from assistant.core.persona import PersonaConfig
 from assistant.core.role import RoleConfig
 from assistant.harnesses.base import SdkHarnessAdapter
+from assistant.harnesses.sdk.events import (
+    RunFinished,
+    RunStarted,
+    TextDelta,
+    ToolCallArgs,
+    ToolCallEnd,
+    ToolCallStart,
+)
 from assistant.telemetry.decorators import traced_harness
 
 if TYPE_CHECKING:
@@ -80,9 +91,25 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         self._chat_client_factory = chat_client_factory
         self._memory_snippet_limit = memory_snippet_limit
         self._active_model: str = self._DEFAULT_MODEL
+        # Stable conversation-thread identifier for transport binding (D4).
+        # UUID4 synthesized once at construction; persists for the lifetime of
+        # this adapter instance across invoke / astream_invoke calls.
+        self._thread_id: str = str(uuid.uuid4())
 
     def name(self) -> str:
         return "ms_agent_framework"
+
+    @property
+    def thread_id(self) -> str:
+        """Stable conversation-thread identifier for this adapter instance.
+
+        Per the harness-adapter spec "SdkHarnessAdapter exposes a thread_id
+        for transport binding": the value MUST be non-empty and MUST persist
+        for the lifetime of the adapter instance across multiple invoke /
+        astream_invoke calls. MSAF synthesizes a UUID at construction time
+        (no native concept of a thread_id in agent-framework v1.x).
+        """
+        return self._thread_id
 
     # ── Capability resolution ─────────────────────────────────────
 
@@ -263,6 +290,111 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         """
         result = await agent.run(message)
         return _stringify_run_result(result)
+
+    @traced_harness
+    async def astream_invoke(
+        self, agent: Any, message: str
+    ) -> AsyncIterator[Any]:
+        """Stream a harness invocation as a sequence of HarnessEvent instances.
+
+        Calls ``agent.run(messages, stream=True)`` which returns a
+        ``ResponseStream[AgentResponseUpdate, AgentResponse[Any]]``. Each
+        ``AgentResponseUpdate`` is translated to ``HarnessEvent`` variants
+        per the D11 mapping table:
+
+        - Text content (update.text is non-empty) → ``TextDelta``
+        - Content item with type ``"function_call"`` → ``ToolCallStart`` +
+          optionally ``ToolCallArgs`` (if arguments are present)
+        - Content item with type ``"function_result"`` → ``ToolCallEnd``
+
+        Lifecycle (D8 two-phase error contract):
+        - Phase 1: yield terminal ``RunFinished(error=ClassName)`` on exception
+        - Phase 2: re-raise the original exception unchanged
+
+        The ``@traced_harness`` decorator handles observability: emits exactly
+        one ``trace_llm_call`` per invocation with ``metadata={"streaming": True}``.
+
+        Lazy imports of ``agent_framework`` are preserved (v1.0.1 namespace-
+        package quirk — see CLAUDE.md "What's Not Yet Wired"). Tests mock the
+        agent object directly and never trigger the real SDK import path.
+        """
+        run_id = str(uuid.uuid4())
+        message_id = str(uuid.uuid4())
+        started_at = datetime.now(timezone.utc).isoformat()
+        yield RunStarted(run_id=run_id, started_at=started_at)
+
+        # agent.run(messages, stream=True) returns a ResponseStream (AsyncIterable).
+        # The call itself is synchronous (not awaitable) when stream=True.
+        try:
+            response_stream = agent.run(message, stream=True)
+        except BaseException as exc:
+            finished_at = datetime.now(timezone.utc).isoformat()
+            yield RunFinished(
+                run_id=run_id,
+                finished_at=finished_at,
+                error=type(exc).__name__,
+            )
+            raise
+
+        try:
+            async for update in response_stream:
+                # --- Text content ---
+                # Defensive: try .text property first (AgentResponseUpdate), then
+                # fall back to .content / .delta for SDK shape drift (D11 note).
+                text = getattr(update, "text", None)
+                if not isinstance(text, str):
+                    text = getattr(update, "content", None) or ""
+                    if not isinstance(text, str):
+                        text = str(getattr(update, "delta", "") or "")
+                if text:
+                    yield TextDelta(message_id=message_id, text=text)
+
+                # --- Tool-call content ---
+                # Each update may carry a list of Content items with typed slots.
+                # Defensive: fall back to empty list if .contents is absent.
+                contents = getattr(update, "contents", None) or []
+                for content_item in contents:
+                    item_type = getattr(content_item, "type", None)
+                    call_id = getattr(content_item, "call_id", None)
+
+                    if item_type == "function_call":
+                        # ToolCallStart — name is the tool name
+                        tool_name = getattr(content_item, "name", None) or "unknown"
+                        effective_call_id = call_id or str(uuid.uuid4())
+                        yield ToolCallStart(
+                            call_id=effective_call_id, tool_name=tool_name
+                        )
+                        # ToolCallArgs — emit arguments if present
+                        arguments = getattr(content_item, "arguments", None)
+                        if arguments is not None:
+                            if not isinstance(arguments, str):
+                                import json
+
+                                try:
+                                    arguments = json.dumps(arguments)
+                                except (TypeError, ValueError):
+                                    arguments = str(arguments)
+                            yield ToolCallArgs(
+                                call_id=effective_call_id, args_chunk=arguments
+                            )
+
+                    elif item_type == "function_result":
+                        # ToolCallEnd — carries the result
+                        effective_call_id = call_id or str(uuid.uuid4())
+                        result = getattr(content_item, "result", None)
+                        yield ToolCallEnd(call_id=effective_call_id, result=result)
+
+        except BaseException as exc:
+            finished_at = datetime.now(timezone.utc).isoformat()
+            yield RunFinished(
+                run_id=run_id,
+                finished_at=finished_at,
+                error=type(exc).__name__,
+            )
+            raise
+
+        finished_at = datetime.now(timezone.utc).isoformat()
+        yield RunFinished(run_id=run_id, finished_at=finished_at, error=None)
 
     async def spawn_sub_agent(
         self,
