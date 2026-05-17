@@ -1,4 +1,4 @@
-"""Tests for DeepAgentsHarness.astream_invoke (harness-ag-ui-bridge tasks 3.1–3.5).
+"""Tests for DeepAgentsHarness.astream_invoke (harness-ag-ui-bridge tasks 3.1-3.5).
 
 TDD: written BEFORE the implementation in deep_agents.py. Tests will fail
 (RED) until task 3.6 adds astream_invoke to DeepAgentsHarness.
@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from langchain_core.messages import AIMessageChunk
@@ -249,7 +249,7 @@ async def test_astream_invoke_passes_thread_id_to_astream_events() -> None:
     fake_agent = MagicMock()
     fake_agent.astream_events = _spy_astream_events
 
-    events: list[Any] = [ev async for ev in harness.astream_invoke(fake_agent, "hi")]
+    _ = [ev async for ev in harness.astream_invoke(fake_agent, "hi")]
 
     config = captured_kwargs.get("config", {})
     configurable = config.get("configurable", {}) if isinstance(config, dict) else {}

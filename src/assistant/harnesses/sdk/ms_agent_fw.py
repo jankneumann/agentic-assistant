@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from assistant.core.persona import PersonaConfig
@@ -320,7 +320,7 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         """
         run_id = str(uuid.uuid4())
         message_id = str(uuid.uuid4())
-        started_at = datetime.now(timezone.utc).isoformat()
+        started_at = datetime.now(UTC).isoformat()
         yield RunStarted(run_id=run_id, started_at=started_at)
 
         # agent.run(messages, stream=True) returns a ResponseStream (AsyncIterable).
@@ -328,7 +328,7 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         try:
             response_stream = agent.run(message, stream=True)
         except BaseException as exc:
-            finished_at = datetime.now(timezone.utc).isoformat()
+            finished_at = datetime.now(UTC).isoformat()
             yield RunFinished(
                 run_id=run_id,
                 finished_at=finished_at,
@@ -385,7 +385,7 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
                         yield ToolCallEnd(call_id=effective_call_id, result=result)
 
         except BaseException as exc:
-            finished_at = datetime.now(timezone.utc).isoformat()
+            finished_at = datetime.now(UTC).isoformat()
             yield RunFinished(
                 run_id=run_id,
                 finished_at=finished_at,
@@ -393,7 +393,7 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
             )
             raise
 
-        finished_at = datetime.now(timezone.utc).isoformat()
+        finished_at = datetime.now(UTC).isoformat()
         yield RunFinished(run_id=run_id, finished_at=finished_at, error=None)
 
     async def spawn_sub_agent(
