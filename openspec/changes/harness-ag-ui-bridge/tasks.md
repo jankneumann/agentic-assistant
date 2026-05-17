@@ -17,7 +17,7 @@
   **Goal**: Define `HarnessEvent` discriminated union (Pydantic) with the 6 variants: RunStarted, RunFinished, TextDelta, ToolCallStart, ToolCallArgs, ToolCallEnd. Field names must be harness-agnostic and protocol-agnostic per D1. Module lives in the harness layer (not transports/) so concrete harnesses can construct events without importing upward into transports/ — preserves D6 import-direction rule. The `RunFinished.error` field MUST match the class-name-only pattern per D8.
   **Dependencies**: 1.2
 
-- [ ] 1.4 Add runtime + dev dependencies to `pyproject.toml`
+- [x] 1.4 Add runtime + dev dependencies to `pyproject.toml`
   **Goal**: Add `fastapi`, `uvicorn[standard]`, `sse-starlette`, and `ag-ui` (the upstream AG-UI types package, confirmed installed during plan revision). Run `uv sync` and verify the lockfile diff is sane.
   **Dependencies**: None
 

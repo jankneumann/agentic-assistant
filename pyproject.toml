@@ -38,6 +38,15 @@ dependencies = [
     # mocks httpx at the wire level for the GraphClient suite.
     "msal>=1.28",
     "agent-framework>=1.0.0,<2.0.0",
+    # harness-ag-ui-bridge (task 1.4): HTTP/SSE transport surface for the
+    # AG-UI bridge. fastapi pinned tight because it is the wire surface;
+    # uvicorn and sse-starlette are runtime-only ASGI server + SSE helper.
+    # ag-ui-protocol provides upstream AG-UI Python types (ag_ui.core event
+    # classes); the PyPI package is named ag-ui-protocol, not ag-ui.
+    "fastapi>=0.115,<0.116",
+    "uvicorn[standard]>=0.30,<0.40",
+    "sse-starlette>=2.1,<3.0",
+    "ag-ui-protocol>=0.1,<1.0",
 ]
 
 [project.optional-dependencies]
