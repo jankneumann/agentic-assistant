@@ -25,15 +25,6 @@ Create an OpenSpec proposal for a new feature. Automatically selects execution t
 
 Optional flags:
 - `--explore` -- Deep-dive mode: more discovery questions (5-8 vs 2-5), more approaches (3-5 vs 2-3), web search for prior art when available
-- `--interview` -- Confidence-gated discovery: replaces the fixed question budget with an adaptive loop that keeps asking (in batches of 2-4) until self-assessed confidence reaches ≥ 0.95 on a five-dimension rubric or the user asks to move on. Prioritizes latent intent ("what you actually want") over surface request ("what you think you should want"). Auto-enabled when `$ARGUMENTS` is short/vague (≤ 3 words or no verb)
-
-## Provider-Neutral Dispatch
-
-When this skill delegates context gathering or review work, treat the
-provider-neutral dispatch adapter as the canonical cross-provider path. Claude
-Code, Codex, and Gemini/Jules are first-class providers when configured; any
-Claude harness `Agent(...)` usage is a provider-specific adapter internal or
-example, with inline execution as the fallback.
 
 ## OpenSpec Execution Preference
 
@@ -77,28 +68,8 @@ Parse optional flags from `$ARGUMENTS`:
 
 ```
 EXPLORE_MODE=false
-INTERVIEW_MODE=false
 if [[ "$ARGUMENTS" == *"--explore"* ]]; then
   EXPLORE_MODE=true
-fi
-if [[ "$ARGUMENTS" == *"--interview"* ]]; then
-  INTERVIEW_MODE=true
-fi
-
-# Auto-enable interview mode when the request is short/vague.
-# Heuristic: ≤ 3 words remaining after stripping flags, OR no action verb.
-# A short request without a verb ("role based access matrix") is just as
-# vague as a single-word one — the user named a noun phrase but didn't say
-# what to DO with it.
-STRIPPED=$(echo "$ARGUMENTS" | sed -E 's/--(explore|interview)//g' | xargs)
-WORD_COUNT=$(echo "$STRIPPED" | wc -w | tr -d ' ')
-if echo "$STRIPPED" | grep -iqE '\b(add|create|build|make|implement|refactor|fix|update|remove|delete|change|migrate|extract|replace|rename|move|convert|improve|enhance|support|enable|disable|allow|prevent|expose|hide|introduce|ship|merge|split|consolidate|wire|validate|verify|check|test|document|explain|clarify|restructure|rewrite|cleanup|clean|audit|review|rebuild|resolve|investigate|explore|analyze|optimize|tune|polish|harden|stabilize|deprecate)\b'; then
-  HAS_VERB=true
-else
-  HAS_VERB=false
-fi
-if [[ "$WORD_COUNT" -le 3 ]] || [[ "$HAS_VERB" == "false" ]]; then
-  INTERVIEW_MODE=true
 fi
 
 # Discovery question bounds
@@ -109,16 +80,12 @@ else
   MIN_QUESTIONS=2; MAX_QUESTIONS=5
   MIN_APPROACHES=2; MAX_APPROACHES=3
 fi
-
-# Interview mode treats MAX_QUESTIONS as a soft ceiling, not a hard cap.
-# Confidence threshold for exiting the discovery loop:
-CONFIDENCE_THRESHOLD=0.95
 ```
 
 Emit tier notification:
 ```
 Tier: <tier> -- <rationale>
-Mode: <standard | explore>[, interview]
+Mode: <standard | explore>
 ```
 
 If `CAN_HANDOFF=true`, read recent handoff context. If `CAN_MEMORY=true`, recall relevant memories.
@@ -206,97 +173,31 @@ This gives the user the same information you have, enabling better answers to th
 
 #### 3b. Discovery Questions
 
-Ask clarifying questions using the **AskUserQuestion tool**. Draw from these six categories, selecting the most relevant ones based on the discovered context:
+Ask MIN_QUESTIONS to MAX_QUESTIONS clarifying questions using the **AskUserQuestion tool**. Draw from these five categories, selecting the most relevant ones based on the discovered context:
 
-1. **Motivation / latent intent** -- Use AskUserQuestion without preset options (open-ended). Ask FIRST when `INTERVIEW_MODE=true`.
-   Goal: separate the user's surface request from the underlying need. A user who asks for "a microservice" may actually want "deployment isolation" -- surfacing that opens better approaches.
-   Examples: "What made you reach for this idea today -- what recent moment or pain triggered it?" / "If this feature existed and worked perfectly, what would you stop having to do?" / "What's the closest thing to this that already exists, and why isn't it enough?"
-
-2. **Scope boundaries** -- Use AskUserQuestion with preset options.
+1. **Scope boundaries** -- Use AskUserQuestion with preset options.
    Examples: "Should <related capability X> be included in scope?" Options: "Yes, include it" / "No, out of scope" / "Defer to a follow-up proposal"
 
-3. **Trade-off preferences** -- Use AskUserQuestion with preset options presenting 2-3 positions.
+2. **Trade-off preferences** -- Use AskUserQuestion with preset options presenting 2-3 positions.
    Examples: "I see a trade-off between <simplicity vs flexibility / speed vs correctness / etc>. Which direction?" Options describe each position.
 
-4. **Constraint discovery** -- Use AskUserQuestion without preset options (open-ended).
+3. **Constraint discovery** -- Use AskUserQuestion without preset options (open-ended).
    Examples: "Are there timeline, compatibility, or performance constraints I should know about?" / "Are there any rejected approaches or past attempts I should avoid?"
 
-5. **Existing decisions** -- Use AskUserQuestion with preset options when specific decisions are discoverable from context.
+4. **Existing decisions** -- Use AskUserQuestion with preset options when specific decisions are discoverable from context.
    Examples: "The codebase currently uses <pattern X> for similar features. Should we follow this pattern or introduce a new one?" Options: "Follow existing pattern" / "New approach because <reason>"
 
-6. **Success criteria** -- Use AskUserQuestion without preset options (open-ended).
+5. **Success criteria** -- Use AskUserQuestion without preset options (open-ended).
    Examples: "What does success look like for this feature?" / "How will you know this feature is working correctly?"
 
 **Rules for question generation:**
 - Questions MUST reference specific discoveries from Step 3a (e.g., "I found spec X covers Y. Should this feature extend that spec or create a new one?")
-- Skip categories that are already clearly answered by `$ARGUMENTS` (but in `INTERVIEW_MODE`, never skip category 1 -- latent intent)
+- Skip categories that are already clearly answered by `$ARGUMENTS`
 - If `EXPLORE_MODE=true`, add prior-art questions: "I found <pattern/library X> is commonly used for this. Should we adopt it, adapt it, or build custom?"
 - Ask questions in batches of 2-4 via AskUserQuestion to avoid overwhelming the user
 - Prioritize questions where the answer would significantly change the approach
 
-#### 3b.i. Standard Discovery Loop (INTERVIEW_MODE=false)
-
-Ask MIN_QUESTIONS to MAX_QUESTIONS clarifying questions in one or two batches, then proceed to Step 4.
-
 **STOP -- Wait for the user to answer all discovery questions before proceeding to Step 4. Do NOT generate any artifacts until all answers are received.**
-
-#### 3b.ii. Confidence-Gated Interview Loop (INTERVIEW_MODE=true)
-
-Replaces the fixed question budget with an adaptive loop. Keeps asking -- in batches of 2-4 -- until self-assessed confidence reaches `CONFIDENCE_THRESHOLD` (default 0.95) on all five dimensions of the rubric, or the user explicitly asks to move on.
-
-**Confidence rubric.** After each answer batch, score each dimension from 0.0 to 1.0:
-
-| Dimension | What it means | Raises score | Lowers score |
-|-----------|---------------|--------------|--------------|
-| `problem_clarity` | I understand the *real* problem, not just the stated request | User articulated a concrete pain and "what they'd stop doing" | Request is solution-shaped with no underlying problem named |
-| `success_criteria` | I know how we'll verify this worked | User gave measurable/observable outcomes | Only vague adjectives ("better", "faster") |
-| `scope_edges` | I know what's in vs. out | User confirmed or excluded related capabilities | Adjacent capabilities remain ambiguous |
-| `hidden_constraints` | I know the non-obvious restrictions | User surfaced timeline, compat, rejected approaches | User gave none and my probing didn't surface any |
-| `why_now` | I understand the triggering context | User named a recent event or deadline | "It just seemed useful" |
-
-**Loop:**
-
-```
-questions_asked = 0
-batch = generate_opening_batch(category=1 first, then 2-4 relevant categories)
-
-while True:
-  ask(batch) via AskUserQuestion
-  wait for answers
-  questions_asked += len(batch)
-
-  scores = self_score_confidence(answers_so_far, rubric)
-  min_score = min(scores.values())
-  log("Confidence: " + format_scores(scores))
-
-  # Exit conditions (checked in order)
-  if min_score >= CONFIDENCE_THRESHOLD and questions_asked >= MIN_QUESTIONS:
-    break
-  if user_said_move_on(answers):
-    break
-  if questions_asked >= MAX_QUESTIONS:
-    # Soft ceiling -- surface confidence and ask permission to continue
-    ask_user_whether_to_continue(scores)
-    if user declines: break
-    # else: continue loop
-
-  # Contradiction check: compare new answers against Step 3a discoveries
-  # and prior answers. A contradiction always spawns a follow-up.
-  contradictions = detect_contradictions(answers, context_summary)
-
-  # Generate next batch targeted at the weakest dimension(s) or contradictions.
-  batch = generate_followup_batch(
-    weakest_dimensions=[d for d,s in scores.items() if s < CONFIDENCE_THRESHOLD],
-    contradictions=contradictions,
-    size=min(4, max(2, num_remaining_gaps)),
-  )
-```
-
-**Surfacing contradictions.** When a user answer conflicts with a Step 3a discovery (e.g., user says "we have no auth today" but the explore agent found an existing auth spec), do NOT paper over it. The next batch includes a direct question: "I found <discovery> which seems to conflict with your answer that <answer>. Can you reconcile these for me?"
-
-**Confidence report.** When the loop exits, print a one-line summary: `Interview complete: <N> questions asked, confidence {problem: 0.95, success: 0.97, scope: 0.92, constraints: 1.0, why_now: 0.95}`. If any dimension is below threshold at exit (because the user moved on), flag it as an explicit assumption in Step 4's proposal.
-
-**STOP -- Do NOT generate any artifacts until the loop exits.**
 
 ### 4. Create Proposal with Approaches [all tiers]
 
@@ -329,12 +230,6 @@ Expected artifact (this step only):
 
 Present `proposal.md` to the user and ask them to select an approach.
 
-**Latent-intent check (INTERVIEW_MODE=true only).** Before presenting the approach-selection question, surface the trade-off explicitly against the motivation captured in Step 3b category 1:
-
-> "Approach N optimizes for `<X>` and accepts `<trade-off Y>`. Earlier you said the underlying need was `<latent goal Z>`. Does this approach actually get you Z, or are we optimizing for the surface request instead?"
-
-Ask this as a short open-ended AskUserQuestion **before** the selection question. If the user's answer reveals a mismatch, loop back to Step 4 with the corrected objective rather than letting them pick an approach that misses their real goal.
-
 Use **AskUserQuestion** with these options:
 - One option per approach: "Proceed with Approach N: <name>" (description: brief summary of what this means)
 - "Modify approaches" (description: "I'll revise the approaches based on your feedback")
@@ -346,43 +241,6 @@ After selection:
 - If "Modify approaches": gather feedback, loop back to Step 4
 - If "Need more detail": ask follow-up questions, loop back to Step 4
 - If an approach is selected: update `proposal.md` with a `### Selected Approach` subsection recording the choice and any modifications the user requested. Demote unselected approaches to brief entries under the Recommended subsection.
-
-## Task Sizing Reference
-
-Use the table below when generating `tasks.md` (Step 6) and `work-packages.yaml` (Step 8). Sizing is about *agent attention budget*, not raw effort — a task should fit inside one focused implementation session.
-
-| Size | Time budget | Typical scope | Action |
-|---|---|---|---|
-| **XS** | ≤ 30 min | One-line edit, doc tweak, single test | Ship as-is. |
-| **S** | 30 min – 2 hr | Single function/method change, narrow refactor | Ship as-is. |
-| **M** | 2 hr – 1 day | Multi-file change in one module, new test suite | Ship as-is; checkpoint after. |
-| **L** | 1 – 3 days | Cross-module change, new component, schema migration | **CONSIDER SPLITTING.** Try to decompose into 2–3 M-sized tasks. If splitting doesn't reduce risk, keep but flag. |
-| **XL** | > 3 days | Cross-system, multiple subsystems, new bounded context | **MUST SPLIT.** Do not generate a tasks.md entry at XL — go back to Step 6 and decompose. |
-
-### "And" splitting heuristic
-
-If a task title contains the word **"and"** OR describes two distinct outcomes, split it. The conjunction is almost always a sign that two tasks have been collapsed into one.
-
-| Original title | Decision | Result |
-|---|---|---|
-| "Add caching and metrics" | **Split** — two outcomes | "Add caching" + "Add metrics" |
-| "Wire EventBus and retire polling" | **Split** — two outcomes | "Wire EventBus" + "Retire polling fallback" |
-| "Refactor user auth" | **Keep** — single outcome | (no change) |
-| "Investigate flaky test and propose fix" | **Split** — investigation and fix have different completion criteria | "Investigate flaky test" + "Apply fix from investigation" |
-| "Stand up Postgres and Redis" | **Split** — two independent dependencies | "Stand up Postgres" + "Stand up Redis" |
-
-The heuristic is mechanical on purpose: it catches almost all hidden multi-tasks without requiring deep context.
-
-### Checkpoint cadence
-
-Every 2–3 tasks, the implementing agent should pause for a self-check:
-
-1. Run the test suite (or the relevant subset) and confirm it's green.
-2. Review the cumulative diff (`git diff main...HEAD`) and confirm every change maps to a completed task.
-3. Verify no scope creep: the diff touches only files inside the package's `write_allow`.
-4. Update `tasks.md` checkboxes for completed tasks (per `/implement-feature` Step 4 discipline).
-
-This cadence is recorded in `tasks.md` as explicit `- [ ] Checkpoint: run tests, review diff, verify scope` markers between groups of 2–3 implementation tasks. The checkpoint isn't decorative — it's the integration point where Rules 0.5 (scope) and 2 (compilable) get verified.
 
 ### 6. Generate Specs, Tasks, and Design [all tiers]
 
@@ -595,58 +453,46 @@ python3 "<skill-base-dir>/../worktree/scripts/worktree.py" pin "<change-id>"
 
 ### 11.5. Append Session Log [all tiers]
 
-Construct a `PhaseRecord` for the `Plan` phase and call `write_both()`. This persists the session-log markdown AND the coordinator handoff from a single in-memory record, so the structured fields (Decisions, Alternatives, Trade-offs, Open Questions) flow into both the human-readable log and the next phase's incoming handoff.
+Append a `Plan` phase entry to the session log, capturing architecture decisions, scope choices, and tier selection rationale from this planning session.
 
-**Capture from this planning session:**
+Write the following to `openspec/changes/<change-id>/session-log.md` (the `git add` in Step 11 already covers this file):
 
-- **Decisions** — Architecture decisions, scope boundaries, tier selection rationale. Tag long-lived decisions with `capability="<kebab-case>"` so the per-capability decision index picks them up.
-- **Alternatives Considered** — Approaches considered and rejected during planning, with reasons.
-- **Trade-offs** — Trade-offs accepted, with reasons.
-- **Open Questions** — Unresolved questions for implementation.
-- **Summary** — 2–3 sentences: planning goal and what was decided.
-- **Next Steps** (optional) — What the implementation phase should pick up first.
-- **Relevant Files** (optional) — Key artifacts produced (`proposal.md`, `design.md`, etc.).
+**Phase entry template:**
 
-**Persist via `PhaseRecord.write_both()`:**
+```markdown
+---
 
-This step MUST run BEFORE the `git add` in Step 11 so the session-log entry is included in that commit. If you already committed in Step 11, amend with `git add openspec/changes/<change-id>/ && git commit --amend --no-edit` and re-push.
+## Phase: Plan (<YYYY-MM-DD>)
 
-```bash
-python3 - <<'EOF'
-import sys
-sys.path.insert(0, "skills/session-log/scripts")
-from phase_record import PhaseRecord, Decision, Alternative, TradeOff, FileRef
+**Agent**: <agent-type> | **Session**: <session-id-or-N/A>
 
-record = PhaseRecord(
-    change_id="<change-id>",
-    phase_name="Plan",
-    agent_type="<agent-type>",
-    summary="<2-3 sentences on planning goal + decisions>",
-    decisions=[
-        Decision(title="<title>", rationale="<rationale>", capability="<kebab-case-capability>"),
-    ],
-    alternatives=[Alternative(alternative="<approach>", reason="<rejection reason>")],
-    trade_offs=[TradeOff(accepted="<X>", over="<Y>", reason="<reason>")],
-    open_questions=["<question>"],
-    next_steps=["<what implement-feature should tackle first>"],
-    relevant_files=[FileRef(path="openspec/changes/<change-id>/proposal.md", description="approved proposal")],
-)
-result = record.write_both()
-print(f"markdown_path={result.markdown_path}")
-print(f"sanitized={result.sanitized}")
-print(f"handoff_id={result.handoff_id or '(local fallback)'}")
-print(f"handoff_local_path={result.handoff_local_path}")
-for w in result.warnings:
-    print(f"WARN: {w}", file=sys.stderr)
-EOF
+### Decisions
+1. **<Decision title>** — <rationale>
+
+### Alternatives Considered
+- <Alternative>: rejected because <reason>
+
+### Trade-offs
+- Accepted <X> over <Y> because <reason>
+
+### Open Questions
+- [ ] <unresolved question>
+
+### Context
+<2-3 sentences: what was the planning goal, what was decided>
 ```
 
-`write_both()` runs three best-effort steps internally:
-1. **Append** the rendered markdown to `openspec/changes/<change-id>/session-log.md`
-2. **Sanitize** the file in-place via `sanitize_session_log.py`
-3. **Coordinator handoff** via `try_handoff_write` — falls back to `openspec/changes/<change-id>/handoffs/plan-<N>.json` on failure
+**Focus on**: Architecture decisions, scope boundaries, tier selection rationale, key trade-offs made during planning.
 
-Each step logs a warning if it fails but does not raise, so the workflow continues even if the coordinator is unreachable. Verify the rendered `session-log.md`: all populated sections present, no incorrect `[REDACTED:*]` markers, markdown intact. If over-redacted, fix the offending content in your `PhaseRecord` construction and re-run — `write_both()` appends a new entry rather than rewriting in place.
+**Sanitize-then-verify:**
+
+```bash
+python3 "<skill-base-dir>/../session-log/scripts/sanitize_session_log.py" \
+  "openspec/changes/<change-id>/session-log.md" \
+  "openspec/changes/<change-id>/session-log.md"
+```
+
+Read the sanitized output and verify: (1) all sections present, (2) no incorrect `[REDACTED:*]` markers, (3) markdown intact. If over-redacted, rewrite without secrets, re-sanitize (one attempt max). If sanitization exits non-zero, skip session log and proceed.
 
 ### 12. Gate 2: Plan Approval [all tiers]
 
@@ -666,21 +512,6 @@ Use **AskUserQuestion** to request final approval with these options:
 - "Revise tasks" (description: "Keep the approach but adjust the implementation plan")
 - "Revise approach" (description: "Go back to approach selection with different options")
 - "Reject -- start over" (description: "Discard this proposal and start fresh")
-
-**On Approve -- seed coordinator issues (D3):**
-
-After the user selects "Approve -- proceed to implementation", invoke the
-seeder to create coordinator issues for every hand-authored task in `tasks.md`:
-
-```bash
-skills/.venv/bin/python skills/coordinator-task-status-renderer/scripts/seed_tasks_from_md.py <change-id>
-```
-
-The seeder is idempotent on the `(change:<id>, task:<key>)` label pair
-(per D3 / D7): re-runs after partial seeding only POST new tasks and skip any
-that already carry the matching `task:<key>` label. If the coordinator is
-unreachable, the seeder logs a warning and exits 0 — Gate 2 still completes,
-and `/implement-feature` retries seeding on its first invocation per D11.
 
 If `CAN_HANDOFF=true`, write completion handoff.
 
@@ -717,32 +548,3 @@ After approval:
 ```
 /implement-feature <change-id>
 ```
-
-## Common Rationalizations
-
-| Rationalization | Why it's wrong |
-|---|---|
-| "I know what the user wants — I can skip discovery" | The fastest way to redo a plan is to skip the gates that prevent rework. Steps 3 and 5 are cheap insurance against generating tasks.md against the wrong target. |
-| "An L-sized task is fine — splitting it is overhead" | L tasks routinely become XL once implementation starts; the split costs less now (in plan) than mid-implementation (where it forces work-package re-decomposition and lock re-acquisition). |
-| "The title says 'and' but they're tightly coupled — keep as one task" | Tightly coupled work usually deserves a *shared dependency* between two tasks, not a single fused task. Fusing hides the second outcome from the checkpoint cadence. |
-| "I'll skip the contracts step — this is a small feature" | Contracts are the coordination boundary between parallel agents AND the artifact that lets `/validate-feature` distinguish implementation from spec. Even a `contracts/README.md` stub documents that the question was asked. |
-| "Approaches Considered is busywork — I already know the right approach" | The Approaches section forces you to articulate at least one alternative; if you can't, the "right" approach is probably untested. Reviewers (and Gate 1) need this to push back. |
-
-## Red Flags
-
-- A task in `tasks.md` whose title contains the word "and" (almost always a hidden two-task; see "And splitting heuristic").
-- An L-sized task with no decomposition attempt recorded in `design.md`.
-- An XL task that survived to Gate 2 (Step 12) without being split.
-- `work-packages.yaml` declares parallel packages with overlapping `write_allow` scopes (violates the parallel-package rule in Step 8b).
-- A spec file uses `## Requirements` instead of `## ADDED Requirements` / `## MODIFIED Requirements` — `openspec validate` will reject it.
-- `proposal.md` lacks an "Approaches Considered" section, or has only one approach listed.
-- No checkpoint markers in `tasks.md` between groups of 2–3 implementation tasks.
-
-## Verification
-
-1. Cite the size class assigned to each task in `tasks.md` and confirm none are XL and ≤ 1 are L (per Task Sizing Reference).
-2. Run `grep -i ' and ' openspec/changes/<change-id>/tasks.md | grep -E '^\s*- \[' ` and confirm any matches are intentional (and noted in `design.md`).
-3. Confirm `tasks.md` contains at least one `Checkpoint:` marker per 3 implementation tasks.
-4. Confirm `openspec validate <change-id> --strict` passes (Step 9).
-5. Confirm `proposal.md` lists ≥ MIN_APPROACHES distinct approaches and marks one as Recommended (Step 4).
-6. Confirm Gate 1 and Gate 2 user-approval responses are recorded in the session log (Step 11.5).

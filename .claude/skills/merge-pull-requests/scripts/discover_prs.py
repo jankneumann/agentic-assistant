@@ -2,9 +2,7 @@
 """Discover and classify open pull requests by origin.
 
 Classifications:
-  - openspec: branch matches openspec/* or claude/* (Claude Code cloud-session
-    branches, agent-authored OpenSpec work — see OPENSPEC_BRANCH_OVERRIDE in
-    CLAUDE.md), or body contains 'Implements OpenSpec:'
+  - openspec: branch matches openspec/* or body contains 'Implements OpenSpec:'
   - sentinel: Jules Sentinel (security) automation
   - bolt: Jules Bolt (performance) automation
   - palette: Jules Palette (UX) automation
@@ -24,7 +22,7 @@ import json
 import re
 import sys
 
-from _helpers import check_clean_worktree, check_gh, run_gh, safe_author
+from shared import check_clean_worktree, check_gh, run_gh, safe_author
 
 # Jules automation heuristics: title patterns only match when combined
 # with a label or author signal to avoid false positives on human PRs.
@@ -102,25 +100,13 @@ def classify_pr(pr: dict) -> dict:
     author = safe_author(pr)
 
     # OpenSpec detection
-    # Check body marker first — an explicit 'Implements OpenSpec:' line gives us
-    # a canonical change-id even on branches that don't follow openspec/* naming
-    # (e.g. claude/* cloud-session branches that use OPENSPEC_BRANCH_OVERRIDE).
-    body_match = re.search(r"Implements OpenSpec:\s*`?([a-z0-9-]+)`?", body)
-    change_id_from_body = body_match.group(1) if body_match else None
-
     if branch.startswith("openspec/"):
-        change_id = change_id_from_body or branch.removeprefix("openspec/")
+        change_id = branch.removeprefix("openspec/")
         return {"origin": "openspec", "change_id": change_id}
 
-    # claude/* branches are Claude Code cloud-session output — agent-authored
-    # OpenSpec-adjacent work. The branch slug is not a reliable change-id (it
-    # has a random suffix and may not match an openspec/changes/ directory),
-    # so we only set change_id when the body marker is present.
-    if branch.startswith("claude/"):
-        return {"origin": "openspec", "change_id": change_id_from_body}
-
-    if change_id_from_body:
-        return {"origin": "openspec", "change_id": change_id_from_body}
+    match = re.search(r"Implements OpenSpec:\s*`?([a-z0-9-]+)`?", body)
+    if match:
+        return {"origin": "openspec", "change_id": match.group(1)}
 
     # Dependabot detection
     if (author.lower() in ("dependabot[bot]", "dependabot")
