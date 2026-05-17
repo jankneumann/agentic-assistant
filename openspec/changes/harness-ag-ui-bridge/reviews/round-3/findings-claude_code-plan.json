@@ -1,0 +1,41 @@
+{
+  "review_type": "plan",
+  "target": "harness-ag-ui-bridge",
+  "reviewer_vendor": "claude-opus-4-7[1m]",
+  "round": 3,
+  "findings": [
+    {
+      "id": 1,
+      "type": "contract_mismatch",
+      "criticality": "critical",
+      "axis": "correctness",
+      "severity": "critical",
+      "disposition": "fix",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/tasks.md",
+      "description": "INCOMPLETE round-2 RUN_ERROR migration in tasks.md. Task 5.4 was not updated alongside the spec/schema/design fixes and still encodes the OLD RUN_FINISHED.error contract: (a) the task title is 'Write tests for harness-error path emitting terminal RUN_FINISHED (two-phase D8 contract)'; (b) the Goal says 'Assert the response stream contains exactly one `RUN_FINISHED` with `error == \"RuntimeError\"`'; (c) the cited Spec scenario name 'Endpoint emits RUN_FINISHED with error when harness fails' does not exist in web-server/spec.md anymore \u2014 the actual scenario (lines 59-76) is 'Endpoint emits RUN_ERROR when harness fails' and requires a terminal RUN_ERROR event with `message`/`code` fields (NOT a RUN_FINISHED.error field, because upstream `ag_ui.core.RunFinishedEvent` has no error field). An implementer following task 5.4 verbatim would write a test that asserts the opposite of what the spec, schema, and design.md D8 now require \u2014 the test would fail against any correct implementation, or worse, the implementer would 'fix' it by reverting the mapper to emit RUN_FINISHED.error and re-introduce the round-2 regression. This is exactly the kind of stale field reference that round-3 calibration calls out as blocking.",
+      "resolution": "In tasks.md task 5.4: (a) retitle to 'Write tests for harness-error path emitting terminal RUN_ERROR (two-phase D8 contract)'; (b) rewrite the Goal: 'Fake harness yields terminal `RunFinished(error=\"RuntimeError\")` then re-raises `RuntimeError(\"quota exceeded\")`. Assert the response stream contains exactly one terminal `RUN_ERROR` event with `message == \"RuntimeError\"` AND `code == \"RuntimeError\"` (class-name-only, no message body), that NO `RUN_FINISHED` event appears in the same stream, that no further events follow the terminal RUN_ERROR, and that the response generator returns cleanly (the mapper absorbs the re-raised exception per D8).'; (c) update the cited Spec scenario name to 'Endpoint emits RUN_ERROR when harness fails' to match web-server/spec.md line 59."
+    },
+    {
+      "id": 2,
+      "type": "contract_mismatch",
+      "criticality": "high",
+      "axis": "correctness",
+      "severity": "high",
+      "disposition": "fix",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/contracts/openapi/v1.yaml",
+      "description": "INCOMPLETE round-2 RUN_ERROR migration in the OpenAPI contract. The `/chat` POST `description` field (lines 28-31) still states: 'The first event is always `RUN_STARTED` and the last is always `RUN_FINISHED` (with an `error` field populated when the underlying harness failed).' This directly contradicts the round-2 RUN_ERROR contract now established in ag-ui-events.schema.json (the RunFinished variant has no error field) and web-server/spec.md (failures emit RUN_ERROR instead). A frontend developer who reads the OpenAPI summary as the human-facing contract will build a client that listens for `RUN_FINISHED.error` and silently miss every failure (because the server now emits RUN_ERROR). The 200-response example block at lines 64-76 is internally consistent (no error field in the example RUN_FINISHED), making the description text the lone outlier \u2014 easy to miss in review but materially misleading to consumers.",
+      "resolution": "In contracts/openapi/v1.yaml lines 28-31, replace the description sentence with: 'The first event is always `RUN_STARTED`. The last event is `RUN_FINISHED` on success or `RUN_ERROR` on failure \u2014 never both, exactly one. The `RUN_ERROR` shape carries `message` and `code` fields (both set to the exception class name only per design.md D8 redaction). See `../events/ag-ui-events.schema.json` for the authoritative event payloads.' Optionally add a second 422-style example under the 200 response showing a minimal RUN_STARTED \u2192 RUN_ERROR sequence so consumers see both terminal shapes."
+    },
+    {
+      "id": 3,
+      "type": "spec_contradiction",
+      "criticality": "medium",
+      "axis": "correctness",
+      "severity": "moderate",
+      "disposition": "fix",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/specs/harness-adapter/spec.md",
+      "description": "INCOMPLETE round-2 class-name regex fix. The JSON schemas (ag-ui-events.schema.json line 56, harness-event.schema.json line 53) were correctly updated to `^(?:[a-z_][a-zA-Z0-9_]*\\.)*[A-Z][A-Za-z0-9_]*$` so dotted module-qualified exceptions like `asyncio.CancelledError` validate. However the spec/design text was not updated to match: (a) harness-adapter spec line 111 in the 'RunFinished.error field is class-name-only when populated' scenario still says 'the value MUST match the pattern `^[A-Z][A-Za-z0-9_.]*$` (Python class identifier with optional dotted qualifiers)'; (b) design.md D8 line 143 says identically 'The class-name pattern is `^[A-Z][A-Za-z0-9_.]*$`'. The spec/design pattern requires the FIRST character to be uppercase, which would REJECT `asyncio.CancelledError` (the very example the schema's own description field calls out as valid). An implementer reading the spec scenario as their test fixture authority will either (i) write a stricter test than the schema requires, causing the mapper to fail validation against the schema's own examples, or (ii) constrain the harness to drop the module prefix when redacting, narrowing observability of asyncio cancellation and third-party exception classes. Not strictly a `validate --strict` blocker (validators check the schema, not the prose), but a real cross-artifact contradiction.",
+      "resolution": "Update both prose pattern references to match the schemas: (a) harness-adapter/spec.md line 111: replace `^[A-Z][A-Za-z0-9_.]*$` with `^(?:[a-z_][a-zA-Z0-9_]*\\.)*[A-Z][A-Za-z0-9_]*$` and rewrite the parenthetical as 'Python class identifier with optional dotted lowercase module prefix \u2014 e.g., `RuntimeError`, `asyncio.CancelledError`, `agent_framework.QuotaError`'; (b) design.md D8 line 143: same regex replacement and same parenthetical clarification. No schema or task changes needed \u2014 the schemas are already correct."
+    }
+  ]
+}

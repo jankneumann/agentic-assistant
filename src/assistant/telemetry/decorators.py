@@ -37,8 +37,9 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import inspect
 import time
-from collections.abc import Callable, Coroutine, Iterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
@@ -189,10 +190,23 @@ def _sum_usage_metadata(usage_metadata: dict[str, Any]) -> tuple[int, int]:
     return in_tok, out_tok
 
 
-def traced_harness[R](
-    fn: Callable[..., Coroutine[Any, Any, R]],
-) -> Callable[..., Coroutine[Any, Any, R]]:
-    """Wrap a concrete ``SdkHarnessAdapter.invoke`` with one ``trace_llm_call``.
+def traced_harness(
+    fn: Callable[..., Any],
+) -> Callable[..., Any]:
+    """Wrap a concrete ``SdkHarnessAdapter`` harness method with one ``trace_llm_call``.
+
+    Dispatches on the wrapped function's kind (D9):
+
+    - **Coroutine** (``async def invoke``): the existing behaviour — awaits
+      the coroutine and emits exactly one ``trace_llm_call`` after it
+      completes (success or exception).
+
+    - **Async generator** (``async def astream_invoke``): wraps the full
+      generator lifetime. Each event is forwarded as-is. After the
+      generator is exhausted (success) or raises (exception), exactly one
+      ``trace_llm_call`` is emitted with ``metadata={"streaming": True}``
+      (success) or ``metadata={"streaming": True, "error": ClassName}``
+      (exception). The original exception is re-raised unchanged.
 
     Per the harness-adapter spec, this decorator MUST be applied to
     each concrete subclass — applying it to the abstract base is dead
@@ -212,8 +226,60 @@ def traced_harness[R](
     cause when invoked per-call (round-3 codex finding #2).
     """
 
+    if inspect.isasyncgenfunction(fn):
+        # ------------------------------------------------------------------ #
+        # Async-generator path (astream_invoke)                               #
+        # ------------------------------------------------------------------ #
+        @functools.wraps(fn)
+        async def async_gen_wrapper(
+            self_obj: Any, *args: Any, **kwargs: Any
+        ) -> AsyncIterator[Any]:
+            persona, role = _resolve_persona_role(self_obj)
+            model = _resolve_model(self_obj)
+            provider = get_observability_provider()
+            in_tok = 0
+            out_tok = 0
+            start = time.perf_counter()
+            try:
+                with _scoped_usage_callback() as cb:
+                    try:
+                        gen: AsyncGenerator[Any, None] = fn(self_obj, *args, **kwargs)
+                        async for event in gen:
+                            yield event
+                    finally:
+                        in_tok, out_tok = _sum_usage_metadata(cb.usage_metadata)
+            except BaseException as exc:
+                duration_ms = (time.perf_counter() - start) * 1000.0
+                provider.trace_llm_call(
+                    model=model,
+                    persona=persona,
+                    role=role,
+                    messages=None,
+                    input_tokens=in_tok,
+                    output_tokens=out_tok,
+                    duration_ms=duration_ms,
+                    metadata={"streaming": True, "error": type(exc).__name__},
+                )
+                raise
+            duration_ms = (time.perf_counter() - start) * 1000.0
+            provider.trace_llm_call(
+                model=model,
+                persona=persona,
+                role=role,
+                messages=None,
+                input_tokens=in_tok,
+                output_tokens=out_tok,
+                duration_ms=duration_ms,
+                metadata={"streaming": True},
+            )
+
+        return async_gen_wrapper
+
+    # ---------------------------------------------------------------------- #
+    # Coroutine path (invoke)                                                 #
+    # ---------------------------------------------------------------------- #
     @functools.wraps(fn)
-    async def wrapper(self_obj: Any, *args: Any, **kwargs: Any) -> R:
+    async def wrapper(self_obj: Any, *args: Any, **kwargs: Any) -> Any:
         persona, role = _resolve_persona_role(self_obj)
         model = _resolve_model(self_obj)
         provider = get_observability_provider()

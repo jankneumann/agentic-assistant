@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-assistant.local/schemas/ag-ui-events.v1.json",
+  "title": "AGUIEvent (v1 minimal scope)",
+  "description": "Discriminated union of AG-UI protocol v0.x events emitted by the ag-ui-emitter. Restricted to the v1 minimal set: lifecycle (with RUN_ERROR for failures), text messages, and tool calls. STATE_DELTA and CUSTOM events are explicitly out of scope for v1. Field names mirror the upstream ag_ui.core Pydantic models.",
+  "type": "object",
+  "required": ["type"],
+  "oneOf": [
+    { "$ref": "#/$defs/RunStarted" },
+    { "$ref": "#/$defs/RunFinished" },
+    { "$ref": "#/$defs/RunError" },
+    { "$ref": "#/$defs/TextMessageStart" },
+    { "$ref": "#/$defs/TextMessageContent" },
+    { "$ref": "#/$defs/TextMessageEnd" },
+    { "$ref": "#/$defs/ToolCallStart" },
+    { "$ref": "#/$defs/ToolCallArgs" },
+    { "$ref": "#/$defs/ToolCallEnd" }
+  ],
+  "$defs": {
+    "RunStarted": {
+      "type": "object",
+      "required": ["type", "threadId", "runId"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "RUN_STARTED" },
+        "threadId": { "type": "string", "minLength": 1 },
+        "runId": { "type": "string", "minLength": 1 }
+      },
+      "examples": [
+        { "type": "RUN_STARTED", "threadId": "t-abc", "runId": "r-001" }
+      ]
+    },
+    "RunFinished": {
+      "type": "object",
+      "description": "Successful run termination. The upstream ag_ui.core.RunFinishedEvent does NOT carry an error field; failures are signaled with RUN_ERROR instead (see RunError below). Mirrors ag_ui.core.RunFinishedEvent.",
+      "required": ["type", "threadId", "runId"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "RUN_FINISHED" },
+        "threadId": { "type": "string", "minLength": 1 },
+        "runId": { "type": "string", "minLength": 1 }
+      },
+      "examples": [
+        { "type": "RUN_FINISHED", "threadId": "t-abc", "runId": "r-001" }
+      ]
+    },
+    "RunError": {
+      "type": "object",
+      "description": "Run failure terminator. Emitted in place of RUN_FINISHED when the harness yields a terminal internal RunFinished(error=<ClassName>) per the two-phase D8 contract. Mirrors ag_ui.core.RunErrorEvent (fields: message, code). The mapper sets `code` to the exception class name and `message` to the same value (class-name-only redaction — design.md D8 requires no exception message body or traceback to reach the client).",
+      "required": ["type", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "RUN_ERROR" },
+        "message": {
+          "type": "string",
+          "pattern": "^(?:[a-z_][a-zA-Z0-9_]*\\.)*[A-Z][A-Za-z0-9_]*$",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Exception class name only (class-name-only redaction per D8)."
+        },
+        "code": {
+          "type": "string",
+          "pattern": "^(?:[a-z_][a-zA-Z0-9_]*\\.)*[A-Z][A-Za-z0-9_]*$",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Exception class name (same value as message in v1; reserved for structured error categories in a future revision)."
+        }
+      },
+      "examples": [
+        { "type": "RUN_ERROR", "message": "RuntimeError", "code": "RuntimeError" },
+        { "type": "RUN_ERROR", "message": "asyncio.CancelledError", "code": "asyncio.CancelledError" }
+      ]
+    },
+    "TextMessageStart": {
+      "type": "object",
+      "required": ["type", "messageId", "role"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "TEXT_MESSAGE_START" },
+        "messageId": { "type": "string", "minLength": 1 },
+        "role": {
+          "type": "string",
+          "enum": ["assistant"],
+          "description": "v1 scope only emits assistant messages; user messages are inbound, not streamed."
+        }
+      },
+      "examples": [
+        { "type": "TEXT_MESSAGE_START", "messageId": "m-001", "role": "assistant" }
+      ]
+    },
+    "TextMessageContent": {
+      "type": "object",
+      "required": ["type", "messageId", "delta"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "TEXT_MESSAGE_CONTENT" },
+        "messageId": { "type": "string", "minLength": 1 },
+        "delta": {
+          "type": "string",
+          "description": "Partial text chunk. Concatenating all deltas for a given messageId yields the full message."
+        }
+      },
+      "examples": [
+        { "type": "TEXT_MESSAGE_CONTENT", "messageId": "m-001", "delta": "Decorators are " }
+      ]
+    },
+    "TextMessageEnd": {
+      "type": "object",
+      "required": ["type", "messageId"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "TEXT_MESSAGE_END" },
+        "messageId": { "type": "string", "minLength": 1 }
+      },
+      "examples": [
+        { "type": "TEXT_MESSAGE_END", "messageId": "m-001" }
+      ]
+    },
+    "ToolCallStart": {
+      "type": "object",
+      "required": ["type", "toolCallId", "toolCallName"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "TOOL_CALL_START" },
+        "toolCallId": { "type": "string", "minLength": 1 },
+        "toolCallName": { "type": "string", "minLength": 1 }
+      },
+      "examples": [
+        { "type": "TOOL_CALL_START", "toolCallId": "c-001", "toolCallName": "search" }
+      ]
+    },
+    "ToolCallArgs": {
+      "type": "object",
+      "required": ["type", "toolCallId", "delta"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "TOOL_CALL_ARGS" },
+        "toolCallId": { "type": "string", "minLength": 1 },
+        "delta": {
+          "type": "string",
+          "description": "Partial chunk of the tool's JSON arguments. Concatenating all deltas for a given toolCallId yields the full JSON args payload."
+        }
+      },
+      "examples": [
+        { "type": "TOOL_CALL_ARGS", "toolCallId": "c-001", "delta": "{\"q\":\"py" }
+      ]
+    },
+    "ToolCallEnd": {
+      "type": "object",
+      "required": ["type", "toolCallId"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "TOOL_CALL_END" },
+        "toolCallId": { "type": "string", "minLength": 1 }
+      },
+      "examples": [
+        { "type": "TOOL_CALL_END", "toolCallId": "c-001" }
+      ]
+    }
+  }
+}

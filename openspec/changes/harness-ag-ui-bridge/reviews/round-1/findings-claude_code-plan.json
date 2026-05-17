@@ -1,0 +1,173 @@
+{
+  "review_type": "plan",
+  "target": "harness-ag-ui-bridge",
+  "reviewer_vendor": "claude-opus-4-7[1m]",
+  "findings": [
+    {
+      "id": 1,
+      "type": "contract_mismatch",
+      "criticality": "high",
+      "axis": "correctness",
+      "severity": "critical",
+      "disposition": "fix",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/contracts/events/ag-ui-events.schema.json",
+      "description": "The AG-UI event schema requires `threadId` on both RUN_STARTED and RUN_FINISHED (required fields with minLength:1), but the source of that value is unspecified. HarnessEvent.RunStarted/RunFinished carry only `run_id` (harness-event.schema.json lines 17-56), and the mapper signature `map_harness_to_ag_ui(stream: AsyncIterator[HarnessEvent]) -> AsyncIterator[AGUIEvent]` (ag-ui-emitter spec, Requirement \"HarnessEvent to AG-UI Event Mapping\") has no thread_id input. Design D4 states the server uses the harness's internal `_thread_id`, but neither the harness nor the mapper has a documented hand-off. Implementation cannot satisfy both schemas as-written.",
+      "resolution": "Pick one of: (a) Add a `thread_id: str` field to HarnessEvent.RunStarted and RunFinished in harness-event.schema.json and the harness-adapter spec, and have astream_invoke implementations populate it from `self._thread_id`. (b) Change the mapper signature to `map_harness_to_ag_ui(stream, *, thread_id: str)` in the ag-ui-emitter spec and have web/routes.py pass `app.state.harness._thread_id` at call time. Option (a) keeps the mapper pure and stateless; option (b) keeps HarnessEvent transport-agnostic. Recommend (a) \u2014 thread_id is a property of the run, not the transport. Also add a scenario in ag-ui-emitter spec asserting that RUN_STARTED.threadId equals the source HarnessEvent.RunStarted.thread_id."
+    },
+    {
+      "id": 2,
+      "type": "spec_gap",
+      "criticality": "high",
+      "axis": "correctness",
+      "severity": "critical",
+      "disposition": "fix",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/specs/harness-adapter/spec.md",
+      "description": "Three artifacts give contradictory contracts for harness exceptions during astream_invoke: (1) harness-adapter spec scenario \"astream_invoke emits RunFinished with error on exception\" says the harness MUST yield a terminal RunFinished AND the original RuntimeError MUST be 'wrapped or re-raised' (spec.md ~line 131-138 and 193-200); (2) ag-ui-emitter spec scenario \"Harness exception surfaces as RUN_FINISHED with error\" assumes the harness *raises* (\"When the harness stream raises RuntimeError mid-stream\") and the mapper synthesizes terminal RUN_FINISHED; (3) harness-adapter scenario \"Deep Agents astream_invoke is traced on exception\" requires \"the original RuntimeError MUST propagate to the caller unchanged.\" If the harness yields terminal RunFinished AND re-raises, the mapper produces double RUN_FINISHED events. If it only yields, observability decorator never sees the exception. If it only raises, the harness spec's own scenario is violated.",
+      "resolution": "Decide and unify in design (add D14). Recommended resolution: harness astream_invoke catches the exception internally, yields one terminal `RunFinished(error=<ExceptionClass.__name__>)`, then RAISES the original exception so @traced_harness can capture it for observability. The mapper then deduplicates: if it consumes a terminal RunFinished from the stream AND the underlying generator subsequently raises, it suppresses the duplicate (or treats the raise as the canonical signal and ignores the prior RunFinished). Alternative: harness yields terminal RunFinished and exits normally (no propagation); rewrite observability scenarios to inspect last event for error rather than requiring exception propagation; rewrite ag-ui-emitter scenario \"Harness exception surfaces as RUN_FINISHED with error\" to talk about the yielded terminal event, not a raise. Either path: update all three spec deltas + ag-ui-emitter Requirement \"Error Mapping in v1\" so the three artifacts agree."
+    },
+    {
+      "id": 3,
+      "type": "security",
+      "criticality": "medium",
+      "axis": "security",
+      "severity": "optional",
+      "disposition": "fix",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/contracts/openapi/v1.yaml",
+      "line_range": {
+        "start": 107,
+        "end": 118
+      },
+      "description": "ChatRequest.message has `minLength: 1` but no `maxLength`. Even on loopback, an unbounded user message body can drive memory spikes (a 50MB message ends up in the LLM context, in observability traces, and in any logging). For v1's single-user posture this is not a DoS surface but it is an accidental-misuse surface \u2014 a copy/pasted file becomes a server hiccup. Cost of adding a bound is one line.",
+      "resolution": "Add `maxLength: 100000` (~25k tokens worth) to ChatRequest.message in contracts/openapi/v1.yaml. Add a corresponding web-server spec scenario: \"Endpoint rejects request bodies exceeding maxLength\" \u2014 returns 422. FastAPI/Pydantic enforces this automatically once the OpenAPI schema is the source of truth for the request model."
+    },
+    {
+      "id": 4,
+      "type": "spec_gap",
+      "criticality": "medium",
+      "axis": "correctness",
+      "severity": "optional",
+      "disposition": "fix",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/specs/cli-interface/spec.md",
+      "line_range": {
+        "start": 38,
+        "end": 47
+      },
+      "description": "Requirement \"CLI serve Subcommand\" says `-H/--harness` defaults to `deep_agents`. This is inconsistent with the existing `run` subcommand pattern, which (per repo convention) resolves harness from persona config. For a persona whose enabled harness is `ms_agent_framework` (the future work persona per CLAUDE.md \"What's Not Yet Wired\"), `serve` would hardcode-default to `deep_agents` and then fail lifespan with \"harness disabled\" \u2014 surprising for the operator. The CLI spec should defer the default to the persona's configured harness.",
+      "resolution": "Change the cli-interface spec to: `-H/--harness` defaults to the persona's configured/default harness (matching whatever `run` does), falling back to `deep_agents` only if the persona has no configured default. Update scenarios \"serve binds the supplied persona and role at startup\" and add a scenario \"serve resolves harness default from persona config when -H is omitted.\" Aligns the two subcommands so behavior is symmetric."
+    },
+    {
+      "id": 5,
+      "type": "spec_gap",
+      "criticality": "medium",
+      "axis": "correctness",
+      "severity": "optional",
+      "disposition": "fix",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/specs/web-server/spec.md",
+      "line_range": {
+        "start": 23,
+        "end": 31
+      },
+      "description": "Scenario \"Response body contains AG-UI events\" asserts a TEXT_MESSAGE_CONTENT with delta=='hi' but does not assert the presence of TEXT_MESSAGE_START and TEXT_MESSAGE_END framing. The mapper's bracketing requirement (ag-ui-emitter Requirement \"Run Lifecycle Event Ordering\") demands START before any CONTENT and exactly one END per messageId \u2014 but the web-server-level scenario doesn't verify the bracketing is preserved end-to-end through the SSE response. A regression in the mapper (e.g., omitting START) would pass this scenario.",
+      "resolution": "Extend the scenario assertions: AND at least one `data:` line with `type == \"TEXT_MESSAGE_START\"` AND its `messageId` matches the TEXT_MESSAGE_CONTENT's `messageId` AND a `data:` line with `type == \"TEXT_MESSAGE_END\"` and the same `messageId`, all before RUN_FINISHED. This makes the integration test load-bearing for the mapper's bracketing invariants \u2014 even if mapper unit tests cover it, the end-to-end assertion catches wiring regressions."
+    },
+    {
+      "id": 6,
+      "type": "style",
+      "criticality": "low",
+      "axis": "correctness",
+      "severity": "fyi",
+      "disposition": "fix",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/specs/web-server/spec.md",
+      "line_range": {
+        "start": 11,
+        "end": 14
+      },
+      "description": "The web-server spec references \"the SSE framing specified by RFC 8895.\" There is no RFC 8895 defining Server-Sent Events. SSE is specified in the WHATWG HTML Living Standard (Section 9.2 \"Server-sent events\"), not an IETF RFC. The MIME type `text/event-stream` is registered via IANA but its semantics come from the HTML spec.",
+      "resolution": "Change \"RFC 8895\" to \"the WHATWG HTML Living Standard, Section 9.2 (Server-sent events)\" or simply \"the SSE specification (WHATWG HTML)\". Wrong citation is the kind of thing that lingers; fix at plan time."
+    },
+    {
+      "id": 7,
+      "type": "spec_gap",
+      "criticality": "low",
+      "axis": "correctness",
+      "severity": "fyi",
+      "disposition": "fix",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/contracts/events/harness-event.schema.json",
+      "line_range": {
+        "start": 48,
+        "end": 51
+      },
+      "description": "RunFinished.error description says \"Exception class name (or short error message) when the run failed.\" Design D8 mandates class name only with explicit reasoning about leakage of file paths, environment-variable values, and secret-bearing exception messages. The schema description's looser \"or short error message\" wording invites implementers to put exception messages in the error field, which D8 explicitly forbids.",
+      "resolution": "Tighten the description to: \"Exception class name only (e.g., 'RuntimeError', 'PermissionError') when the run failed; null on success. Full exception messages and tracebacks are server-side logs only \u2014 see design.md D8 for the redaction rationale.\" Same fix in ag-ui-events.schema.json RunFinished.error description for symmetry."
+    },
+    {
+      "id": 8,
+      "type": "style",
+      "criticality": "low",
+      "axis": "correctness",
+      "severity": "fyi",
+      "disposition": "fix",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/work-packages.yaml",
+      "line_range": {
+        "start": 31,
+        "end": 36
+      },
+      "description": "wp-foundation description (line 36) reads \"...sse-starlette, optional ag-ui-protocol)\" \u2014 the \"optional\" qualifier and the package name `ag-ui-protocol` are stale from the pre-Gate-2 plan revision. Per the revised D5 the package is `ag-ui` (PyPI name) and is non-optional. Inconsistency with proposal.md, design.md, and tasks.md.",
+      "resolution": "Replace \"optional ag-ui-protocol\" with \"ag-ui\" (no \"optional\") in wp-foundation.description. Pure docs cleanup; no behavioral change."
+    },
+    {
+      "id": 9,
+      "type": "architecture",
+      "criticality": "low",
+      "axis": "architecture",
+      "severity": "fyi",
+      "disposition": "accept",
+      "description": "Deferred question: wp-web-cli split into wp-web + wp-cli. Recommendation: keep together. The `serve` subcommand is a thin click wrapper around `uvicorn.run(make_app(...))` \u2014 implementation is ~30 LOC of CLI plus ~50 LOC of tests, all of which depend on the app factory existing. Splitting creates a new depends_on edge (wp-cli depends on wp-web) without enabling any parallelism \u2014 the CLI tests cannot run before the app factory exists. The split would also leave wp-cli with a single Click subcommand as its entire contents, which is too small to be its own package. The current shape (wp-web-cli at 350 LOC, 18 tasks) is moderate and coherent."
+    },
+    {
+      "id": 10,
+      "type": "security",
+      "criticality": "low",
+      "axis": "security",
+      "severity": "fyi",
+      "disposition": "accept",
+      "description": "Deferred question: rate limiting on /chat. Recommendation: do not add for v1. The v1 contract is explicit: single-user, loopback-bound, local-trust-mode (D12). Adding rate limiting now would: (a) introduce a token-bucket or similar abstraction with state that has no use case in v1; (b) require a follow-up to migrate from per-process to per-user accounting when multi-user lands; (c) provide no defense against the actual threat model (the loopback-only constraint already prevents network-level abuse). Rate limiting belongs in the future change that introduces multi-user / non-loopback support, paired with auth \u2014 they're the same design surface."
+    },
+    {
+      "id": 11,
+      "type": "performance",
+      "criticality": "low",
+      "axis": "performance",
+      "severity": "fyi",
+      "disposition": "accept",
+      "description": "Deferred question: explicit backpressure requirement. Recommendation: D13's trust of sse-starlette is sufficient for v1. sse-starlette uses an internal asyncio.Queue with a configurable max size (default ping_message + bounded), exposes `request.is_disconnected()` for the response handler to honor, and the existing client-disconnect scenario (5.4b) already verifies aclose() propagation. Adding an explicit backpressure spec requirement would essentially restate what sse-starlette already guarantees \u2014 over-engineering for a single-user local SSE bridge. If the future Tauri + web frontend exposes the server to high-rate clients, a dedicated D-decision lands then."
+    },
+    {
+      "id": 12,
+      "type": "security",
+      "criticality": "low",
+      "axis": "security",
+      "severity": "fyi",
+      "disposition": "accept",
+      "description": "Deferred question: mandatory auth middleware for non-loopback. Recommendation: keep D12's warn-not-refuse posture. The arguments against mandating auth in v1 are strong: (a) SSH-tunneling operators legitimately need to bind 0.0.0.0 inside a container while the host port is loopback; (b) any bearer-token scheme added now is throwaway code when real multi-user auth lands; (c) a warning is honest signaling (\"this is local-trust-mode and you are exposing it\") without false-security risk. Refuse-without-auth-token becomes the right policy when v2 introduces multi-user \u2014 and that policy change is itself a one-line edit (warning \u2192 refusal) at that time."
+    },
+    {
+      "id": 13,
+      "type": "compatibility",
+      "criticality": "low",
+      "axis": "correctness",
+      "severity": "fyi",
+      "disposition": "accept",
+      "description": "Deferred question: ag_ui version pin in spec deltas. Recommendation: keep pinning in pyproject.toml / uv.lock, not in spec text. Spec deltas describe behavior contracts (\"the emitted event MUST conform to AG-UI v0.x\"); dependency versions describe build artifacts. Mixing the two means every dependency bump becomes a spec change. The current ag-ui-emitter spec wording \"AG-UI protocol v0.x\" is the right level of abstraction \u2014 a v1.x bump becomes a deliberate spec revision, while a v0.x.y bump is a pyproject.toml diff. Tasks 1.4 captures the pyproject pin correctly."
+    },
+    {
+      "id": 14,
+      "type": "spec_gap",
+      "criticality": "low",
+      "axis": "correctness",
+      "severity": "fyi",
+      "disposition": "accept",
+      "description": "Deferred question: stable scenario IDs (e.g., web-server.3). Recommendation: keep scenario-name-based references. The existing tasks.md convention (\"Spec scenarios: web-server 'Response body contains AG-UI events'\") is already tracing-friendly because scenario names are quoted and unique within a spec. Adding numeric IDs would create a maintenance burden (renumbering on insertions) and risk drift between the ID and the name. openspec validate strict doesn't require IDs. If automated test-to-scenario traceability becomes a concern later, it's a separate cross-cutting change."
+    }
+  ]
+}

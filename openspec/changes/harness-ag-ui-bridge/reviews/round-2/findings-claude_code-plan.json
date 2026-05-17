@@ -1,0 +1,61 @@
+{
+  "review_type": "plan",
+  "target": "harness-ag-ui-bridge",
+  "reviewer_vendor": "claude-opus-4-7[1m]",
+  "round": 2,
+  "findings": [
+    {
+      "id": 1,
+      "type": "contract_mismatch",
+      "criticality": "critical",
+      "axis": "correctness",
+      "severity": "critical",
+      "disposition": "fix",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/work-packages.yaml",
+      "description": "REGRESSION of round-1 fix to D6 / finding #15: work-packages.yaml still places HarnessEvent at the OLD path `src/assistant/transports/ag_ui/events.py`, but design.md D6, tasks.md task 1.3, and the harness-adapter spec were all updated to the new path `src/assistant/harnesses/sdk/events.py`. Four stale references remain in work-packages.yaml: line 42 (wp-foundation locks.files), line 54 (wp-foundation scope.write_allow), line 62 (test path `tests/transports/ag_ui/test_events.py` \u2014 should match the harness layer), line 88 (verification pytest command targets `tests/transports/ag_ui/test_events.py`), line 108 (outputs.artifacts). Because wp-foundation's scope.write_allow is an allowlist and does NOT include `src/assistant/harnesses/sdk/events.py`, an isolation-mode agent following the work package would be BLOCKED from writing HarnessEvent to the correct location \u2014 making the plan unimplementable as-stated. The lock would also fail to guard the correct file against concurrent edits.",
+      "resolution": "In work-packages.yaml under wp-foundation: (a) replace `src/assistant/transports/ag_ui/events.py` with `src/assistant/harnesses/sdk/events.py` in locks.files (line 42), scope.write_allow (line 54), and outputs.artifacts (line 108); (b) add `src/assistant/harnesses/sdk/__init__.py` to scope.write_allow if the package marker may need updating; (c) move the test file from `tests/transports/ag_ui/test_events.py` to `tests/harnesses/sdk/test_events.py` (or `tests/harnesses/test_sdk_events.py`) in scope.write_allow and update the pytest command at line 88 to match; (d) leave `tests/transports/ag_ui/__init__.py` in scope.write_allow only if other wp-foundation tests still live under that path (otherwise drop it). Verify post-fix that `openspec validate harness-ag-ui-bridge --strict` still passes (work-packages.yaml is validated against work-packages.schema.json)."
+    },
+    {
+      "id": 2,
+      "type": "spec_gap",
+      "criticality": "medium",
+      "axis": "correctness",
+      "severity": "moderate",
+      "disposition": "fix",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/specs/harness-adapter/spec.md",
+      "description": "Task 5.10 reaches into `app.state.harness._thread_id` (a private attribute by naming convention) to pass into the mapper as the keyword-only `thread_id` argument, and design.md D4 explicitly relies on this access path. But neither the harness-adapter spec's Requirement: SDK Harness Adapter nor any added scenario establishes `thread_id` as part of the public adapter surface. The contract that the web layer depends on is therefore undocumented \u2014 a refactor that renames `_thread_id` (or moves it onto a per-call config object, which is a likely future direction once multi-conversation support arrives per D4's forward path) would silently break the web route without any spec scenario detecting the regression. This is not a v1 blocker (single-user, single-thread; both DeepAgents and MSAF currently expose `_thread_id`), but it bakes an implicit private-API dependency into the SSE bridge.",
+      "resolution": "Add a small ADDED Requirement to the harness-adapter spec delta \u2014 e.g., `Requirement: SDK Harness Adapter Exposes Active Thread Identifier` \u2014 stating that every concrete SdkHarnessAdapter SHALL expose the active conversation thread_id as a publicly-readable string (either `harness.thread_id` property or `harness.get_thread_id()` method), and that the web layer SHALL consume that public accessor when calling `map_harness_to_ag_ui(..., thread_id=...)`. Add a single scenario asserting that `harness.thread_id` returns a non-empty string after `create_agent` is invoked. Update task 5.10's description to reference the public accessor rather than `_thread_id`. Net cost: ~10 lines of spec + one one-line property on each existing harness."
+    },
+    {
+      "id": 3,
+      "type": "style",
+      "criticality": "low",
+      "axis": "consistency",
+      "severity": "low",
+      "disposition": "fix",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/work-packages.yaml",
+      "description": "Round-1 finding #8 (claude-opus) flagged that wp-foundation.description still reads `\"...sse-starlette, optional ag-ui-protocol)\"` \u2014 both `optional` (per revised D5 the package is non-optional, confirmed installed) and `ag-ui-protocol` (the PyPI name per D5 is `ag-ui`) are stale from the pre-Gate-2 plan revision. The round-1 fix list did not address this. It still reads the same way at line 36 of work-packages.yaml. Pure docs hygiene; no behavioral impact, but a future reader will be confused about whether `ag-ui` is truly required.",
+      "resolution": "In work-packages.yaml line 36, replace `\"...sse-starlette, optional ag-ui-protocol)\"` with `\"...sse-starlette, ag-ui)\"`. One-token edit, no spec re-validation needed beyond the existing schema."
+    },
+    {
+      "id": 4,
+      "type": "spec_gap",
+      "criticality": "low",
+      "axis": "consistency",
+      "severity": "low",
+      "disposition": "accept",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/tasks.md",
+      "description": "Task 5.10's explicit `Dependencies:` list (5.1, 5.2, 5.3, 5.4, 5.8, 5.9, 4.6, 3.6) omits 3b.7 (MSAF astream_invoke implementation). Per work-packages.yaml, wp-web-cli depends on both wp-deep-agents-stream AND wp-msaf-stream, so the package-level DAG is correct. The web route itself is harness-agnostic (just calls `astream_invoke` polymorphically), so this is not a real blocker \u2014 the route can be implemented and tested with the DeepAgents harness alone. Calling it out for transparency, but disposition is accept: the package-level DAG is authoritative; the task-level dep list is informational and slightly incomplete in a non-blocking way."
+    },
+    {
+      "id": 5,
+      "type": "style",
+      "criticality": "low",
+      "axis": "consistency",
+      "severity": "low",
+      "disposition": "accept",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/specs/web-server/spec.md",
+      "description": "The Requirement: SSE Chat Endpoint still cites `RFC 8895` for SSE framing (round-1 finding #6). SSE is specified in the WHATWG HTML Living Standard, not an IETF RFC. Round-1 disposition was 'accept' (low criticality, no behavioral impact). It remains uncorrected in round-2, consistent with that disposition. Re-confirming the accept disposition; not raising as a fix in round-2."
+    }
+  ]
+}

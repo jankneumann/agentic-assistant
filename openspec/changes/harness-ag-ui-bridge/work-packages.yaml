@@ -1,0 +1,480 @@
+schema_version: 1
+
+feature:
+  id: harness-ag-ui-bridge
+  title: AG-UI bridge over FastAPI SSE
+  plan_revision: 3
+  created_by: jankneumann
+  created_at: "2026-05-16T10:00:00Z"
+
+contracts:
+  revision: 1
+  openapi:
+    primary: openspec/changes/harness-ag-ui-bridge/contracts/openapi/v1.yaml
+    files:
+      - openspec/changes/harness-ag-ui-bridge/contracts/openapi/v1.yaml
+  generated:
+    pydantic_dir: openspec/changes/harness-ag-ui-bridge/contracts/generated/
+
+defaults:
+  priority: 5
+  lock_ttl_minutes: 120
+  timeout_minutes: 90
+  retry_budget: 1
+  verification_tier_required: B
+  min_trust_level: 2
+
+packages:
+  - package_id: wp-foundation
+    title: HarnessEvent union, harness base interface, traced_harness async-gen support
+    task_type: foundation
+    description: |
+      Establish the harness-agnostic foundation: define the HarnessEvent
+      discriminated union (6 variants) at src/assistant/harnesses/sdk/events.py
+      (D6 import-direction rule), add the abstract astream_invoke method
+      to SdkHarnessAdapter, extend the @traced_harness decorator at
+      src/assistant/telemetry/decorators.py to dispatch on async generators,
+      and add runtime dependencies (fastapi, uvicorn, sse-starlette, ag-ui).
+      Covers tasks 1.1–1.4 and 2.1–2.4.
+    priority: 1
+    depends_on: []
+    locks:
+      files:
+        - src/assistant/harnesses/base.py
+        - src/assistant/harnesses/sdk/events.py
+        - src/assistant/telemetry/decorators.py
+        - pyproject.toml
+        - uv.lock
+      keys:
+        - contract:harness-event-v1
+        - feature:harness-ag-ui-bridge:foundation
+      ttl_minutes: 120
+      reason: Foundation interfaces and event types — must complete before any parallel implementation work.
+    scope:
+      write_allow:
+        - "src/assistant/harnesses/base.py"
+        - "src/assistant/harnesses/sdk/events.py"
+        - "src/assistant/telemetry/decorators.py"
+        - "pyproject.toml"
+        - "uv.lock"
+        - "tests/harnesses/sdk/__init__.py"
+        - "tests/harnesses/sdk/test_events.py"
+        - "tests/harnesses/test_base_streaming.py"
+        - "tests/telemetry/test_traced_harness_streaming.py"
+      read_allow:
+        - "src/**"
+        - "tests/**"
+        - "openspec/changes/harness-ag-ui-bridge/**"
+        - "openspec/specs/**"
+        - "CLAUDE.md"
+      deny:
+        - "src/assistant/harnesses/sdk/deep_agents.py"
+        - "src/assistant/harnesses/sdk/ms_agent_fw.py"
+        - "src/assistant/transports/**"
+        - "src/assistant/web/**"
+        - "src/assistant/cli.py"
+    worktree:
+      name: wp-foundation
+      mode: isolated
+    timeout_minutes: 120
+    retry_budget: 1
+    min_trust_level: 2
+    verification:
+      tier_required: B
+      steps:
+        - name: pytest-foundation
+          kind: command
+          command: "uv run pytest tests/harnesses/sdk/test_events.py tests/harnesses/test_base_streaming.py tests/telemetry/test_traced_harness_streaming.py -x"
+          evidence:
+            artifacts: []
+            result_keys: ["pytest_passed"]
+        - name: ruff
+          kind: command
+          command: "uv run ruff check src tests"
+          evidence:
+            artifacts: []
+            result_keys: ["ruff_passed"]
+        - name: mypy
+          kind: command
+          command: "uv run mypy src tests"
+          evidence:
+            artifacts: []
+            result_keys: ["mypy_passed"]
+    outputs:
+      result_keys:
+        - wp_foundation_complete
+      artifacts:
+        - src/assistant/harnesses/sdk/events.py
+        - src/assistant/harnesses/base.py
+        - src/assistant/telemetry/decorators.py
+    metadata:
+      loc_estimate: 250
+      complexity: medium
+      package_kind: data_model
+
+  - package_id: wp-deep-agents-stream
+    title: DeepAgentsHarness.astream_invoke implementation
+    task_type: implementation
+    description: |
+      Implement DeepAgentsHarness.astream_invoke by consuming agent.astream(...)
+      from LangGraph (already wired via InMemorySaver). Translate LangChain
+      stream events into HarnessEvent variants. Apply the streaming-aware
+      @traced_harness decorator. Covers tasks 3.1–3.6.
+    priority: 2
+    depends_on:
+      - wp-foundation
+    locks:
+      files:
+        - src/assistant/harnesses/sdk/deep_agents.py
+      keys:
+        - feature:harness-ag-ui-bridge:deepagents
+      ttl_minutes: 120
+      reason: Deep Agents streaming path — touches a single harness implementation file.
+    scope:
+      write_allow:
+        - "src/assistant/harnesses/sdk/deep_agents.py"
+        - "tests/harnesses/test_deep_agents_astream.py"
+      read_allow:
+        - "src/**"
+        - "tests/**"
+        - "openspec/changes/harness-ag-ui-bridge/**"
+        - "openspec/specs/**"
+      deny:
+        - "src/assistant/harnesses/sdk/ms_agent_fw.py"
+        - "src/assistant/web/**"
+        - "src/assistant/cli.py"
+        - "src/assistant/transports/**"
+    worktree:
+      name: wp-deep-agents-stream
+      mode: isolated
+    timeout_minutes: 90
+    retry_budget: 1
+    min_trust_level: 2
+    verification:
+      tier_required: B
+      steps:
+        - name: pytest-streaming
+          kind: command
+          command: "uv run pytest tests/harnesses/test_deep_agents_astream.py -x"
+          evidence:
+            artifacts: []
+            result_keys: ["pytest_passed"]
+        - name: mypy
+          kind: command
+          command: "uv run mypy src tests"
+          evidence:
+            artifacts: []
+            result_keys: ["mypy_passed"]
+    outputs:
+      result_keys:
+        - wp_deep_agents_stream_complete
+      artifacts:
+        - src/assistant/harnesses/sdk/deep_agents.py
+    metadata:
+      loc_estimate: 180
+      complexity: medium
+      package_kind: integration
+
+  - package_id: wp-msaf-stream
+    title: MSAgentFrameworkHarness.astream_invoke implementation
+    task_type: implementation
+    description: |
+      Implement MSAgentFrameworkHarness.astream_invoke by calling
+      agent.run(messages, stream=True) on the agent-framework SDK
+      (returns a ResponseStream[AgentResponseUpdate, AgentResponse[Any]]).
+      Translate each AgentResponseUpdate to HarnessEvent variants per the
+      D11 mapping table. Defensive getattr with fallbacks for SDK shape
+      drift; keep lazy agent_framework imports for the v1.0.1 namespace
+      quirk. Apply @traced_harness. Covers tasks 3b.1–3b.7.
+      Runs in parallel with wp-deep-agents-stream and wp-ag-ui-emitter
+      (non-overlapping write scopes).
+    priority: 2
+    depends_on:
+      - wp-foundation
+    locks:
+      files:
+        - src/assistant/harnesses/sdk/ms_agent_fw.py
+      keys:
+        - feature:harness-ag-ui-bridge:msafstream
+      ttl_minutes: 120
+      reason: MSAF streaming path — touches a single harness implementation file.
+    scope:
+      write_allow:
+        - "src/assistant/harnesses/sdk/ms_agent_fw.py"
+        - "tests/harnesses/test_ms_agent_fw_astream.py"
+      read_allow:
+        - "src/**"
+        - "tests/**"
+        - "openspec/changes/harness-ag-ui-bridge/**"
+        - "openspec/specs/**"
+      deny:
+        - "src/assistant/harnesses/sdk/deep_agents.py"
+        - "src/assistant/web/**"
+        - "src/assistant/cli.py"
+        - "src/assistant/transports/**"
+    worktree:
+      name: wp-msaf-stream
+      mode: isolated
+    timeout_minutes: 90
+    retry_budget: 1
+    min_trust_level: 2
+    verification:
+      tier_required: B
+      steps:
+        - name: pytest-msaf-streaming
+          kind: command
+          command: "uv run pytest tests/harnesses/test_ms_agent_fw_astream.py -x"
+          evidence:
+            artifacts: []
+            result_keys: ["pytest_passed"]
+        - name: mypy
+          kind: command
+          command: "uv run mypy src tests"
+          evidence:
+            artifacts: []
+            result_keys: ["mypy_passed"]
+    outputs:
+      result_keys:
+        - wp_msaf_stream_complete
+      artifacts:
+        - src/assistant/harnesses/sdk/ms_agent_fw.py
+    metadata:
+      loc_estimate: 150
+      complexity: medium
+      package_kind: integration
+
+  - package_id: wp-ag-ui-emitter
+    title: AG-UI event mapper and types (using upstream ag_ui package)
+    task_type: implementation
+    description: |
+      Implement the AG-UI emitter: HarnessEvent → AG-UI v0.x event mapping with
+      message/tool-call lifecycle bracketing. Re-exports from upstream ag_ui.core
+      Pydantic models (RunStartedEvent, RunFinishedEvent, RunErrorEvent,
+      TextMessage*, ToolCall*). Mapper signature takes thread_id keyword-only.
+      Two-phase D8 error contract: terminal internal RunFinished(error=...)
+      maps to RUN_ERROR (not RUN_FINISHED with an error field — the upstream
+      RunFinishedEvent has no error field). Covers tasks 4.1–4.6. Runs in
+      parallel with wp-deep-agents-stream and wp-msaf-stream (non-overlapping
+      scopes). Creates src/assistant/transports/ag_ui/__init__.py and
+      src/assistant/transports/__init__.py as part of new-package setup.
+    priority: 2
+    depends_on:
+      - wp-foundation
+    locks:
+      files:
+        - src/assistant/transports/ag_ui/mapper.py
+        - src/assistant/transports/ag_ui/types.py
+      keys:
+        - contract:ag-ui-events-v1
+        - feature:harness-ag-ui-bridge:emitter
+      ttl_minutes: 120
+      reason: AG-UI mapper + types — transport-agnostic event translation.
+    scope:
+      write_allow:
+        - "src/assistant/transports/__init__.py"
+        - "src/assistant/transports/ag_ui/__init__.py"
+        - "src/assistant/transports/ag_ui/mapper.py"
+        - "src/assistant/transports/ag_ui/types.py"
+        - "tests/transports/__init__.py"
+        - "tests/transports/ag_ui/__init__.py"
+        - "tests/transports/ag_ui/test_mapper.py"
+        - "tests/transports/ag_ui/test_types.py"
+      read_allow:
+        - "src/**"
+        - "tests/**"
+        - "openspec/changes/harness-ag-ui-bridge/**"
+        - "openspec/specs/**"
+      deny:
+        - "src/assistant/harnesses/**"
+        - "src/assistant/web/**"
+        - "src/assistant/cli.py"
+    worktree:
+      name: wp-ag-ui-emitter
+      mode: isolated
+    timeout_minutes: 90
+    retry_budget: 1
+    min_trust_level: 2
+    verification:
+      tier_required: B
+      steps:
+        - name: pytest-emitter
+          kind: command
+          command: "uv run pytest tests/transports/ag_ui/test_mapper.py tests/transports/ag_ui/test_types.py -x"
+          evidence:
+            artifacts: []
+            result_keys: ["pytest_passed"]
+        - name: mypy
+          kind: command
+          command: "uv run mypy src tests"
+          evidence:
+            artifacts: []
+            result_keys: ["mypy_passed"]
+    outputs:
+      result_keys:
+        - wp_ag_ui_emitter_complete
+      artifacts:
+        - src/assistant/transports/ag_ui/mapper.py
+        - src/assistant/transports/ag_ui/types.py
+    metadata:
+      loc_estimate: 220
+      complexity: medium
+      package_kind: integration
+
+  - package_id: wp-web-cli
+    title: FastAPI app, SSE endpoint, serve CLI subcommand
+    task_type: implementation
+    description: |
+      Mount the FastAPI app via a startup lifespan that constructs one harness
+      and stashes it on app.state. Wire /chat (SSE) and /health endpoints.
+      Add a click `serve` subcommand. Covers tasks 5.1–5.10 and 6.1–6.8.
+    priority: 3
+    depends_on:
+      - wp-deep-agents-stream
+      - wp-msaf-stream
+      - wp-ag-ui-emitter
+    locks:
+      files:
+        - src/assistant/web
+        - src/assistant/cli.py
+      keys:
+        - api:POST /chat
+        - api:GET /health
+        - feature:harness-ag-ui-bridge:webcli
+      ttl_minutes: 120
+      reason: FastAPI app + CLI serve subcommand — single HTTP surface.
+    scope:
+      write_allow:
+        - "src/assistant/web/**"
+        - "src/assistant/cli.py"
+        - "tests/web/**"
+        - "tests/cli/test_serve.py"
+      read_allow:
+        - "src/**"
+        - "tests/**"
+        - "openspec/changes/harness-ag-ui-bridge/**"
+        - "openspec/specs/**"
+      deny:
+        - "src/assistant/harnesses/**"
+        - "src/assistant/transports/**"
+    worktree:
+      name: wp-web-cli
+      mode: isolated
+    timeout_minutes: 120
+    retry_budget: 1
+    min_trust_level: 2
+    verification:
+      tier_required: B
+      steps:
+        - name: pytest-web-cli
+          kind: command
+          command: "uv run pytest tests/web/ tests/cli/test_serve.py -x"
+          evidence:
+            artifacts: []
+            result_keys: ["pytest_passed"]
+        - name: mypy
+          kind: command
+          command: "uv run mypy src tests"
+          evidence:
+            artifacts: []
+            result_keys: ["mypy_passed"]
+    outputs:
+      result_keys:
+        - wp_web_cli_complete
+      artifacts:
+        - src/assistant/web/app.py
+        - src/assistant/web/routes.py
+        - src/assistant/cli.py
+    metadata:
+      loc_estimate: 350
+      complexity: medium
+      package_kind: integration
+
+  - package_id: wp-integration
+    title: End-to-end smoke tests, docs update, full CI gates
+    task_type: integration
+    description: |
+      Run manual smoke tests against the live server (curl -N with text and
+      tool-using roles). Update CLAUDE.md Essential Commands with the serve
+      example. Run the full CI-scope quality gates (pytest tests/, ruff src
+      tests, mypy src tests, openspec validate --strict). Covers tasks 7.1–7.4.
+    priority: 4
+    depends_on:
+      - wp-web-cli
+    locks:
+      files:
+        - CLAUDE.md
+      keys:
+        - feature:harness-ag-ui-bridge:integration
+      ttl_minutes: 60
+      reason: Docs update + integration verification.
+    scope:
+      write_allow:
+        - "CLAUDE.md"
+        - "tests/integration/test_ag_ui_smoke.py"
+      read_allow:
+        - "src/**"
+        - "tests/**"
+        - "openspec/**"
+        - "docs/**"
+        - "CLAUDE.md"
+    worktree:
+      name: wp-integration
+      mode: shared
+    timeout_minutes: 90
+    retry_budget: 0
+    min_trust_level: 2
+    verification:
+      tier_required: A
+      steps:
+        - name: pytest-full
+          kind: command
+          command: "uv run pytest tests/"
+          evidence:
+            artifacts: []
+            result_keys: ["pytest_passed"]
+        - name: ruff
+          kind: command
+          command: "uv run ruff check src tests"
+          evidence:
+            artifacts: []
+            result_keys: ["ruff_passed"]
+        - name: mypy
+          kind: command
+          command: "uv run mypy src tests"
+          evidence:
+            artifacts: []
+            result_keys: ["mypy_passed"]
+        - name: openspec-validate
+          kind: command
+          command: "openspec validate harness-ag-ui-bridge --strict"
+          evidence:
+            artifacts: []
+            result_keys: ["openspec_passed"]
+        - name: smoke-curl-text
+          kind: manual
+          manual_instructions: |
+            1. Start the server: `uv run assistant serve -p personal -r assistant --port 8765`
+            2. In another terminal: `curl -N -X POST http://127.0.0.1:8765/chat -H 'Content-Type: application/json' -d '{"message":"hello"}'`
+            3. Verify: response begins with `data: {"type":"RUN_STARTED",...}` and ends with `data: {"type":"RUN_FINISHED",...}`.
+            4. Verify: at least one `TEXT_MESSAGE_CONTENT` event appears between them.
+          evidence:
+            artifacts: []
+            result_keys: ["smoke_text_passed"]
+        - name: smoke-curl-tool
+          kind: manual
+          manual_instructions: |
+            1. Start the server with a tool-using role.
+            2. POST a message that should trigger a tool call.
+            3. Verify: SSE stream contains TOOL_CALL_START → TOOL_CALL_ARGS → TOOL_CALL_END in order.
+          evidence:
+            artifacts: []
+            result_keys: ["smoke_tool_passed"]
+    outputs:
+      result_keys:
+        - wp_integration_complete
+      artifacts:
+        - CLAUDE.md
+    metadata:
+      loc_estimate: 80
+      complexity: low
+      package_kind: integration

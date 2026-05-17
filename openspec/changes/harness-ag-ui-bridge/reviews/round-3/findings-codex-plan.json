@@ -1,0 +1,52 @@
+{
+  "review_type": "plan",
+  "target": "harness-ag-ui-bridge",
+  "reviewer_vendor": "gpt-5-codex",
+  "findings": [
+    {
+      "id": 1,
+      "type": "contract_mismatch",
+      "criticality": "critical",
+      "description": "The RUN_ERROR migration is not fully converged in implementation-driving artifacts. The web-server spec and ag-ui-emitter spec require failures to terminate with AG-UI RUN_ERROR, but tasks.md task 5.4 still instructs tests to assert exactly one RUN_FINISHED with error == \"RuntimeError\", and the OpenAPI /chat description still says the last event is always RUN_FINISHED with an error field on failure. An implementer following task 5.4 would write tests that contradict the updated mapper and web-server specs.",
+      "disposition": "fix",
+      "axis": "correctness",
+      "severity": "critical",
+      "resolution": "Update tasks.md task 5.4 and its scenario reference to assert terminal RUN_ERROR with message/code set to the class name and no RUN_FINISHED on failure. Update contracts/openapi/v1.yaml /chat descriptions so terminal events are RUN_FINISHED on success or RUN_ERROR on failure, with no RUN_FINISHED.error field.",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/tasks.md",
+      "line_range": {
+        "start": 177,
+        "end": 181
+      }
+    },
+    {
+      "id": 2,
+      "type": "contract_mismatch",
+      "criticality": "critical",
+      "description": "The class-name regex fix is present in both JSON schemas but not in the normative prose. design.md D8 and the harness-adapter spec still require `^[A-Z][A-Za-z0-9_.]*$`, which rejects accepted dotted lowercase module prefixes such as `asyncio.CancelledError`. This contradicts the updated schemas and can lead implementation/tests to enforce the old invalid contract.",
+      "disposition": "fix",
+      "axis": "correctness",
+      "severity": "critical",
+      "resolution": "Replace the stale regex in design.md D8 and harness-adapter spec with `^(?:[a-z_][a-zA-Z0-9_]*\\.)*[A-Z][A-Za-z0-9_]*$`, matching the two event schemas and the asyncio.CancelledError example.",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/design.md",
+      "line_range": {
+        "start": 143,
+        "end": 143
+      }
+    },
+    {
+      "id": 3,
+      "type": "architecture",
+      "criticality": "high",
+      "description": "The proposal's selected approach still says `src/assistant/transports/ag_ui/` contains `HarnessEvent`, while the corrected design, harness-adapter spec, tasks, and work-packages place `HarnessEvent` at `src/assistant/harnesses/sdk/events.py`. Because the proposal states downstream artifacts MUST implement the selected approach, this remaining stale path keeps the top-level implementation instruction inconsistent with the corrected work package allowlists.",
+      "disposition": "fix",
+      "axis": "architecture",
+      "severity": "critical",
+      "resolution": "Update proposal.md Approach 2 and Selected Approach bullets so `HarnessEvent` is defined in `src/assistant/harnesses/sdk/events.py`, while `src/assistant/transports/ag_ui/` owns only AG-UI types/re-exports and the mapper.",
+      "file_path": "openspec/changes/harness-ag-ui-bridge/proposal.md",
+      "line_range": {
+        "start": 109,
+        "end": 113
+      }
+    }
+  ]
+}

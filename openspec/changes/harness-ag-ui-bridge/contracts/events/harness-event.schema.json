@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-assistant.local/schemas/harness-event.v1.json",
+  "title": "HarnessEvent",
+  "description": "Discriminated union of events emitted by SdkHarnessAdapter.astream_invoke. Harness-agnostic and protocol-agnostic; produced by harnesses and consumed by transport adapters (e.g., the AG-UI emitter).",
+  "type": "object",
+  "required": ["kind"],
+  "oneOf": [
+    { "$ref": "#/$defs/RunStarted" },
+    { "$ref": "#/$defs/RunFinished" },
+    { "$ref": "#/$defs/TextDelta" },
+    { "$ref": "#/$defs/ToolCallStart" },
+    { "$ref": "#/$defs/ToolCallArgs" },
+    { "$ref": "#/$defs/ToolCallEnd" }
+  ],
+  "$defs": {
+    "RunStarted": {
+      "type": "object",
+      "description": "Marks the beginning of a harness invocation. MUST be the first event in any stream.",
+      "required": ["kind", "run_id", "started_at"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "run_started" },
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Opaque run identifier, unique within the server process for the run's lifetime."
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 UTC timestamp."
+        }
+      },
+      "examples": [
+        { "kind": "run_started", "run_id": "r-001", "started_at": "2026-05-16T09:00:00Z" }
+      ]
+    },
+    "RunFinished": {
+      "type": "object",
+      "description": "Marks the end of a harness invocation. MUST be the last event. If error is non-null, the run failed (Phase 1 of the design.md D8 two-phase error contract).",
+      "required": ["kind", "run_id", "finished_at"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "run_finished" },
+        "run_id": { "type": "string", "minLength": 1 },
+        "finished_at": { "type": "string", "format": "date-time" },
+        "error": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "string",
+              "pattern": "^(?:[a-z_][a-zA-Z0-9_]*\\.)*[A-Z][A-Za-z0-9_]*$",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "Exception class name only (per D8 redaction rule). Pattern matches a Python class identifier with optional dotted module qualifier — lowercase or underscore-leading module segments followed by an uppercase-leading class name. Examples: 'RuntimeError', 'asyncio.CancelledError', 'agent_framework.QuotaError'. MUST NOT contain message body, traceback, or wrapped-exception detail."
+            }
+          ],
+          "description": "Null on success. On failure: exception class name only — never the message body."
+        }
+      },
+      "examples": [
+        { "kind": "run_finished", "run_id": "r-001", "finished_at": "2026-05-16T09:00:02Z", "error": null },
+        { "kind": "run_finished", "run_id": "r-001", "finished_at": "2026-05-16T09:00:02Z", "error": "RuntimeError" }
+      ]
+    },
+    "TextDelta": {
+      "type": "object",
+      "description": "A partial chunk of an assistant text message. Multiple TextDeltas with the same message_id concatenate into one logical message.",
+      "required": ["kind", "message_id", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "text_delta" },
+        "message_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable within a single logical assistant message; changes when a new message begins."
+        },
+        "text": {
+          "type": "string",
+          "description": "Partial chunk. MAY be empty (e.g., as a keepalive)."
+        }
+      },
+      "examples": [
+        { "kind": "text_delta", "message_id": "m-001", "text": "Decorators are " }
+      ]
+    },
+    "ToolCallStart": {
+      "type": "object",
+      "description": "Marks the start of a tool invocation. Subsequent ToolCallArgs / ToolCallEnd events share the same call_id.",
+      "required": ["kind", "call_id", "tool_name"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "tool_call_start" },
+        "call_id": { "type": "string", "minLength": 1 },
+        "tool_name": { "type": "string", "minLength": 1 }
+      },
+      "examples": [
+        { "kind": "tool_call_start", "call_id": "c-001", "tool_name": "search" }
+      ]
+    },
+    "ToolCallArgs": {
+      "type": "object",
+      "description": "A partial chunk of the tool invocation's JSON arguments. Concatenating all ToolCallArgs.args_chunk values for one call_id yields the full JSON args payload.",
+      "required": ["kind", "call_id", "args_chunk"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "tool_call_args" },
+        "call_id": { "type": "string", "minLength": 1 },
+        "args_chunk": { "type": "string" }
+      },
+      "examples": [
+        { "kind": "tool_call_args", "call_id": "c-001", "args_chunk": "{\"q\":\"py" },
+        { "kind": "tool_call_args", "call_id": "c-001", "args_chunk": "thon\"}" }
+      ]
+    },
+    "ToolCallEnd": {
+      "type": "object",
+      "description": "Marks the end of a tool invocation. Optionally carries the tool's result.",
+      "required": ["kind", "call_id"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "tool_call_end" },
+        "call_id": { "type": "string", "minLength": 1 },
+        "result": {
+          "description": "Optional tool result; shape is tool-specific.",
+          "type": ["string", "object", "array", "number", "boolean", "null"]
+        }
+      },
+      "examples": [
+        { "kind": "tool_call_end", "call_id": "c-001", "result": [{"title": "Python decorators"}] }
+      ]
+    }
+  }
+}

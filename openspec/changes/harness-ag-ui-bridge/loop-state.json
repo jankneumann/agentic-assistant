@@ -1,0 +1,136 @@
+{
+  "schema_version": 1,
+  "change_id": "harness-ag-ui-bridge",
+  "current_phase": "IMPLEMENT",
+  "previous_phase": "PLAN_REVIEW",
+  "iteration": 0,
+  "total_iterations": 3,
+  "max_phase_iterations": 3,
+  "findings_trend": [34, 33, 13, 10],
+  "blocking_findings": [],
+  "vendor_availability": {
+    "claude_code": true,
+    "codex": true,
+    "gemini": true
+  },
+  "packages_status": {
+    "wp-foundation": "completed",
+    "wp-deep-agents-stream": "pending",
+    "wp-msaf-stream": "pending",
+    "wp-ag-ui-emitter": "pending",
+    "wp-web-cli": "pending",
+    "wp-integration": "pending"
+  },
+  "package_authors": {
+    "wp-foundation": "claude_code"
+  },
+  "complexity_gate": {
+    "allowed_via_force": true,
+    "loc_estimate": 1230,
+    "package_count": 6,
+    "val_review_enabled": false,
+    "warnings": [
+      "Total LOC estimate (1230) exceeds threshold (500)",
+      "Package count (5) exceeds threshold (4)"
+    ]
+  },
+  "cli_review_enabled": true,
+  "coordinator_available": true,
+  "coordinator_capabilities": {
+    "can_lock": true,
+    "can_queue_work": true,
+    "can_discover": true,
+    "can_memory": true,
+    "can_handoff": true
+  },
+  "started_at": "2026-05-16T11:00:00Z",
+  "transitions": [
+    {
+      "from": "INIT",
+      "to": "PLAN_ITERATE",
+      "at": "2026-05-16T11:00:00Z",
+      "note": "PLAN already done; force bypassed complexity gate; proceeding to self-review"
+    },
+    {
+      "from": "PLAN_ITERATE",
+      "to": "PLAN_REVIEW",
+      "at": "2026-05-16T11:20:00Z",
+      "note": "Self-review found 34 findings; 6 inline fixes; 7 deferred to vendor consensus"
+    },
+    {
+      "from": "PLAN_REVIEW",
+      "to": "PLAN_REVIEW",
+      "at": "2026-05-16T13:25:00Z",
+      "note": "Round 1 (3-vendor): 33 unique findings; thematic clustering surfaced 2 cross-vendor architectural issues; 7 inline fixes; plan_revision bump 1→2"
+    },
+    {
+      "from": "PLAN_REVIEW",
+      "to": "PLAN_REVIEW",
+      "at": "2026-05-16T14:25:00Z",
+      "note": "Round 2 (3-vendor): 13 unique findings; surfaced 4 regressions from round-1 fixes plus RUN_ERROR migration (upstream RunFinishedEvent has no error field); 6 critical/high inline fixes plus 1 low polish; plan_revision bump 2→3"
+    },
+    {
+      "from": "PLAN_REVIEW",
+      "to": "IMPLEMENT",
+      "at": "2026-05-16T15:15:00Z",
+      "note": "Round 3 (3-vendor): 10 findings, all completeness-of-round-2-fixes; inline-fixed without round 4 dispatch (within reviewer-text-edit scope). Convergence declared: trend 34→33→13→10, no new architectural concerns, validate --strict passes."
+    }
+  ],
+  "plan_review_rounds": [
+    {
+      "round": 1,
+      "vendors_dispatched": ["claude_code", "codex", "gemini"],
+      "vendors_succeeded": 3,
+      "total_findings": 34,
+      "unique_findings": 33,
+      "fixes_applied": [
+        "mapper_signature_thread_id",
+        "two_phase_error_contract_d8",
+        "harness_event_module_relocation_d6",
+        "message_max_length_32kib",
+        "custom_request_validation_handler",
+        "msaf_exception_tracing_scenario",
+        "web_server_start_end_bracketing"
+      ]
+    },
+    {
+      "round": 2,
+      "vendors_dispatched": ["claude_code", "codex", "gemini"],
+      "vendors_succeeded": 3,
+      "total_findings": 13,
+      "unique_findings": 13,
+      "fixes_applied": [
+        "class_name_regex_allow_dotted_module_prefix",
+        "work_packages_stale_path_fix",
+        "traced_harness_telemetry_location_fix",
+        "run_error_migration_upstream_alignment",
+        "sdk_harness_thread_id_contract",
+        "task_510_dependency_add_3b7",
+        "sse_citation_rfc_to_whatwg"
+      ]
+    },
+    {
+      "round": 3,
+      "vendors_dispatched": ["claude_code", "codex", "gemini"],
+      "vendors_succeeded": 3,
+      "total_findings": 10,
+      "unique_findings": 10,
+      "fixes_applied": [
+        "task_54_run_error_rewording",
+        "openapi_endpoint_description_run_error",
+        "openapi_failure_example_added",
+        "harness_adapter_regex_scenario_update",
+        "design_d8_redaction_regex_update",
+        "design_d8_forward_path_update",
+        "proposal_md_harness_event_location_narrative_fix"
+      ],
+      "convergence_reason": "Trend 34→33→13→10. Round 3 findings were all mechanical completeness of round-2 fix propagation, not new architectural concerns. Applied inline without round-4 dispatch (would have been outside max_rounds=3 contract and offered low marginal value over textual grep verification)."
+    }
+  ],
+  "deferred_to_followup": [
+    "wp_web_cli_split_single_vendor",
+    "serve_harness_default_vs_persona_config_single_vendor",
+    "tool_name_vs_toolCallName_naming_asymmetry_intentional",
+    "maxlength_chars_vs_bytes_python_default_accepted"
+  ]
+}
