@@ -19,8 +19,6 @@ directly; they should use this module or ``assistant.transports.ag_ui``.
 
 from __future__ import annotations
 
-from typing import Union
-
 from ag_ui.core import (
     RunErrorEvent,
     RunFinishedEvent,
@@ -49,14 +47,14 @@ __all__ = [
 # Stable v1 union alias — callers should annotate return types with AGUIEvent.
 # This is a plain Union (not the upstream ag_ui.core.Event which includes all
 # out-of-scope types like STATE_DELTA and CUSTOM).
-AGUIEvent = Union[
-    RunStartedEvent,
-    RunFinishedEvent,
-    RunErrorEvent,
-    TextMessageStartEvent,
-    TextMessageContentEvent,
-    TextMessageEndEvent,
-    ToolCallStartEvent,
-    ToolCallArgsEvent,
-    ToolCallEndEvent,
-]
+AGUIEvent = (
+    RunStartedEvent
+    | RunFinishedEvent
+    | RunErrorEvent
+    | TextMessageStartEvent
+    | TextMessageContentEvent
+    | TextMessageEndEvent
+    | ToolCallStartEvent
+    | ToolCallArgsEvent
+    | ToolCallEndEvent
+)

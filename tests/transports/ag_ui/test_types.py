@@ -132,14 +132,18 @@ class TestAGUIEventUnion:
 
 
 def _get_union_args(hint: typing.Any) -> tuple[typing.Any, ...]:
-    """Return the concrete type args of a Union or Annotated[Union[...], ...] alias."""
+    """Return the concrete type args of a Union / X|Y / Annotated[Union[...], ...] alias."""
+    import types as _types
+
     origin = typing.get_origin(hint)
-    if origin is typing.Union:
+    # Python 3.10+ native X | Y union (types.UnionType) or typing.Union
+    if origin is _types.UnionType or origin is typing.Union:
         return typing.get_args(hint)
     # Annotated — first arg is the actual Union
     inner_args = typing.get_args(hint)
     if inner_args:
         inner = inner_args[0]
-        if typing.get_origin(inner) is typing.Union:
+        inner_origin = typing.get_origin(inner)
+        if inner_origin is _types.UnionType or inner_origin is typing.Union:
             return typing.get_args(inner)
     return ()

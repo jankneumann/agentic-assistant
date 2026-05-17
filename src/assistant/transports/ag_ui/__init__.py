@@ -32,9 +32,11 @@ __all__ = [
 
 # map_harness_to_ag_ui is available after mapper.py is implemented.
 # Import it lazily so this package can be loaded even when mapper is absent.
-def __getattr__(name: str) -> object:  # noqa: ANN001
+def __getattr__(name: str) -> object:
     if name == "map_harness_to_ag_ui":
-        from assistant.transports.ag_ui.mapper import map_harness_to_ag_ui  # noqa: PLC0415
+        from assistant.transports.ag_ui.mapper import (
+            map_harness_to_ag_ui,
+        )
 
         return map_harness_to_ag_ui
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

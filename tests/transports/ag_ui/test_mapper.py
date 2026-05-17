@@ -59,7 +59,7 @@ async def _collect(stream: AsyncIterator[Any]) -> list[Any]:
 
 
 def _run(coro: Any) -> Any:
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 async def _make_stream(*events: HarnessEvent) -> AsyncIterator[HarnessEvent]:
@@ -288,7 +288,6 @@ class TestLifecycleOrdering:
                 RunFinished(run_id=_RUN_ID, finished_at=_FINISHED_AT, error=None),
             )
             events = await _collect(map_harness_to_ag_ui(stream, thread_id=_THREAD_ID))
-            types = [e.type.value for e in events]
 
             # Should see: START(msg1), CONTENT(msg1), END(msg1), START(msg2), CONTENT(msg2), END(msg2)
             end_msg1_idx = next(
@@ -516,8 +515,8 @@ class TestD8ErrorContract:
             last = events[-1]
             assert last.type.value == "RUN_FINISHED"
             # RunFinishedEvent has no message or code field
-            assert not hasattr(last, "message") or last.message is None  # type: ignore[union-attr]
-            assert not hasattr(last, "code") or last.code is None  # type: ignore[union-attr]
+            assert not hasattr(last, "message") or last.message is None
+            assert not hasattr(last, "code") or last.code is None
             assert "RUN_ERROR" not in [e.type.value for e in events]
 
         _run(go())
