@@ -113,29 +113,29 @@ Added during plan revision after confirming MSAF is fully implemented (per the e
 
 ## 4. AG-UI Emitter
 
-- [ ] 4.1 Write tests for v1-scoped event type coverage
+- [x] 4.1 Write tests for v1-scoped event type coverage
   **Spec scenarios**: ag-ui-emitter "Emitter produces only the v1-scoped event types", "Each emitted event conforms to the AG-UI v0.x schema"
   **Contracts**: contracts/events/ag-ui-events.schema.json
   **Design decisions**: D5
   **Dependencies**: 1.3
 
-- [ ] 4.2 Write tests for HarnessEvent → AG-UI event mapping (with thread_id propagation)
+- [x] 4.2 Write tests for HarnessEvent → AG-UI event mapping (with thread_id propagation)
   **Spec scenarios**: ag-ui-emitter "RunStarted maps to RUN_STARTED with thread_id", "Mapper rejects empty thread_id", "TextDelta maps to TEXT_MESSAGE_CONTENT framed by START/END", "Tool call lifecycle maps to TOOL_CALL_* events", "RunFinished maps to RUN_FINISHED with thread_id"
   **Contracts**: contracts/events/ag-ui-events.schema.json, contracts/events/harness-event.schema.json
   **Design decisions**: D1, D6
   **Dependencies**: 1.3
 
-- [ ] 4.3 Write tests for run lifecycle event ordering invariants
+- [x] 4.3 Write tests for run lifecycle event ordering invariants
   **Spec scenarios**: ag-ui-emitter "RUN_STARTED precedes all content events", "TEXT_MESSAGE_END closes a message on message-id boundary", "TOOL_CALL_END terminates a call lifecycle"
   **Design decisions**: D1
   **Dependencies**: 1.3
 
-- [ ] 4.4 Write tests for error mapping to terminal RUN_ERROR (two-phase D8 contract)
+- [x] 4.4 Write tests for error mapping to terminal RUN_ERROR (two-phase D8 contract)
   **Spec scenarios**: ag-ui-emitter "Harness exception surfaces as RUN_ERROR with class-name-only message", "Mapper does not synthesize on raw raise", "Successful run emits RUN_FINISHED (no error fields)"
   **Design decisions**: D8
   **Dependencies**: 1.3
 
-- [ ] 4.5 Implement `src/assistant/transports/ag_ui/types.py`
+- [x] 4.5 Implement `src/assistant/transports/ag_ui/types.py`
   **Goal**: AG-UI event Pydantic models for the 8 v1-scoped event types. If 1.1 found a usable upstream package, this file is a thin re-export shim; if not, define the types in-repo against the AG-UI v0.x spec.
   **Design decisions**: D5
   **Dependencies**: 1.1, 4.1
