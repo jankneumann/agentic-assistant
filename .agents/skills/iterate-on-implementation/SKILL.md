@@ -25,14 +25,6 @@ Iteratively refine a feature implementation after `/implement-feature` completes
 - Approved OpenSpec proposal exists at `openspec/changes/<change-id>/`
 - Run `/implement-feature` first if no implementation exists
 
-## Provider-Neutral Dispatch
-
-When this skill delegates refinement or validation work, treat the
-provider-neutral dispatch adapter as the canonical cross-provider path. Claude
-Code, Codex, and Gemini/Jules are first-class providers when configured;
-Claude-style `Task(...)` or `Agent(...)` snippets are provider-specific
-examples, with inline execution as the fallback.
-
 ## OpenSpec Execution Preference
 
 Use OpenSpec-generated runtime assets first, then CLI fallback:
@@ -349,57 +341,51 @@ Review whether the current OpenSpec documents accurately reflect the refined imp
 
 ### 9.5. Append Session Log
 
-Construct a `PhaseRecord` for the `Implementation Iteration <N>` phase and call `write_both()`. The iteration number is auto-computed from prior `Implementation Iteration` entries in the session-log.
+Append an `Implementation Iteration <N>` phase entry to the session log, capturing review findings addressed and changes made.
 
-**Capture from this iteration:**
+**Determine iteration number:**
+- Read `openspec/changes/<change-id>/session-log.md` (if it exists)
+- Count existing `## Phase: Implementation Iteration` headers
+- N = count + 1
 
-- **Decisions** — Decisions about which review findings to address, which to defer, and how to refactor.
-- **Alternatives Considered** — Refactor approaches considered and rejected.
-- **Trade-offs** — Trade-offs accepted (e.g., chose minimal change over full refactor).
-- **Open Questions** — Remaining questions for the next iteration or validation.
-- **Completed Work** — Findings addressed in this iteration.
-- **In Progress** — Findings being worked on but not yet resolved (only if any).
-- **Summary** — 2–3 sentences: which findings were addressed, what changed.
+**Phase entry template:**
 
-**Persist via `PhaseRecord.write_both()`:**
+```markdown
+---
 
-This step MUST run BEFORE the `git add .` in Step 10 so the session-log entry is included in that commit.
+## Phase: Implementation Iteration <N> (<YYYY-MM-DD>)
 
-```bash
-python3 - <<'EOF'
-import sys
-sys.path.insert(0, "skills/session-log/scripts")
-from phase_record import PhaseRecord, Decision, Alternative, TradeOff
-from extract_session_log import count_phase_iterations
+**Agent**: <agent-type> | **Session**: <session-id-or-N/A>
 
-n = count_phase_iterations(
-    "Implementation Iteration", "openspec/changes/<change-id>/session-log.md"
-) + 1
+### Decisions
+1. **<Decision title>** — <rationale>
 
-record = PhaseRecord(
-    change_id="<change-id>",
-    phase_name=f"Implementation Iteration {n}",
-    agent_type="<agent-type>",
-    summary="<2-3 sentences: findings addressed, what changed>",
-    decisions=[
-        Decision(title="<title>", rationale="<rationale>"),
-    ],
-    alternatives=[Alternative(alternative="<approach>", reason="<rejection reason>")],
-    trade_offs=[TradeOff(accepted="<X>", over="<Y>", reason="<reason>")],
-    open_questions=["<question>"],
-    completed_work=["<finding addressed>"],
-)
-result = record.write_both()
-print(f"markdown_path={result.markdown_path}")
-print(f"sanitized={result.sanitized}")
-print(f"handoff_id={result.handoff_id or '(local fallback)'}")
-print(f"handoff_local_path={result.handoff_local_path}")
-for w in result.warnings:
-    print(f"WARN: {w}", file=sys.stderr)
-EOF
+### Alternatives Considered
+- <Alternative>: rejected because <reason>
+
+### Trade-offs
+- Accepted <X> over <Y> because <reason>
+
+### Open Questions
+- [ ] <unresolved question>
+
+### Context
+<2-3 sentences: what review findings were addressed, what changed>
 ```
 
-`write_both()` runs three best-effort steps internally: append rendered markdown → sanitize in-place → coordinator handoff (or local fallback at `openspec/changes/<change-id>/handoffs/implementation-iteration-<n>-<N>.json`). Each step logs warnings on failure but does not raise. The session-log.md is included in `git add .` in the existing commit step.
+**Focus on**: Review findings addressed, changes made, remaining issues, test improvements.
+
+**Sanitize-then-verify:**
+
+```bash
+python3 "<skill-base-dir>/../session-log/scripts/sanitize_session_log.py" \
+  "openspec/changes/<change-id>/session-log.md" \
+  "openspec/changes/<change-id>/session-log.md"
+```
+
+Read the sanitized output and verify: (1) all sections present, (2) no incorrect `[REDACTED:*]` markers, (3) markdown intact. If over-redacted, rewrite without secrets, re-sanitize (one attempt max). If sanitization exits non-zero, skip session log and proceed.
+
+The session-log.md is included in `git add .` in the existing commit step.
 
 ### 10. Commit Iteration
 

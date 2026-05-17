@@ -18,7 +18,7 @@ import re
 import subprocess
 import sys
 
-from _helpers import (
+from shared import (
     GH_TIMEOUT,
     GIT_TIMEOUT,
     check_gh,

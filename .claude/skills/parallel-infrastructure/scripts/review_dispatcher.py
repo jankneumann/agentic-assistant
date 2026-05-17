@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import shutil
 import subprocess
@@ -33,8 +32,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
-from urllib.error import URLError
-from urllib.request import Request, urlopen
 
 logger = logging.getLogger(__name__)
 
@@ -809,237 +806,6 @@ _SDK_SYSTEM_PROMPT = (
 
 
 # ---------------------------------------------------------------------------
-# Vendor-diversity policy (worker vs validator) — see agents.yaml policies block
-# ---------------------------------------------------------------------------
-
-_DEFAULT_VENDOR_DIVERSITY_POLICY: dict[str, Any] = {
-    "enforce_for": ["worker_vs_validator"],
-    "fallback": "warn_and_continue",
-    "scope": "per_change",
-}
-
-
-_CHANGE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
-
-
-def _dispatch_state_path(change_id: str, repo_root: Path | None = None) -> Path:
-    """Return the path to the change-scoped dispatch-state file.
-
-    Validates ``change_id`` against ``^[a-zA-Z0-9_-]+$`` to prevent path
-    traversal from callers that don't pre-validate. The same regex is used
-    by gen-eval's ``--openspec-change`` flag at argparse time; here we
-    re-validate at this API boundary for defense in depth.
-    """
-    if not isinstance(change_id, str) or not _CHANGE_ID_RE.match(change_id):
-        raise ValueError(
-            f"change_id MUST match {_CHANGE_ID_RE.pattern}: got {change_id!r}"
-        )
-    base = repo_root if repo_root is not None else Path.cwd()
-    return base / "openspec" / "changes" / change_id / ".dispatch-state.json"
-
-
-def load_vendor_diversity_policy(
-    agents_yaml_path: Path | None = None,
-) -> dict[str, Any]:
-    """Load the vendor_diversity policy from agents.yaml.
-
-    Falls back to the default policy (enforced) if the file or the policy
-    block is missing. Returns the policy dict (never None).
-    """
-    if agents_yaml_path is None or not agents_yaml_path.is_file():
-        return dict(_DEFAULT_VENDOR_DIVERSITY_POLICY)
-    try:
-        import yaml  # type: ignore[import-untyped]
-    except ImportError:
-        logger.warning(
-            "PyYAML not available; using default vendor_diversity policy",
-        )
-        return dict(_DEFAULT_VENDOR_DIVERSITY_POLICY)
-    try:
-        doc = yaml.safe_load(agents_yaml_path.read_text()) or {}
-    except (OSError, yaml.YAMLError) as exc:
-        logger.warning("Failed to load agents.yaml (%s); using default policy", exc)
-        return dict(_DEFAULT_VENDOR_DIVERSITY_POLICY)
-    policy = (doc.get("policies") or {}).get("vendor_diversity")
-    if not isinstance(policy, dict):
-        return dict(_DEFAULT_VENDOR_DIVERSITY_POLICY)
-    # Merge with defaults so missing keys are filled in.
-    merged = dict(_DEFAULT_VENDOR_DIVERSITY_POLICY)
-    merged.update(policy)
-    return merged
-
-
-def read_dispatch_state(
-    change_id: str,
-    repo_root: Path | None = None,
-    state_path: Path | None = None,
-) -> dict[str, Any]:
-    """Read change-scoped dispatch state.
-
-    Returns ``{}`` if the file is missing. Refuses to read (returns ``{}``
-    and logs an error) if the file's permissions include the world-write bit
-    (``0002``) — this is the tamper-resistance guard from the spec.
-    """
-    path = state_path if state_path is not None else _dispatch_state_path(
-        change_id, repo_root,
-    )
-    if not path.is_file():
-        return {}
-    try:
-        st_mode = path.stat().st_mode
-    except OSError as exc:
-        logger.warning("Failed to stat dispatch-state file %s: %s", path, exc)
-        return {}
-    if st_mode & 0o002:
-        logger.error(
-            "vendor_diversity: refusing to read dispatch-state %s "
-            "(world-writable, mode=%o); falling back to no-history mode",
-            path, st_mode & 0o777,
-        )
-        return {}
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("Failed to read dispatch-state %s: %s", path, exc)
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    # Normalise the keys we care about; preserve unknown fields untouched.
-    data.setdefault("worker_vendors", [])
-    data.setdefault("validator_vendors", [])
-    data.setdefault("change_id", change_id)
-    return data
-
-
-def write_dispatch_state(
-    change_id: str,
-    state: dict[str, Any],
-    repo_root: Path | None = None,
-    state_path: Path | None = None,
-) -> Path:
-    """Write change-scoped dispatch state with mode 0644.
-
-    Creates parent directories if needed. Returns the path written.
-    """
-    path = state_path if state_path is not None else _dispatch_state_path(
-        change_id, repo_root,
-    )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "worker_vendors": list(state.get("worker_vendors", [])),
-        "validator_vendors": list(state.get("validator_vendors", [])),
-        "change_id": state.get("change_id", change_id),
-    }
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True))
-    try:
-        path.chmod(0o644)
-    except OSError as exc:
-        logger.warning("Failed to chmod dispatch-state %s: %s", path, exc)
-    return path
-
-
-def record_worker_vendor(
-    change_id: str,
-    vendor: str,
-    repo_root: Path | None = None,
-    state_path: Path | None = None,
-) -> Path:
-    """Record that a worker with *vendor* was dispatched for *change_id*.
-
-    Idempotent — appends only if the vendor isn't already in the list.
-    Used by `implement-feature` worker-side selection so subsequent validator
-    selection sees the worker's vendor.
-    """
-    state = read_dispatch_state(change_id, repo_root, state_path)
-    workers = list(state.get("worker_vendors", []))
-    if vendor not in workers:
-        workers.append(vendor)
-    state["worker_vendors"] = workers
-    state["change_id"] = change_id
-    state.setdefault("validator_vendors", [])
-    return write_dispatch_state(change_id, state, repo_root, state_path)
-
-
-def select_validator_vendor(
-    candidates: list[str],
-    change_id: str,
-    agents_yaml_path: Path | None = None,
-    repo_root: Path | None = None,
-    state_path: Path | None = None,
-) -> tuple[str | None, str]:
-    """Select a validator vendor for *change_id*.
-
-    Implements the worker-vs-validator vendor-diversity policy:
-
-    * If policy is disabled (``enforce_for`` does not include
-      ``worker_vs_validator``), returns the first candidate with a
-      "policy disabled" log message.
-    * Otherwise, excludes vendors recorded as workers for this change.
-    * If the resulting candidate set is empty, returns the first original
-      candidate and logs a warning ("only N vendor available, violating
-      policy but continuing"). Does NOT raise — fallback is warn_and_continue.
-
-    Records the selected validator vendor in dispatch state for downstream
-    invocations.
-
-    Returns a tuple ``(selected_vendor, log_message)``. ``selected_vendor`` is
-    None only when *candidates* is empty.
-    """
-    if not candidates:
-        return None, "vendor_diversity: no candidates available"
-
-    policy = load_vendor_diversity_policy(agents_yaml_path)
-    enforce_for = policy.get("enforce_for") or []
-
-    if "worker_vs_validator" not in enforce_for:
-        selected = candidates[0]
-        msg = "vendor_diversity: policy disabled by config"
-        logger.info(msg)
-        # Still record selection so downstream tooling can audit.
-        state = read_dispatch_state(change_id, repo_root, state_path)
-        validators = list(state.get("validator_vendors", []))
-        if selected not in validators:
-            validators.append(selected)
-        state["validator_vendors"] = validators
-        state.setdefault("worker_vendors", [])
-        state["change_id"] = change_id
-        write_dispatch_state(change_id, state, repo_root, state_path)
-        return selected, msg
-
-    state = read_dispatch_state(change_id, repo_root, state_path)
-    worker_vendors = list(state.get("worker_vendors", []))
-    filtered = [c for c in candidates if c not in worker_vendors]
-
-    if filtered:
-        selected = filtered[0]
-        excluded = ",".join(worker_vendors) if worker_vendors else "(none)"
-        msg = (
-            f"vendor_diversity: excluded {excluded} (worker), "
-            f"selected {selected} (validator) for {change_id}"
-        )
-        logger.info(msg)
-    else:
-        selected = candidates[0]
-        n = len(set(candidates))
-        msg = (
-            f"vendor_diversity: only {n} vendor available "
-            f"({selected}), violating policy but continuing"
-        )
-        logger.warning(msg)
-
-    # Persist the validator selection.
-    validators = list(state.get("validator_vendors", []))
-    if selected not in validators:
-        validators.append(selected)
-    state["validator_vendors"] = validators
-    state.setdefault("worker_vendors", worker_vendors)
-    state["change_id"] = change_id
-    write_dispatch_state(change_id, state, repo_root, state_path)
-
-    return selected, msg
-
-
-# ---------------------------------------------------------------------------
 # Review orchestrator
 # ---------------------------------------------------------------------------
 
@@ -1124,77 +890,6 @@ class ReviewOrchestrator:
 
         return cls(adapters, sdk_adapters)
 
-    @staticmethod
-    def _config_from_agents_yaml(path: Path) -> dict[str, Any] | None:
-        """Load dispatch config directly from an agents.yaml file.
-
-        This keeps non-Claude environments from depending on ``~/.claude.json``
-        just to discover the local repo's dispatch configuration.
-        """
-        if not path.is_file():
-            return None
-        try:
-            import yaml  # type: ignore[import-untyped]
-        except ImportError:
-            logger.warning("PyYAML not available; cannot load %s", path)
-            return None
-        try:
-            raw = yaml.safe_load(path.read_text()) or {}
-        except (OSError, yaml.YAMLError) as exc:
-            logger.warning("agents.yaml load error from %s: %s", path, exc)
-            return None
-        agents_out: list[dict[str, Any]] = []
-        for agent_id, agent in (raw.get("agents") or {}).items():
-            cli = agent.get("cli")
-            sdk = agent.get("sdk")
-            if not cli and not sdk:
-                continue
-            agents_out.append({
-                "agent_id": agent_id,
-                "type": agent.get("type"),
-                "transport": agent.get("transport", "mcp"),
-                "openbao_role_id": agent.get("openbao_role_id"),
-                "cli": cli,
-                "sdk": sdk,
-            })
-        logger.info("Loaded dispatch config from agents.yaml: %s", path)
-        return {"agents": agents_out}
-
-    @staticmethod
-    def _explicit_agents_yaml_path() -> Path | None:
-        raw = os.environ.get("AGENTS_YAML")
-        if not raw:
-            return None
-        return Path(raw).expanduser()
-
-    @staticmethod
-    def _find_local_agents_yaml(start: Path | None = None) -> Path | None:
-        """Find repo-local ``agent-coordinator/agents.yaml`` by walking up."""
-        current = (start or Path.cwd()).resolve()
-        for candidate_root in (current, *current.parents):
-            candidate = candidate_root / "agent-coordinator" / "agents.yaml"
-            if candidate.is_file():
-                return candidate
-        return None
-
-    @classmethod
-    def _load_from_http(cls) -> dict[str, Any] | None:
-        """Load dispatch config from the HTTP coordinator endpoint."""
-        base_url = os.environ.get("COORDINATION_API_URL", "http://localhost:8081").rstrip("/")
-        url = f"{base_url}/agents/dispatch-configs"
-        req = Request(url, method="GET")
-        req.add_header("User-Agent", "agentic-coding-tools/0.1")
-        try:
-            with urlopen(req, timeout=3.0) as resp:
-                if resp.status == 200:
-                    data = json.loads(resp.read())
-                    if isinstance(data, dict):
-                        logger.info("Loaded dispatch config from HTTP coordinator: %s", url)
-                        return data
-        except (URLError, OSError, ValueError, json.JSONDecodeError) as exc:
-            logger.debug("HTTP dispatch config discovery failed at %s: %s", url, exc)
-        return None
-
     @classmethod
     def _find_coordinator_dir(cls) -> tuple[str, Path] | None:
         """Discover the agent-coordinator directory from MCP config.
@@ -1224,27 +919,16 @@ class ReviewOrchestrator:
 
     @classmethod
     def from_coordinator(cls) -> "ReviewOrchestrator":
-        """Create orchestrator using provider-neutral discovery order."""
-        explicit = cls._explicit_agents_yaml_path()
-        if explicit:
-            data = cls._config_from_agents_yaml(explicit)
-            if data is not None:
-                return cls.from_config_dict(data)
+        """Create orchestrator by calling get_dispatch_configs via subprocess.
 
-        data = cls._load_from_http()
-        if data is not None:
-            return cls.from_config_dict(data)
-
-        local = cls._find_local_agents_yaml()
-        if local:
-            data = cls._config_from_agents_yaml(local)
-            if data is not None:
-                return cls.from_config_dict(data)
-
-        # Provider-native fallback. Today this includes Claude Code MCP config.
+        Discovers the agent-coordinator directory from the coordination
+        MCP server config in ``~/.claude.json``, then runs
+        ``get_dispatch_configs.py`` using the same Python binary.
+        Works from any repo — no local agent-coordinator checkout required.
+        """
         found = cls._find_coordinator_dir()
         if not found:
-            logger.warning("No provider-native coordination MCP config found")
+            logger.warning("coordination MCP server not configured in ~/.claude.json")
             return cls({})
 
         python_bin, ac_dir = found
@@ -1271,18 +955,44 @@ class ReviewOrchestrator:
 
     @classmethod
     def from_agents_yaml(cls, path: Path | None = None) -> "ReviewOrchestrator":
-        """Create orchestrator from explicit or local agents.yaml."""
-        resolved = path or cls._explicit_agents_yaml_path() or cls._find_local_agents_yaml()
-        if resolved is None:
-            logger.warning("agents.yaml not found via explicit path or local repo fallback")
+        """Create orchestrator from an explicit agents.yaml path.
+
+        Uses ``_find_coordinator_dir()`` to locate the
+        ``get_dispatch_configs.py`` script, then passes *path* as an
+        argument so the script loads the specified YAML instead of its
+        default.  Works from any repo.
+        """
+        found = cls._find_coordinator_dir()
+        if not found:
+            logger.warning(
+                "agent-coordinator not found — "
+                "coordination MCP server not configured in ~/.claude.json",
+            )
             return cls({})
-        data = cls._config_from_agents_yaml(resolved)
-        if data is None:
+
+        python_bin, ac_dir = found
+        script = ac_dir / "get_dispatch_configs.py"
+        if not script.is_file():
+            logger.warning("get_dispatch_configs.py not found at %s", script)
             return cls({})
+
+        cmd = [python_bin, str(script)]
+        if path is not None:
+            cmd.append(str(path))
+
         try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=15,
+            )
+            if result.returncode != 0:
+                logger.warning(
+                    "agents.yaml load failed: %s", result.stderr[:200],
+                )
+                return cls({})
+            data = json.loads(result.stdout)
             return cls.from_config_dict(data)
-        except (KeyError, TypeError) as exc:
-            logger.warning("agents.yaml dispatch config conversion failed: %s", exc)
+        except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError) as exc:
+            logger.warning("agents.yaml load error: %s", exc)
             return cls({})
 
     def discover_reviewers(
@@ -1473,56 +1183,29 @@ class ReviewOrchestrator:
         output_path: Path,
         review_type: str,
         target: str,
-        vendors: list[dict[str, Any]] | None = None,
     ) -> None:
-        """Write review-manifest.json via the shared checkpoint_findings helper.
-
-        The manifest is the superset shape: legacy fields (review_type, target,
-        dispatches[], quorum_requested, quorum_received) plus new fields
-        (schema_version, change_id=null, created_at, vendors[]). Existing
-        callers reading the legacy fields continue to work; the new fields
-        are additive.
-
-        The helper always writes ``review-manifest.json`` under
-        ``output_path.parent`` (this is the canonical filename baked into
-        the schema). To prevent silent caller confusion, ``output_path.name``
-        MUST equal ``"review-manifest.json"`` — passing any other filename
-        raises ``ValueError`` instead of silently losing the requested name.
-        ``vendors`` defaults to an empty index for callers that pre-date
-        the per-vendor file write loop in main().
-        """
-        if output_path.name != "review-manifest.json":
-            raise ValueError(
-                f"output_path.name must be 'review-manifest.json', "
-                f"got {output_path.name!r}. The helper writes a fixed "
-                f"filename; pass the desired parent directory with "
-                f"trailing 'review-manifest.json' if you need to be explicit."
-            )
-
-        from checkpoint_findings import write_manifest as _cf_write_manifest
-
-        dispatches = [
-            {
-                "vendor": r.vendor,
-                "success": r.success,
-                "model_used": r.model_used,
-                "models_attempted": r.models_attempted,
-                "elapsed_seconds": r.elapsed_seconds,
-                "error": r.error,
-                "error_class": r.error_class.value if r.error_class else None,
-            }
-            for r in results
-        ]
-        _cf_write_manifest(
-            output_path.parent,
-            review_type=review_type,
-            target=target,
-            vendors=list(vendors) if vendors is not None else [],
-            change_id=None,
-            dispatches=dispatches,
-            quorum_requested=len(results),
-            quorum_received=sum(1 for r in results if r.success),
-        )
+        """Write review-manifest.json with dispatch metadata."""
+        manifest = {
+            "review_type": review_type,
+            "target": target,
+            "dispatches": [
+                {
+                    "vendor": r.vendor,
+                    "success": r.success,
+                    "model_used": r.model_used,
+                    "models_attempted": r.models_attempted,
+                    "elapsed_seconds": r.elapsed_seconds,
+                    "error": r.error,
+                    "error_class": r.error_class.value if r.error_class else None,
+                }
+                for r in results
+            ],
+            "quorum_requested": len(results),
+            "quorum_received": sum(1 for r in results if r.success),
+        }
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "w") as f:
+            json.dump(manifest, f, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -1668,43 +1351,24 @@ def main() -> int:
         exclude_vendor=args.exclude_vendor,
     )
 
-    # Write results via the shared checkpoint_findings helper. Per-vendor
-    # files preserve the existing wrapper-object shape and path layout; the
-    # manifest gains the superset fields needed by the in-process converge()
-    # caller while preserving everything legacy callers parse.
-    from checkpoint_findings import write_vendor_findings as _cf_write_vendor_findings
-
+    # Write results
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    vendors_index: list[dict[str, Any]] = []
     for result in results:
         if result.success and result.findings:
-            findings_array = result.findings.get("findings", [])
-            _cf_write_vendor_findings(
-                output_dir,
-                vendor=result.vendor,
-                review_type=args.review_type,
-                target="cli-dispatch",
-                findings=findings_array,
-            )
-            vendors_index.append({
-                "name": result.vendor,
-                "findings_path": f"findings-{result.vendor}-{args.review_type}.json",
-                "finding_count": len(findings_array),
-            })
-            print(f"[OK] {result.vendor}: {len(findings_array)} findings"
+            fpath = output_dir / f"findings-{result.vendor}-{args.review_type}.json"
+            with open(fpath, "w") as f:
+                json.dump(result.findings, f, indent=2)
+            print(f"[OK] {result.vendor}: {len(result.findings.get('findings', []))} findings"
                   f" (model: {result.model_used}, {result.elapsed_seconds:.1f}s)")
         else:
             print(f"[FAIL] {result.vendor}: {result.error}"
                   f" (models tried: {result.models_attempted})")
 
-    # Write manifest with the vendor index pointing at per-vendor files
+    # Write manifest
     manifest_path = output_dir / "review-manifest.json"
-    orch.write_manifest(
-        results, manifest_path, args.review_type, "cli-dispatch",
-        vendors=vendors_index,
-    )
+    orch.write_manifest(results, manifest_path, args.review_type, "cli-dispatch")
     print(f"\nManifest: {manifest_path}")
 
     succeeded = sum(1 for r in results if r.success)
