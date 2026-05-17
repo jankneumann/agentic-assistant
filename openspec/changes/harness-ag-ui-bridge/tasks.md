@@ -140,7 +140,7 @@ Added during plan revision after confirming MSAF is fully implemented (per the e
   **Design decisions**: D5
   **Dependencies**: 1.1, 4.1
 
-- [ ] 4.6 Implement `src/assistant/transports/ag_ui/mapper.py`
+- [x] 4.6 Implement `src/assistant/transports/ag_ui/mapper.py`
   **Goal**: `async def map_harness_to_ag_ui(stream: AsyncIterator[HarnessEvent], *, thread_id: str) -> AsyncIterator[AGUIEvent]`. Streaming, deterministic, no full-stream buffering. The `thread_id` is required keyword-only and populates the `threadId` field on every emitted `RUN_STARTED`/`RUN_FINISHED`. Raises `ValueError` on empty `thread_id`. Owns the TEXT_MESSAGE_START/END and TOOL_CALL_START/END bracketing logic. Implements two-phase D8 error handling: on receiving terminal internal `RunFinished(error=<ClassName>)`, emits one `RUN_ERROR` event (mapping to upstream `ag_ui.core.RunErrorEvent` with `message` and `code` both set to the class name — NOT `RUN_FINISHED`, which has no error field in the upstream model). On `RunFinished(error=None)` emits `RUN_FINISHED` cleanly. After the terminal event, catches/absorbs any subsequent re-raised exception from upstream (no synthetic events, no propagation).
   **Dependencies**: 4.2, 4.3, 4.4, 4.5
 
