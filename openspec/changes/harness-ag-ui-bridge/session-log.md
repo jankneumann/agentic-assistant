@@ -357,3 +357,65 @@ Three rounds of multi-vendor convergence completed. Findings trend: thirty-three
 ### Context
 
 Coordinated tier (HTTP transport, full coordinator caps) dispatched a single Claude general-purpose subagent for the layer-1 root package. Agent ran twenty-one minutes wall time, one-hundred-fifty-three tool uses, produced eight commits in strict TDD order (test then impl pairs) and self-pushed to origin. Scope-check pass: all eleven modified files within wp-foundation write-allow. Verification pass: pytest forty-one of forty-one, ruff clean, mypy clean across one-hundred-fifty files. The agent correctly preferred the authoritative JSON schema over the orchestrator brief when the two disagreed on field naming — a useful behavior signal for downstream layers.
+
+
+---
+
+## Phase: Implementation — Layer 2 (parallel dispatch) (2026-05-17)
+
+**Agents**: 3 claude_code general-purpose subagents in isolated worktrees | **Session IDs**: a82300292f79ec169 (wp-deep-agents-stream), af17b7651ba473eef (wp-msaf-stream), a5a02fa47979913a0 (wp-ag-ui-emitter)
+
+### Decisions
+
+1. **Dispatched three layer-2 packages as parallel foreground subagents in a single message** — wall time bounded by slowest agent (nine minutes) versus twenty-four if sequential. Each isolated worktree, non-overlapping write-allow scopes.
+
+2. **Instructed each agent to commit only, not push** — learned from layer-one that the worktree.py setup script can reuse the parent branch leading to push contention; instructing no-push means orchestrator integrates via cherry-pick after all three converge.
+
+3. **Recovery via revert plus cherry-pick after first merge attempt brought in unexpected files** — the Agent tool isolation equal to worktree creates the agent worktree from the default branch main, not from orchestrator HEAD. Each agent then merges the feature branch in to access foundation. So merging the agent branch wholesale pulls in everything on main that diverged from feature branch. Recovery: git revert dash m one for the failed merge, then cherry-pick only the agent's actual work commits (seven commits total across three packages).
+
+4. **Surfaced one new gap in agent verification**: each dispatch brief listed pytest and mypy as verification steps but omitted ruff. Three of three agents reported green based on the listed gates. After integration, ruff surfaced fourteen style issues (mostly auto-fixable). Fixed in a follow-up commit. Future dispatches must list every CI-scope gate including ruff.
+
+### Alternatives Considered
+
+- Use git reset hard zero d six e seven one five instead of revert: rejected — user prefers non-destructive paths; revert plus cherry-pick is recoverable and revert pair in history documents the recovery operation.
+- Merge each agent branch wholesale via no-ff: actually attempted, brought in two-hundred-sixty-one unrelated files from main; backed out.
+- Dispatch wp-web-cli in the same message as layer two for further parallelism: rejected — wp-web-cli depends on the layer-two trio per the DAG, so it cannot start until they converge.
+
+### Trade-offs
+
+- Accepted two extra commits in history (the failed merge and its revert) over a destructive history rewrite, because the user previously preferred revert over reset and the merge documents a real recovery operation.
+- Accepted post-integration ruff cleanup commit as a separate logical change rather than amending the agent commits, because each agent commit is internally consistent and the lint issues only surfaced after cross-package integration.
+
+### Open Questions
+
+- [ ] None blocking layer three.
+
+### Completed Work
+
+- DeepAgentsHarness.astream_invoke consuming agent astream events version v two with full lifecycle bracketing, thread id propagation, LangChain text chunk to TextDelta mapping, tool call lifecycle translation, and two phase D8 error propagation. Twenty-three new tests in tests harnesses test deep agents astream py.
+- MSAgentFrameworkHarness.astream invoke calling agent run stream equals true on the SDK, defensive getattr for SDK shape drift, lazy import discipline preserved, twenty-two new tests in tests harnesses test ms agent fw astream py.
+- AG-UI emitter at src assistant transports ag ui slash, with types py re-exporting the upstream ag ui core models and mapper py implementing HarnessEvent to AG-UI v zero dot x event translation. Forty-four new tests across test mapper py and test types py.
+- All nineteen layer-two checkboxes flipped: three dot one through three dot six, three b dot one through three b dot seven, four dot one through four dot six.
+- Nineteen coordinator issues marked completed.
+- loop-state json updated: three packages status to completed, three package authors recorded as claude code.
+
+### In Progress
+
+- Layer 3 (wp-web-cli) and Layer 4 (wp-integration) pending dispatch in next session.
+
+### Next Steps
+
+- Layer three: wp-web-cli sequentially dispatched as a single subagent. Implements FastAPI app with lifespan binding harness, slash chat SSE endpoint, slash health endpoint, custom RequestValidationError handler, and the serve CLI subcommand. Estimated wall time thirty to sixty minutes.
+- Layer four: wp-integration. CLAUDE md docs update plus end to end smoke tests plus full CI gates.
+- Then IMPL ITERATE, IMPL REVIEW, VALIDATE, SUBMIT PR.
+
+### Relevant Files
+
+- src assistant harnesses sdk deep agents py — astream invoke implementation
+- src assistant harnesses sdk ms agent fw py — astream invoke implementation with defensive SDK access
+- src assistant transports ag ui slash init slash mapper py types py — AG-UI emitter
+- openspec changes harness ag ui bridge slash loop state json — packages status and authors
+
+### Context
+
+Three layer two packages dispatched in parallel after layer one foundation landed. Wall time roughly nine minutes for the slowest agent versus twenty-four sequential. Recovery operation needed after the first merge attempt pulled in main branch context. Cherry-pick of seven work commits cleanly applied to the feature branch with no conflicts. Post integration ruff surfaced fourteen style issues fixed in one cleanup commit. Net result is nine hundred thirty-seven pytest pass with mypy and ruff and openspec validate strict all clean.

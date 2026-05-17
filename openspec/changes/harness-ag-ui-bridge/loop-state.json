@@ -15,14 +15,17 @@
   },
   "packages_status": {
     "wp-foundation": "completed",
-    "wp-deep-agents-stream": "pending",
-    "wp-msaf-stream": "pending",
-    "wp-ag-ui-emitter": "pending",
+    "wp-deep-agents-stream": "completed",
+    "wp-msaf-stream": "completed",
+    "wp-ag-ui-emitter": "completed",
     "wp-web-cli": "pending",
     "wp-integration": "pending"
   },
   "package_authors": {
-    "wp-foundation": "claude_code"
+    "wp-foundation": "claude_code",
+    "wp-deep-agents-stream": "claude_code",
+    "wp-msaf-stream": "claude_code",
+    "wp-ag-ui-emitter": "claude_code"
   },
   "complexity_gate": {
     "allowed_via_force": true,
