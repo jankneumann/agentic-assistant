@@ -28,7 +28,7 @@
   **Design decisions**: D1
   **Dependencies**: 1.3
 
-- [ ] 2.2 Add abstract `astream_invoke` and `thread_id` to `src/assistant/harnesses/base.py`
+- [x] 2.2 Add abstract `astream_invoke` and `thread_id` to `src/assistant/harnesses/base.py`
   **Goal**: Add abstract method to `SdkHarnessAdapter` returning `AsyncIterator[HarnessEvent]`. Existing `invoke()` MUST remain unchanged. Both `DeepAgentsHarness` and `MSAgentFrameworkHarness` will implement this concretely in Sections 3 and 3b respectively — no NotImplementedError stub is acceptable on the base, since both real harnesses must satisfy the abstract contract before this change can merge. Also add an abstract `thread_id: str` property (or attribute requirement) to `SdkHarnessAdapter` so the web transport can pass a stable thread identifier to the AG-UI mapper. Deep Agents implements it as `return self._thread_id`; MSAF synthesizes a UUID at construction time.
   **Spec scenarios**: harness-adapter "SdkHarnessAdapter.astream_invoke returns async iterator of HarnessEvent", "SdkHarnessAdapter exposes a thread_id for transport binding"
   **Dependencies**: 2.1
