@@ -13,7 +13,7 @@
   **Design decisions**: D1
   **Dependencies**: 1.1
 
-- [ ] 1.3 Implement `src/assistant/harnesses/sdk/events.py`
+- [x] 1.3 Implement `src/assistant/harnesses/sdk/events.py`
   **Goal**: Define `HarnessEvent` discriminated union (Pydantic) with the 6 variants: RunStarted, RunFinished, TextDelta, ToolCallStart, ToolCallArgs, ToolCallEnd. Field names must be harness-agnostic and protocol-agnostic per D1. Module lives in the harness layer (not transports/) so concrete harnesses can construct events without importing upward into transports/ — preserves D6 import-direction rule. The `RunFinished.error` field MUST match the class-name-only pattern per D8.
   **Dependencies**: 1.2
 
