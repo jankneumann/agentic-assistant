@@ -694,21 +694,48 @@ async def test_tool_call_id_stable_across_start_args_end_when_run_id_consistent(
     assert starts[0].call_id == "tool-run-X"
 
 
-@pytest.mark.asyncio
-async def test_thread_id_unchanged_after_imports() -> None:
-    """thread_id from __init__ MUST be preserved (gemini #5).
+def test_create_agent_does_not_reassign_thread_id_source() -> None:
+    """DeepAgentsHarness.create_agent MUST NOT contain `self._thread_id =`.
 
     Regression for IMPL_REVIEW round-1 gemini #5: pre-fix, ``create_agent``
     reassigned ``self._thread_id = str(uuid4())``, defeating the
     SdkHarnessAdapter contract that thread_id is stable for the adapter
-    instance's lifetime. ``_make_harness`` synthesizes a known sentinel
-    ``thread_id``; assert the property returns that sentinel unchanged.
+    instance's lifetime. The original behavioral test used ``__new__`` to
+    bypass ``__init__`` and never invoked ``create_agent``, so reverting
+    the fix would not have failed the test (IMPL_REVIEW round-2
+    claude-r2-1: "the lock-in is illusory").
+
+    The structural assertion here inspects the source of ``create_agent``
+    and fails if a re-assignment is ever re-introduced. 100% revert-
+    detecting at the cost of being source-shape-coupled (would also
+    fail on cosmetic reformatting that introduces the substring in a
+    comment — accepted as a deliberate tradeoff).
     """
-    harness = _make_harness()
-    initial = harness.thread_id
-    # Read the property multiple times to be sure it isn't computed
-    # off some mutable side state.
-    assert harness.thread_id == initial
-    assert harness.thread_id == initial
-    # The sentinel from _make_harness is "thread-test-uuid-1234".
-    assert initial == "thread-test-uuid-1234"
+    import inspect
+    import re
+
+    source = inspect.getsource(DeepAgentsHarness.create_agent)
+    # Strip comment lines and docstring so we only inspect executable code.
+    code_lines = []
+    in_docstring = False
+    for line in source.splitlines():
+        stripped = line.strip()
+        if stripped.startswith('"""') or stripped.startswith("'''"):
+            # toggle docstring once per occurrence; one-line docstrings
+            # toggle twice within the same iteration which leaves us
+            # outside (correct).
+            in_docstring = not in_docstring
+            if stripped.count('"""') == 2 or stripped.count("'''") == 2:
+                in_docstring = False
+            continue
+        if in_docstring:
+            continue
+        if stripped.startswith("#"):
+            continue
+        code_lines.append(line)
+    code = "\n".join(code_lines)
+    assert not re.search(r"\bself\._thread_id\s*=", code), (
+        "DeepAgentsHarness.create_agent must NOT reassign self._thread_id "
+        "(IMPL_REVIEW round-1 gemini #5 / round-2 claude-r2-1). "
+        "Source extracted for inspection:\n" + code
+    )

@@ -20,7 +20,9 @@ Design references (``openspec/changes/ms-graph-extension``):
 
 from __future__ import annotations
 
+import inspect
 import uuid
+from collections import deque
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -320,12 +322,14 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         """
         run_id = str(uuid.uuid4())
         message_id = str(uuid.uuid4())
-        # Track the most-recent missing-id start so a subsequent missing-id
-        # function_result can correlate with it (best-effort for sequential
-        # tool calls). When the SDK supplies call_id on both sides the
-        # pending slot is irrelevant — the SDK value is authoritative.
-        # IMPL_REVIEW round-1 gemini #2.
-        pending_orphan_call_id: str | None = None
+        # FIFO queue of synthesized call_ids for missing-id function_call
+        # items, so subsequent missing-id function_result items can match
+        # the *oldest* unpaired start (sequential AND parallel orphan
+        # tool calls).  When the SDK supplies call_id on both sides the
+        # queue stays empty — the SDK value is authoritative.
+        # IMPL_REVIEW round-1 gemini #2 (single slot) → round-2 cross-vendor
+        # (claude-r2-2 + codex-r2-1) upgraded to a deque for parallel orphans.
+        pending_orphan_call_ids: deque[str] = deque()
         started_at = datetime.now(UTC).isoformat()
         yield RunStarted(run_id=run_id, started_at=started_at)
 
@@ -345,11 +349,21 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
             )
             raise
 
+        # Best-effort finalization of the upstream MSAF ResponseStream on
+        # GeneratorExit so a mid-stream client disconnect closes the SDK
+        # iterator rather than leaving it pending until garbage collection.
+        # We can't use ``contextlib.aclosing`` directly because
+        # ``ResponseStream`` is not required by the agent-framework SDK
+        # contract to expose ``aclose``; the test fakes (MagicMock-based)
+        # also don't expose an awaitable aclose. Falling back to a defensive
+        # try/finally that only awaits aclose when it's a real coroutine.
+        # IMPL_REVIEW round-2 gemini-r2-3.
         try:
             async for update in response_stream:
                 # --- Text content ---
-                # Defensive: try .text property first (AgentResponseUpdate), then
-                # fall back to .content / .delta for SDK shape drift (D11 note).
+                # Defensive: try .text property first (AgentResponseUpdate),
+                # then fall back to .content / .delta for SDK shape drift
+                # (D11 note).
                 text = getattr(update, "text", None)
                 if not isinstance(text, str):
                     text = getattr(update, "content", None) or ""
@@ -359,8 +373,9 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
                     yield TextDelta(message_id=message_id, text=text)
 
                 # --- Tool-call content ---
-                # Each update may carry a list of Content items with typed slots.
-                # Defensive: fall back to empty list if .contents is absent.
+                # Each update may carry a list of Content items with typed
+                # slots. Defensive: fall back to empty list if .contents
+                # is absent.
                 contents = getattr(update, "contents", None) or []
                 for content_item in contents:
                     item_type = getattr(content_item, "type", None)
@@ -368,13 +383,16 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
 
                     if item_type == "function_call":
                         # ToolCallStart — name is the tool name
-                        tool_name = getattr(content_item, "name", None) or "unknown"
+                        tool_name = (
+                            getattr(content_item, "name", None) or "unknown"
+                        )
                         effective_call_id = call_id or str(uuid.uuid4())
                         if not call_id:
-                            # SDK omitted call_id — record the synthesized
-                            # UUID so a missing-id function_result can pair
-                            # with this start.
-                            pending_orphan_call_id = effective_call_id
+                            # SDK omitted call_id — queue the synthesized
+                            # UUID so a later missing-id function_result
+                            # can pair with the *oldest* unmatched start
+                            # (handles parallel orphans).
+                            pending_orphan_call_ids.append(effective_call_id)
                         yield ToolCallStart(
                             call_id=effective_call_id, tool_name=tool_name
                         )
@@ -389,31 +407,32 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
                                 except (TypeError, ValueError):
                                     arguments = str(arguments)
                             yield ToolCallArgs(
-                                call_id=effective_call_id, args_chunk=arguments
+                                call_id=effective_call_id,
+                                args_chunk=arguments,
                             )
 
                     elif item_type == "function_result":
-                        # SDK-provided call_id is authoritative; we use it
-                        # directly. Only fall back to the pending orphan slot
-                        # (a synthesized UUID stashed by a prior missing-id
-                        # start) when the SDK omitted call_id here. Last
-                        # resort: fresh UUID — bracket lost, the scenario
-                        # violates the SDK contract.
+                        # SDK-provided call_id is authoritative. Otherwise
+                        # match the oldest queued missing-id start (FIFO).
+                        # Last resort: fresh UUID — bracket lost, the
+                        # scenario violates the SDK contract.
                         if call_id:
                             effective_call_id = call_id
-                        elif pending_orphan_call_id is not None:
-                            effective_call_id = pending_orphan_call_id
-                            pending_orphan_call_id = None
+                        elif pending_orphan_call_ids:
+                            effective_call_id = pending_orphan_call_ids.popleft()
                         else:
                             effective_call_id = str(uuid.uuid4())
                         result = getattr(content_item, "result", None)
-                        yield ToolCallEnd(call_id=effective_call_id, result=result)
+                        yield ToolCallEnd(
+                            call_id=effective_call_id, result=result
+                        )
 
         except GeneratorExit:
             # Client disconnected mid-stream. Propagate unchanged so async
             # generator finalization (PEP 525) is honored. DO NOT yield
             # while handling GeneratorExit — Python raises RuntimeError.
-            # IMPL_REVIEW round-1 claude #1.
+            # IMPL_REVIEW round-1 claude #1. (Upstream stream cleanup runs
+            # in the ``finally`` block below.)
             raise
         except Exception as exc:
             finished_at = datetime.now(UTC).isoformat()
@@ -423,6 +442,16 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
                 error=type(exc).__name__,
             )
             raise
+        finally:
+            # Best-effort close of the upstream SDK iterator on every
+            # exit path (success, disconnect, exception). Skipped when
+            # ``aclose`` is absent (e.g. ``MagicMock``-based test fakes)
+            # or returns a non-coroutine. IMPL_REVIEW round-2 gemini-r2-3.
+            aclose_fn = getattr(response_stream, "aclose", None)
+            if callable(aclose_fn):
+                aclose_result = aclose_fn()
+                if inspect.iscoroutine(aclose_result):
+                    await aclose_result
 
         finished_at = datetime.now(UTC).isoformat()
         yield RunFinished(run_id=run_id, finished_at=finished_at, error=None)

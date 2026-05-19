@@ -1,0 +1,23 @@
+{
+  "review_type": "implementation",
+  "target": "cli-dispatch",
+  "reviewer_vendor": "codex",
+  "findings": [
+    {
+      "id": "round2-msaf-orphan-tool-call-single-slot",
+      "type": "correctness",
+      "criticality": "medium",
+      "description": "The MSAF missing-call_id correlation fix only stores one pending orphan tool-call id. In src/assistant/harnesses/sdk/ms_agent_fw.py, each missing-id function_call overwrites pending_orphan_call_id, so if the SDK emits two parallel or nested function_call items without call_id before their function_result items, the first result is paired with the second start id and the remaining result gets a fresh unrelated UUID. That still violates the harness/AG-UI tool lifecycle contract for parallel missing-id tool calls.",
+      "disposition": "fix",
+      "axis": "correctness",
+      "severity": "medium",
+      "resolution": "Replace pending_orphan_call_id with a small FIFO queue such as collections.deque[str]. Append each synthesized id for a missing-id function_call, and for a missing-id function_result pop the oldest pending id before falling back to a fresh UUID. Add a regression test with two missing-id function_call items followed by two missing-id function_result items, asserting each ToolCallEnd matches one emitted ToolCallStart and no orphan end id is introduced.",
+      "package_id": "whole-branch",
+      "file_path": "src/assistant/harnesses/sdk/ms_agent_fw.py",
+      "line_range": {
+        "start": 323,
+        "end": 408
+      }
+    }
+  ]
+}

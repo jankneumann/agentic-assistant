@@ -719,3 +719,73 @@ async def test_traced_harness_reraises_exception_after_trace(
     assert exc_info.value is original, "Must re-raise the exact original exception"
     # Trace must have been emitted
     assert len(spy.calls["trace_llm_call"]) == 1, "Trace must be emitted even on exception"
+
+
+# ---------------------------------------------------------------------------
+# IMPL_REVIEW round-2 regression — parallel missing-id orphan tool calls
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_astream_invoke_parallel_missing_id_orphans_bracket_via_fifo() -> None:
+    """Parallel missing-id tool calls MUST bracket via the FIFO deque.
+
+    Regression for IMPL_REVIEW round-2 cross-vendor (claude-r2-2 + codex-r2-1):
+    pre-fix, ms_agent_fw.py used a single ``pending_orphan_call_id`` slot —
+    when the SDK emitted two missing-id function_call items before any
+    function_result, the second start overwrote the slot, so the *first*
+    function_result paired with the *second* start's synthesized UUID, and
+    the second function_result fell through to a fresh UUID. Both calls
+    ended up mis-bracketed. After the fix the slot is a ``deque[str]``
+    with FIFO semantics: the oldest unpaired start matches the next
+    missing-id result.
+    """
+    h = _harness()
+    agent = MagicMock()
+    # Two missing-id starts (call_id=None), then two missing-id results.
+    # No SDK-provided call_id on any of these four items.
+    agent.run.return_value = _make_fake_stream(
+        _FakeUpdate(
+            contents=[
+                _FakeContent("function_call", name="search", call_id=None),
+            ]
+        ),
+        _FakeUpdate(
+            contents=[
+                _FakeContent("function_call", name="weather", call_id=None),
+            ]
+        ),
+        _FakeUpdate(
+            contents=[
+                _FakeContent("function_result", call_id=None, result="result-A"),
+            ]
+        ),
+        _FakeUpdate(
+            contents=[
+                _FakeContent("function_result", call_id=None, result="result-B"),
+            ]
+        ),
+    )
+
+    events = [ev async for ev in h.astream_invoke(agent, "hi")]
+    starts = [e for e in events if isinstance(e, ToolCallStart)]
+    ends = [e for e in events if isinstance(e, ToolCallEnd)]
+    assert len(starts) == 2 and len(ends) == 2, (
+        f"Expected 2 starts + 2 ends; got starts={len(starts)}, ends={len(ends)}"
+    )
+    # FIFO contract: ends[0].call_id == starts[0].call_id (oldest start),
+    #                ends[1].call_id == starts[1].call_id (newer start).
+    assert ends[0].call_id == starts[0].call_id, (
+        "First result must pair with the oldest unmatched start "
+        f"(FIFO). Got starts={[s.call_id for s in starts]}, "
+        f"ends={[e.call_id for e in ends]}"
+    )
+    assert ends[1].call_id == starts[1].call_id, (
+        "Second result must pair with the next-oldest unmatched start "
+        f"(FIFO). Got starts={[s.call_id for s in starts]}, "
+        f"ends={[e.call_id for e in ends]}"
+    )
+    # And the two pairs MUST be distinct from each other.
+    assert starts[0].call_id != starts[1].call_id, (
+        "Each missing-id start must synthesize a unique UUID"
+    )
