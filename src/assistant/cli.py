@@ -292,6 +292,78 @@ def export(persona: str, role: str | None, harness: str) -> None:
     click.echo(context.get("system_prompt", ""))
 
 
+@main.command()
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.option("--role", "-r", type=str, default=None, help="Role name.")
+@click.option(
+    "--harness",
+    "-H",
+    type=str,
+    default="deep_agents",
+    help="SDK harness backend (default: deep_agents).",
+)
+@click.option("--host", type=str, default="127.0.0.1", help="Bind host (default: 127.0.0.1).")
+@click.option("--port", type=int, default=8765, help="Bind port (default: 8765).")
+def serve(
+    persona: str,
+    role: str | None,
+    harness: str,
+    host: str,
+    port: int,
+) -> None:
+    """Start the AG-UI bridge HTTP server (SSE endpoint)."""
+    try:
+        import uvicorn
+
+        from assistant.web.app import make_app
+    except ImportError:
+        click.echo("Error: uvicorn/fastapi not installed. Run `uv sync`.", err=True)
+        sys.exit(1)
+
+    persona_reg = PersonaRegistry()
+    role_reg = RoleRegistry()
+
+    pc = _load_persona_or_fail(persona_reg, persona)
+    role_name = role or pc.default_role
+    if not role_name:
+        raise click.UsageError(
+            "No role specified and persona has no default_role. "
+            "Supply -r/--role explicitly."
+        )
+
+    try:
+        rc = role_reg.load(role_name, pc)
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
+
+    # Validate harness before building the app.
+    try:
+        adapter = _create_harness(pc, rc, harness)
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
+
+    if isinstance(adapter, HostHarnessAdapter):
+        click.echo(
+            f"Error: harness '{harness}' is a host harness, not an SDK harness. "
+            "Use 'assistant export' for host harnesses.",
+            err=True,
+        )
+        sys.exit(1)
+
+    if host != "127.0.0.1" and not host.startswith("127."):
+        click.echo(
+            f"Warning: binding to non-loopback host '{host}'. "
+            "This exposes the server beyond localhost.",
+            err=True,
+        )
+
+    try:
+        app = make_app(persona, role_name, harness)
+        uvicorn.run(app, host=host, port=port)
+    except KeyboardInterrupt:
+        pass
+
+
 def _load_persona_or_fail(
     persona_reg: PersonaRegistry, name: str
 ):  # -> PersonaConfig
