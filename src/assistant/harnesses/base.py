@@ -45,8 +45,8 @@ class SdkHarnessAdapter(HarnessAdapter):
         "SdkHarnessAdapter exposes a thread_id for transport binding").
 
         Examples:
-        - ``DeepAgentsHarness`` returns ``self._thread_id`` (a UUID set by
-          ``create_agent``).
+        - ``DeepAgentsHarness`` synthesizes a UUID at construction and
+          returns it unchanged for the adapter instance's lifetime.
         - ``MSAgentFrameworkHarness`` synthesizes a UUID at construction.
 
         Raises ``NotImplementedError`` on the base class — concrete

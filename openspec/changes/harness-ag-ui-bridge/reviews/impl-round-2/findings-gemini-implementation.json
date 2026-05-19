@@ -1,0 +1,37 @@
+{
+  "review_type": "implementation",
+  "target": "cli-dispatch",
+  "reviewer_vendor": "gemini",
+  "findings": [
+    {
+      "id": "gemini-2-1",
+      "type": "polish",
+      "criticality": "low",
+      "description": "Stale docstring in `SdkHarnessAdapter.thread_id` (src/assistant/harnesses/base.py). The docstring incorrectly states that `DeepAgentsHarness` sets its `thread_id` in `create_agent`. Following the round-1 fix for gemini #5, the ID is now set during `__init__` to ensure instance-lifetime stability.",
+      "disposition": "fix",
+      "axis": "maintainability",
+      "severity": 1,
+      "resolution": "Update the docstring in `src/assistant/harnesses/base.py` to reflect that `DeepAgentsHarness` synthesizes its `thread_id` at construction time."
+    },
+    {
+      "id": "gemini-2-2",
+      "type": "polish",
+      "criticality": "low",
+      "description": "Stale docstring in `DeepAgentsHarness.astream_invoke` (src/assistant/harnesses/sdk/deep_agents.py). The docstring claims that tool-call lifecycle correlation happens \"without extra bookkeeping\". The round-1 fix for gemini #2 introduced the `open_tool_calls` dictionary to provide this bookkeeping.",
+      "disposition": "fix",
+      "axis": "maintainability",
+      "severity": 1,
+      "resolution": "Update the docstring in `src/assistant/harnesses/sdk/deep_agents.py` to reflect the use of `open_tool_calls` for stable ID correlation."
+    },
+    {
+      "id": "gemini-2-3",
+      "type": "issue",
+      "criticality": "medium",
+      "description": "Missing `aclosing` for upstream SDK streams in harness implementations. While the `traced_harness` decorator (decorators.py) now uses `aclosing` on the harness generator, the harness methods themselves (`deep_agents.py` and `ms_agent_fw.py`) do not use `aclosing` when consuming SDK-provided streams (`agent.astream_events` and `agent.run(stream=True)`). If the harness generator is closed mid-stream (e.g., client disconnect), the upstream SDK iterators may remain un-finalized until garbage collection.",
+      "disposition": "fix",
+      "axis": "correctness",
+      "severity": 2,
+      "resolution": "Import `aclosing` from `contextlib` in both `src/assistant/harnesses/sdk/deep_agents.py` and `src/assistant/harnesses/sdk/ms_agent_fw.py`, and wrap the upstream SDK stream consumption in `async with aclosing(...) as stream:` blocks."
+    }
+  ]
+}

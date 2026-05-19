@@ -1,0 +1,52 @@
+{
+  "review_type": "implementation",
+  "target": "cli-dispatch",
+  "reviewer_vendor": "claude_code",
+  "findings": [
+    {
+      "id": "claude-r2-1",
+      "type": "test-gap",
+      "criticality": "medium",
+      "axis": "testability",
+      "severity": "medium",
+      "description": "The round-1 regression test `tests/harnesses/test_deep_agents_astream.py::test_thread_id_unchanged_after_imports` (intended to lock gemini #5 \u2014 `create_agent` no longer overwrites `self._thread_id`) does not actually exercise `create_agent`. The fixture `_make_harness()` uses `DeepAgentsHarness.__new__` to skip `__init__` and then sets `_thread_id` manually; the test then only reads the `thread_id` property repeatedly. If a future change re-introduced `self._thread_id = str(uuid4())` inside `create_agent` (the exact regression the test name claims to guard), the test would still pass because `create_agent` is never invoked. The underlying source fix is correct \u2014 `src/assistant/harnesses/sdk/deep_agents.py:65-92` does not touch `_thread_id` \u2014 but the lock-in is illusory.",
+      "evidence": [
+        "tests/harnesses/test_deep_agents_astream.py:697-714 (test body never calls harness.create_agent)",
+        "tests/harnesses/test_deep_agents_astream.py:50-65 (_make_harness uses __new__, bypasses __init__)",
+        "src/assistant/harnesses/sdk/deep_agents.py:65-92 (create_agent body \u2014 fix is correct here)"
+      ],
+      "disposition": "fix",
+      "resolution": "Strengthen the regression so it would fail if `create_agent` were reverted. One approach: construct a harness via the real `__init__` (capture the synthesized thread_id), then monkey-patch the deepagents.create_deep_agent / init_chat_model / InMemorySaver / compose_system_prompt names to no-op stubs, call `await harness.create_agent(tools=[], extensions=[])`, and assert `harness.thread_id == initial`. Alternative: introspect `DeepAgentsHarness.create_agent` source via `inspect.getsource(DeepAgentsHarness.create_agent)` and assert it does not contain `self._thread_id =` \u2014 uglier but cheap and 100% revert-detecting.",
+      "blocking_archive": false
+    },
+    {
+      "id": "claude-r2-2",
+      "type": "design-limitation",
+      "criticality": "low",
+      "axis": "completeness",
+      "severity": "low",
+      "description": "The round-1 gemini #2 fix in `ms_agent_fw.py` uses a single `pending_orphan_call_id` slot to correlate missing-id `function_result` with a prior missing-id `function_call`. For SDK-conformant streams (call_id always present) this is irrelevant. For sequential missing-id calls it works. For *parallel/interleaved* missing-id calls (start A \u2192 start B \u2192 result A \u2192 result B), the second start overwrites the slot, so result A pairs with B's synth UUID and result B falls through to a fresh UUID \u2014 both end up mis-bracketed. The inline comment acknowledges 'best-effort for sequential tool calls' and the scenario violates the SDK contract. Flagged as a documented limitation, not a blocking bug: in v1 single-user-loopback scope with the official agent-framework SDK, this code path is unreachable. No fix needed for round 2.",
+      "evidence": [
+        "src/assistant/harnesses/sdk/ms_agent_fw.py:323-328 (single-slot rationale comment)",
+        "src/assistant/harnesses/sdk/ms_agent_fw.py:369-410 (start records, result consumes)"
+      ],
+      "disposition": "accept",
+      "blocking_archive": false
+    },
+    {
+      "id": "claude-r2-3",
+      "type": "test-quality",
+      "criticality": "low",
+      "axis": "testability",
+      "severity": "low",
+      "description": "The FastAPI lifespan (`src/assistant/web/app.py:142-173`) gates `httpx.AsyncClient` creation on `getattr(pc, 'tool_sources', None) or {}`. In production this is correct. In the web/integration tests (`tests/web/test_app.py:_make_app_with_harness`, `tests/integration/test_ag_ui_smoke.py:_make_app`), `pc` is a `MagicMock`, whose auto-attribute lookup `pc.tool_sources` returns a truthy `MagicMock` instead of a falsy dict. As a result every test that uses `_make_app_with_harness` now constructs a real `httpx.AsyncClient` per request and aclose()s it in the finally \u2014 wasteful but harmless (no network I/O, no leaked file descriptors because aclose runs). No test regression; flagging because the fix delta introduced unnecessary work in the test path.",
+      "evidence": [
+        "src/assistant/web/app.py:149-159 (`if tool_sources:` predicate)",
+        "tests/web/test_app.py:156-159 (mock_pr.return_value.load.return_value = MagicMock(...))",
+        "tests/integration/test_ag_ui_smoke.py:93-96 (same MagicMock pattern)"
+      ],
+      "disposition": "accept",
+      "blocking_archive": false
+    }
+  ]
+}

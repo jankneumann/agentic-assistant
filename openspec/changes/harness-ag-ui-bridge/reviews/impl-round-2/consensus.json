@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "review_type": "implementation",
+  "target": "harness-ag-ui-bridge",
+  "reviewers": [
+    {
+      "vendor": "claude_code",
+      "agent_id": "claude_code",
+      "success": true,
+      "findings_count": 3,
+      "elapsed_seconds": 0.0,
+      "error": null
+    },
+    {
+      "vendor": "codex",
+      "agent_id": "codex",
+      "success": true,
+      "findings_count": 1,
+      "elapsed_seconds": 0.0,
+      "error": null
+    },
+    {
+      "vendor": "gemini",
+      "agent_id": "gemini",
+      "success": true,
+      "findings_count": 3,
+      "elapsed_seconds": 0.0,
+      "error": null
+    }
+  ],
+  "quorum_met": true,
+  "quorum_requested": 3,
+  "quorum_received": 3,
+  "consensus_findings": [
+    {
+      "id": 1,
+      "status": "unconfirmed",
+      "primary_vendor": "claude_code",
+      "primary_finding_id": "claude-r2-1",
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "test-gap",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "The round-1 regression test `tests/harnesses/test_deep_agents_astream.py::test_thread_id_unchanged_after_imports` (intended to lock gemini #5 \u2014 `create_agent` no longer overwrites `self._thread_id`) does not actually exercise `create_agent`. The fixture `_make_harness()` uses `DeepAgentsHarness.__new__` to skip `__init__` and then sets `_thread_id` manually; the test then only reads the `thread_id` property repeatedly. If a future change re-introduced `self._thread_id = str(uuid4())` inside `create_agent` (the exact regression the test name claims to guard), the test would still pass because `create_agent` is never invoked. The underlying source fix is correct \u2014 `src/assistant/harnesses/sdk/deep_agents.py:65-92` does not touch `_thread_id` \u2014 but the lock-in is illusory."
+    },
+    {
+      "id": 2,
+      "status": "unconfirmed",
+      "primary_vendor": "codex",
+      "primary_finding_id": "round2-msaf-orphan-tool-call-single-slot",
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "correctness",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "The MSAF missing-call_id correlation fix only stores one pending orphan tool-call id. In src/assistant/harnesses/sdk/ms_agent_fw.py, each missing-id function_call overwrites pending_orphan_call_id, so if the SDK emits two parallel or nested function_call items without call_id before their function_result items, the first result is paired with the second start id and the remaining result gets a fresh unrelated UUID. That still violates the harness/AG-UI tool lifecycle contract for parallel missing-id tool calls."
+    },
+    {
+      "id": 3,
+      "status": "unconfirmed",
+      "primary_vendor": "gemini",
+      "primary_finding_id": "gemini-2-3",
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "issue",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "Missing `aclosing` for upstream SDK streams in harness implementations. While the `traced_harness` decorator (decorators.py) now uses `aclosing` on the harness generator, the harness methods themselves (`deep_agents.py` and `ms_agent_fw.py`) do not use `aclosing` when consuming SDK-provided streams (`agent.astream_events` and `agent.run(stream=True)`). If the harness generator is closed mid-stream (e.g., client disconnect), the upstream SDK iterators may remain un-finalized until garbage collection."
+    },
+    {
+      "id": 4,
+      "status": "unconfirmed",
+      "primary_vendor": "claude_code",
+      "primary_finding_id": "claude-r2-2",
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "design-limitation",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "The round-1 gemini #2 fix in `ms_agent_fw.py` uses a single `pending_orphan_call_id` slot to correlate missing-id `function_result` with a prior missing-id `function_call`. For SDK-conformant streams (call_id always present) this is irrelevant. For sequential missing-id calls it works. For *parallel/interleaved* missing-id calls (start A \u2192 start B \u2192 result A \u2192 result B), the second start overwrites the slot, so result A pairs with B's synth UUID and result B falls through to a fresh UUID \u2014 both end up mis-bracketed. The inline comment acknowledges 'best-effort for sequential tool calls' and the scenario violates the SDK contract. Flagged as a documented limitation, not a blocking bug: in v1 single-user-loopback scope with the official agent-framework SDK, this code path is unreachable. No fix needed for round 2."
+    },
+    {
+      "id": 5,
+      "status": "unconfirmed",
+      "primary_vendor": "claude_code",
+      "primary_finding_id": "claude-r2-3",
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "test-quality",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "The FastAPI lifespan (`src/assistant/web/app.py:142-173`) gates `httpx.AsyncClient` creation on `getattr(pc, 'tool_sources', None) or {}`. In production this is correct. In the web/integration tests (`tests/web/test_app.py:_make_app_with_harness`, `tests/integration/test_ag_ui_smoke.py:_make_app`), `pc` is a `MagicMock`, whose auto-attribute lookup `pc.tool_sources` returns a truthy `MagicMock` instead of a falsy dict. As a result every test that uses `_make_app_with_harness` now constructs a real `httpx.AsyncClient` per request and aclose()s it in the finally \u2014 wasteful but harmless (no network I/O, no leaked file descriptors because aclose runs). No test regression; flagging because the fix delta introduced unnecessary work in the test path."
+    },
+    {
+      "id": 6,
+      "status": "unconfirmed",
+      "primary_vendor": "gemini",
+      "primary_finding_id": "gemini-2-1",
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "polish",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "Stale docstring in `SdkHarnessAdapter.thread_id` (src/assistant/harnesses/base.py). The docstring incorrectly states that `DeepAgentsHarness` sets its `thread_id` in `create_agent`. Following the round-1 fix for gemini #5, the ID is now set during `__init__` to ensure instance-lifetime stability."
+    },
+    {
+      "id": 7,
+      "status": "unconfirmed",
+      "primary_vendor": "gemini",
+      "primary_finding_id": "gemini-2-2",
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "polish",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "Stale docstring in `DeepAgentsHarness.astream_invoke` (src/assistant/harnesses/sdk/deep_agents.py). The docstring claims that tool-call lifecycle correlation happens \"without extra bookkeeping\". The round-1 fix for gemini #2 introduced the `open_tool_calls` dictionary to provide this bookkeeping."
+    }
+  ],
+  "summary": {
+    "total_unique_findings": 7,
+    "confirmed_count": 0,
+    "unconfirmed_count": 7,
+    "disagreement_count": 0,
+    "blocking_count": 0
+  }
+}

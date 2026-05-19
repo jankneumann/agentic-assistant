@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -127,9 +128,16 @@ class DeepAgentsHarness(SdkHarnessAdapter):
           (args serialized as JSON in a single chunk)
         - ``on_tool_end``          → ``ToolCallEnd``
 
-        The ``run_id`` of the ``on_tool_start`` event is used as the
-        ``call_id`` for the tool-call lifecycle events so all three variants
-        share the same identifier without extra bookkeeping.
+        Tool-call lifecycle correlation: a per-stream ``open_tool_calls``
+        dict maps LangGraph's upstream ``run_id`` to the emitted ``call_id``
+        so ``on_tool_start`` / ``on_tool_args`` / ``on_tool_end`` always
+        share the same ``call_id`` — even when the upstream ``run_id`` is
+        falsy on either event (IMPL_REVIEW round-1 gemini #2).
+
+        The upstream LangGraph stream is wrapped in ``contextlib.aclosing``
+        so client disconnects propagate down to the SDK iterator's
+        finalization path rather than leaving it pending until GC
+        (IMPL_REVIEW round-2 gemini-r2-3).
 
         Implements the D8 two-phase error contract:
           Phase 1 — yield ``RunFinished(error=ClassName)`` before generator exit.
@@ -151,62 +159,69 @@ class DeepAgentsHarness(SdkHarnessAdapter):
             started_at=datetime.now(UTC).isoformat(),
         )
         try:
-            async for event in agent.astream_events(
+            inner_stream = agent.astream_events(
                 {"messages": [{"role": "user", "content": message}]},
                 version="v2",
                 config={"configurable": {"thread_id": self._thread_id}},
-            ):
-                event_name: str = event.get("event", "")
-                data: dict[str, Any] = event.get("data", {}) or {}
-                tool_run_id: str = event.get("run_id", "") or ""
-                tool_name: str = event.get("name", "") or ""
+            )
+            # aclosing the inner LangGraph stream so a mid-stream client
+            # disconnect (GeneratorExit) closes the upstream iterator
+            # instead of leaving it pending until garbage collection.
+            # IMPL_REVIEW round-2 gemini-r2-3.
+            async with aclosing(inner_stream) as event_stream:
+                async for event in event_stream:
+                    event_name: str = event.get("event", "")
+                    data: dict[str, Any] = event.get("data", {}) or {}
+                    tool_run_id: str = event.get("run_id", "") or ""
+                    tool_name: str = event.get("name", "") or ""
 
-                if event_name == "on_chat_model_stream":
-                    chunk = data.get("chunk")
-                    if chunk is None:
-                        continue
-                    # Derive a stable message_id from the chunk's id or the
-                    # model run_id — both are stable within a single message.
-                    message_id: str = (
-                        getattr(chunk, "id", None)
-                        or tool_run_id
-                        or "msg-unknown"
-                    )
-                    # content may be a str or a list of content blocks
-                    raw_content = getattr(chunk, "content", "")
-                    if isinstance(raw_content, list):
-                        # Extract text from content blocks (ignore tool-use blocks)
-                        text = "".join(
-                            b.get("text", "") if isinstance(b, dict) else ""
-                            for b in raw_content
+                    if event_name == "on_chat_model_stream":
+                        chunk = data.get("chunk")
+                        if chunk is None:
+                            continue
+                        # Derive a stable message_id from the chunk's id or
+                        # the model run_id — both are stable within a single
+                        # message.
+                        message_id: str = (
+                            getattr(chunk, "id", None)
+                            or tool_run_id
+                            or "msg-unknown"
                         )
-                    else:
-                        text = raw_content or ""
-                    yield TextDelta(message_id=message_id, text=text)
+                        # content may be a str or a list of content blocks
+                        raw_content = getattr(chunk, "content", "")
+                        if isinstance(raw_content, list):
+                            # Extract text from content blocks (ignore tool-use blocks)
+                            text = "".join(
+                                b.get("text", "") if isinstance(b, dict) else ""
+                                for b in raw_content
+                            )
+                        else:
+                            text = raw_content or ""
+                        yield TextDelta(message_id=message_id, text=text)
 
-                elif event_name == "on_tool_start":
-                    call_id = tool_run_id or str(uuid4())
-                    if tool_run_id:
-                        # Remember the call_id so on_tool_end can correlate.
-                        open_tool_calls[tool_run_id] = call_id
-                    yield ToolCallStart(call_id=call_id, tool_name=tool_name)
-                    # Serialize input args as a single JSON chunk per ToolCallArgs.
-                    tool_input = data.get("input") or {}
-                    yield ToolCallArgs(
-                        call_id=call_id,
-                        args_chunk=json.dumps(tool_input),
-                    )
+                    elif event_name == "on_tool_start":
+                        call_id = tool_run_id or str(uuid4())
+                        if tool_run_id:
+                            # Remember the call_id so on_tool_end can correlate.
+                            open_tool_calls[tool_run_id] = call_id
+                        yield ToolCallStart(call_id=call_id, tool_name=tool_name)
+                        # Serialize input args as a single JSON chunk per ToolCallArgs.
+                        tool_input = data.get("input") or {}
+                        yield ToolCallArgs(
+                            call_id=call_id,
+                            args_chunk=json.dumps(tool_input),
+                        )
 
-                elif event_name == "on_tool_end":
-                    # Look up the start's call_id; fall back to a fresh
-                    # UUID only if the upstream run_id was missing on both
-                    # start AND end (a degenerate LangGraph emission).
-                    if tool_run_id and tool_run_id in open_tool_calls:
-                        call_id = open_tool_calls.pop(tool_run_id)
-                    else:
-                        call_id = str(uuid4())
-                    output = data.get("output")
-                    yield ToolCallEnd(call_id=call_id, result=output)
+                    elif event_name == "on_tool_end":
+                        # Look up the start's call_id; fall back to a fresh
+                        # UUID only if the upstream run_id was missing on
+                        # both start AND end (a degenerate LangGraph emission).
+                        if tool_run_id and tool_run_id in open_tool_calls:
+                            call_id = open_tool_calls.pop(tool_run_id)
+                        else:
+                            call_id = str(uuid4())
+                        output = data.get("output")
+                        yield ToolCallEnd(call_id=call_id, result=output)
 
         except GeneratorExit:
             # Client disconnected mid-stream. Propagate unchanged so async
