@@ -280,3 +280,32 @@ wp-integration: CLAUDE md docs update plus optional end-to-end smoke tests plus 
 
 Final implementation layer of harness-ag-ui-bridge. Layers 1 through 3 delivered the foundation, the streaming harness adapters, the AG-UI emitter and mapper, and the FastAPI plus serve subcommand. Layer 4 closes out tasks 7.1 through 7.4: documents the serve example in CLAUDE md, adds three automated smoke tests parallel to the manual curl runbook, and verifies the full CI gate sweep. Final state: 967 pytest passed plus 3 skipped, ruff clean, mypy clean across 168 source files, openspec validate harness-ag-ui-bridge strict clean. All 57 task checkboxes flipped. wp-integration marked completed in loop-state json.
 
+
+---
+
+## Phase: Implementation Iteration One (IMPL_ITERATE round 1)
+
+**Agent**: claude_code orchestrator + dispatched analyst sub-agent | **Session**: 2026-05-18
+
+### Decisions
+
+1. Dispatched one focused analyst sub-agent for the impartial review rather than reviewing my own implementation. The orchestrator already had the implementation context loaded, and self-review has confirmation bias — the analyst surfaced one critical bug that an in-context self-review might have rationalized away.
+2. Refactored make_app to accept an injectable _agent_factory kwarg-only parameter rather than monkey-patching the discover_tools and CapabilityResolver imports inside the lifespan. This keeps the test mocking surface small and makes the production path explicit and grep-able. The default factory is the full pipeline. Tests inject a trivial factory that returns a sentinel.
+3. Did not attempt to fix every analyst finding. Findings 2 (concurrency lock), 6 (health auth), and 7 (tool_run_id fallback) were either accepted as known limitations for v1 or marked as documentation rather than code changes. The IMPL_ITERATE goal is convergence to critical-and-high-resolved, not exhaustive polish.
+
+### Trade-offs
+
+- Accepted lifespan complexity over routes.py complexity. The lifespan now imports CapabilityResolver and discover_tools lazily inside the factory function. That keeps the privacy-boundary test for the telemetry subtree clean and concentrates the agent-setup logic in one place rather than re-deriving it per request.
+- Accepted the 1 MiB max_length cap on TextDelta.text and ToolCallArgs.args_chunk as defensive. The real bound depends on what well-behaved harnesses produce in practice. Logging a warning at 100 KiB would be more nuanced, but a hard cap is simpler and safer for v1.
+
+### Context
+
+Analyst sub-agent ran on commit 7c9d863 and produced nine findings (one critical, three high, five medium). Triage:
+- Critical 1: astream_invoke signature mismatch between routes.py call site (one arg) and the spec plus concrete harnesses (two args). Smoke test masked it because the fake harness mirrored the broken call. Fixed by wiring the full agent setup into the lifespan and passing the agent through to astream_invoke.
+- High 3: misbehaving harness raw raise leaks past the mapper and closes SSE silently — violates D8 "every failure path ends with terminal event". Fixed by wrapping routes generator in try except to synthesize RUN_ERROR.
+- High 4: harness generator not aclosed on disconnect — wrapped in contextlib aclosing.
+- Medium 8: no max_length on streaming string fields. Added 1 MiB cap.
+- Medium 9: missing Cache-Control plus X-Accel-Buffering headers on EventSourceResponse — added.
+
+Final state: pytest 974 passed plus 3 skipped (7 new tests added), ruff clean, mypy clean across 168 files, openspec validate harness-ag-ui-bridge strict clean. One round of IMPL_ITERATE deemed sufficient — round 2 would surface only low-criticality polish.
+
