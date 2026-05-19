@@ -146,127 +146,127 @@ Added during plan revision after confirming MSAF is fully implemented (per the e
 
 ## 5. FastAPI Application + SSE Endpoint
 
-- [ ] 5.1 Write tests for `/chat` endpoint content-type
+- [x] 5.1 Write tests for `/chat` endpoint content-type
   **Spec scenarios**: web-server "POST /chat returns text/event-stream content type"
   **Contracts**: contracts/openapi/v1.yaml
   **Design decisions**: D2, D6
   **Dependencies**: 1.4
 
-- [ ] 5.2 Write tests for `/chat` response body containing AG-UI events (full lifecycle bracketing)
+- [x] 5.2 Write tests for `/chat` response body containing AG-UI events (full lifecycle bracketing)
   **Spec scenarios**: web-server "Response body contains a well-formed AG-UI event stream"
   **Contracts**: contracts/openapi/v1.yaml, contracts/events/ag-ui-events.schema.json
   **Design decisions**: D2, D7
   **Dependencies**: 1.4
 
-- [ ] 5.3 Write tests for request validation (422 on malformed bodies, RFC 7807 shape)
+- [x] 5.3 Write tests for request validation (422 on malformed bodies, RFC 7807 shape)
   **Spec scenarios**: web-server "Endpoint rejects non-JSON or malformed request bodies"
   **Contracts**: contracts/openapi/v1.yaml
   **Dependencies**: 1.4
 
-- [ ] 5.3b Write tests for message length validation (oversize → 422)
+- [x] 5.3b Write tests for message length validation (oversize → 422)
   **Goal**: Assert that a body with `message` of 32769 characters yields HTTP 422 with `Content-Type: application/problem+json`, and that the harness's `astream_invoke` is never called for that request.
   **Spec scenarios**: web-server "Endpoint rejects messages exceeding the maxLength bound"
   **Contracts**: contracts/openapi/v1.yaml (`ChatRequest.message.maxLength`)
   **Dependencies**: 1.4
 
-- [ ] 5.3c Implement custom `RequestValidationError` exception handler in `src/assistant/web/app.py`
+- [x] 5.3c Implement custom `RequestValidationError` exception handler in `src/assistant/web/app.py`
   **Goal**: Register an `app.exception_handler(RequestValidationError)` that converts FastAPI's default validation-error payload into RFC 7807 `Problem` JSON with `Content-Type: application/problem+json`, matching the OpenAPI 422 contract. Include the first validation error's `msg` in `detail`. The handler MUST NOT leak field paths beyond the request body schema (no internal stack data).
   **Spec scenarios**: web-server "Endpoint rejects non-JSON or malformed request bodies", "Endpoint rejects messages exceeding the maxLength bound"
   **Dependencies**: 5.3, 5.3b
 
-- [ ] 5.4 Write tests for harness-error path emitting terminal RUN_ERROR (two-phase D8 contract)
+- [x] 5.4 Write tests for harness-error path emitting terminal RUN_ERROR (two-phase D8 contract)
   **Goal**: Fake harness yields terminal internal `RunFinished(error="RuntimeError")` then re-raises `RuntimeError("quota exceeded")`. Assert the response stream contains exactly one AG-UI `RUN_ERROR` event with `message == "RuntimeError"` and `code == "RuntimeError"` (class name only — NOT a `RUN_FINISHED` with an error field; the upstream `RunFinishedEvent` has no error field, so failures map to the separate `RunErrorEvent` shape per D8). Assert that no `RUN_FINISHED` event is emitted in the same stream, no further events follow `RUN_ERROR`, and that the response generator returns cleanly (the mapper absorbs the Phase-2 re-raised exception per D8).
   **Spec scenarios**: web-server "Endpoint emits RUN_ERROR when harness fails"
   **Design decisions**: D8 (two-phase contract, redaction rule, RUN_ERROR mapping)
   **Dependencies**: 4.6
 
-- [ ] 5.4b Write tests for client disconnect during streaming
+- [x] 5.4b Write tests for client disconnect during streaming
   **Goal**: Use FastAPI TestClient with manually-controlled stream closure (or `httpx.AsyncClient` with `stream=True` followed by early `aclose()`). Assert that the harness's async-generator `aclose()` is called, that no further events are emitted, and that the response handler does not raise.
   **Spec scenarios**: web-server "Client disconnect during streaming cancels the harness"
   **Design decisions**: D13
   **Dependencies**: 4.6
 
-- [ ] 5.4c Write tests for empty harness response (lifecycle-only events)
+- [x] 5.4c Write tests for empty harness response (lifecycle-only events)
   **Spec scenarios**: web-server "Empty harness response emits lifecycle-only events"
   **Dependencies**: 4.6
 
-- [ ] 5.5 Write tests for lifespan single-harness construction at startup
+- [x] 5.5 Write tests for lifespan single-harness construction at startup
   **Spec scenarios**: web-server "Lifespan constructs a single harness at startup"
   **Design decisions**: D3
   **Dependencies**: 1.4
 
-- [ ] 5.6 Write tests for shared harness instance across requests
+- [x] 5.6 Write tests for shared harness instance across requests
   **Spec scenarios**: web-server "All requests share the same harness instance"
   **Design decisions**: D3, D4
   **Dependencies**: 1.4
 
-- [ ] 5.7 Write tests for lifespan rejecting host harnesses
+- [x] 5.7 Write tests for lifespan rejecting host harnesses
   **Spec scenarios**: web-server "Lifespan rejects host harnesses"
   **Dependencies**: 1.4
 
-- [ ] 5.7b Write tests for lifespan rejecting persona with disabled or missing harness config
+- [x] 5.7b Write tests for lifespan rejecting persona with disabled or missing harness config
   **Spec scenarios**: web-server "Lifespan rejects persona with the chosen harness disabled"
   **Dependencies**: 1.4
 
-- [ ] 5.8 Write tests for `/health` endpoint
+- [x] 5.8 Write tests for `/health` endpoint
   **Spec scenarios**: web-server "Health check returns persona, role, harness identity", "Health check does not invoke the harness"
   **Contracts**: contracts/openapi/v1.yaml
   **Dependencies**: 1.4
 
-- [ ] 5.9 Implement `src/assistant/web/app.py` — FastAPI factory `make_app(persona, role, harness_name) -> FastAPI`
+- [x] 5.9 Implement `src/assistant/web/app.py` — FastAPI factory `make_app(persona, role, harness_name) -> FastAPI`
   **Goal**: App factory with lifespan that constructs harness once and stores on `app.state.harness`. Reject host harnesses in lifespan.
   **Dependencies**: 5.5, 5.6, 5.7
 
-- [ ] 5.10 Implement `src/assistant/web/routes.py` — `/chat` (SSE) and `/health` (JSON)
+- [x] 5.10 Implement `src/assistant/web/routes.py` — `/chat` (SSE) and `/health` (JSON)
   **Goal**: `/chat` calls `app.state.harness.astream_invoke(...)`, pipes through `map_harness_to_ag_ui(stream, thread_id=app.state.harness.thread_id)` (passing the bound harness's public `thread_id` attribute keyword-only per the updated mapper signature — the SdkHarnessAdapter base class requires every concrete harness to expose this attribute per the harness-adapter spec "SdkHarnessAdapter exposes a thread_id for transport binding" requirement). Serves as SSE via `sse-starlette`. `/health` returns persona/role/harness identity without touching the harness.
   **Dependencies**: 5.1, 5.2, 5.3, 5.4, 5.8, 5.9, 4.6, 3.6, 3b.7
 
 ## 6. CLI serve Subcommand
 
-- [ ] 6.1 Write tests for `serve` startup binding persona/role
+- [x] 6.1 Write tests for `serve` startup binding persona/role
   **Spec scenarios**: cli-interface "serve binds the supplied persona and role at startup"
   **Dependencies**: 5.9
 
-- [ ] 6.2 Write tests for default host (127.0.0.1)
+- [x] 6.2 Write tests for default host (127.0.0.1)
   **Spec scenarios**: cli-interface "serve defaults host to 127.0.0.1", web-server "Default bind is loopback", "Explicit --host overrides default"
   **Design decisions**: D6 (loopback per privacy default)
   **Dependencies**: 5.9
 
-- [ ] 6.3 Write tests for `default_role` fallback when `-r` omitted
+- [x] 6.3 Write tests for `default_role` fallback when `-r` omitted
   **Spec scenarios**: cli-interface "serve uses persona default_role when -r is omitted"
   **Dependencies**: 5.9
 
-- [ ] 6.4 Write tests for unknown persona handling
+- [x] 6.4 Write tests for unknown persona handling
   **Spec scenarios**: cli-interface "serve rejects unknown personas with non-zero exit"
   **Dependencies**: 5.9
 
-- [ ] 6.5 Write tests for host-harness rejection at CLI boundary
+- [x] 6.5 Write tests for host-harness rejection at CLI boundary
   **Spec scenarios**: cli-interface "serve rejects host harness names"
   **Dependencies**: 5.9
 
-- [ ] 6.6 Write tests for clean Ctrl-C exit (status 0)
+- [x] 6.6 Write tests for clean Ctrl-C exit (status 0)
   **Spec scenarios**: cli-interface "Ctrl-C exits with status 0"
   **Dependencies**: 5.9
 
-- [ ] 6.6b Write tests for persona with no default_role (when -r omitted)
+- [x] 6.6b Write tests for persona with no default_role (when -r omitted)
   **Spec scenarios**: cli-interface "serve rejects persona with no default_role when -r is omitted"
   **Dependencies**: 5.9
 
-- [ ] 6.6c Write tests for unknown harness name handling
+- [x] 6.6c Write tests for unknown harness name handling
   **Spec scenarios**: cli-interface "serve rejects unknown harness names"
   **Dependencies**: 5.9
 
-- [ ] 6.6d Write tests for non-loopback host warning
+- [x] 6.6d Write tests for non-loopback host warning
   **Goal**: Capture stderr while invoking `assistant serve -p personal --host 0.0.0.0` and assert a warning is present before uvicorn starts. The server still starts; the test should verify the warning text + ordering, not refuse-to-start semantics.
   **Spec scenarios**: cli-interface "serve warns when binding to a non-loopback host"
   **Design decisions**: D12
   **Dependencies**: 5.9
 
-- [ ] 6.7 Write tests for `--help` mentioning `serve`
+- [x] 6.7 Write tests for `--help` mentioning `serve`
   **Spec scenarios**: cli-interface "Serve subcommand is registered in the CLI group"
   **Dependencies**: 5.9
 
-- [ ] 6.8 Implement `serve` subcommand in `src/assistant/cli.py`
+- [x] 6.8 Implement `serve` subcommand in `src/assistant/cli.py`
   **Goal**: New click subcommand with `-p`, `-r`, `-H`, `--host`, `--port` options. Calls `make_app(...)` and `uvicorn.run(...)`. Reuses `_load_persona_or_fail` and existing harness/role resolution.
   **Dependencies**: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7
 
