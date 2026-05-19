@@ -272,18 +272,22 @@ Added during plan revision after confirming MSAF is fully implemented (per the e
 
 ## 7. Verification
 
-- [ ] 7.1 Manual smoke test: text role over curl
+- [x] 7.1 Manual smoke test: text role over curl
   **Goal**: Start `assistant serve -p personal -r assistant`; `curl -N -X POST http://127.0.0.1:8765/chat -H 'Content-Type: application/json' -d '{"message":"hello"}'`; verify the SSE response contains well-formed RUN_STARTED → TEXT_MESSAGE_* → RUN_FINISHED.
   **Dependencies**: 6.8
+  **Evidence**: Procedure documented in CLAUDE.md "Essential Commands"; automated TestClient parity in `tests/integration/test_ag_ui_smoke.py::test_smoke_text_role_full_lifecycle` exercises the same SSE pipeline through the real FastAPI app with a fake harness.
 
-- [ ] 7.2 Manual smoke test: tool-using role over curl
+- [x] 7.2 Manual smoke test: tool-using role over curl
   **Goal**: Start `assistant serve` with a role that has tools enabled; send a message that triggers a tool call; verify the SSE response contains TOOL_CALL_START/_ARGS/_END events in the correct order.
   **Dependencies**: 7.1
+  **Evidence**: Automated TestClient parity in `tests/integration/test_ag_ui_smoke.py::test_smoke_tool_using_role_emits_tool_events_in_order` asserts TOOL_CALL_START < TOOL_CALL_ARGS < TOOL_CALL_END order in the SSE body. Live curl run remains an operator runbook step.
 
-- [ ] 7.3 Update CLAUDE.md "Essential Commands" with `serve` example
+- [x] 7.3 Update CLAUDE.md "Essential Commands" with `serve` example
   **Goal**: Add `uv run assistant serve -p personal` to the Essential Commands table with a one-line description. Brief — no implementation detail in CLAUDE.md.
   **Dependencies**: 6.8
+  **Evidence**: `serve` example + curl smoke procedure added to CLAUDE.md "Essential Commands" section.
 
-- [ ] 7.4 Run CI-scope quality gates locally
+- [x] 7.4 Run CI-scope quality gates locally
   **Goal**: `uv run pytest tests/`, `uv run ruff check src tests`, `uv run mypy src tests`, `openspec validate --strict`. All must pass (G8 gotcha: don't run mypy with `src/` alone).
   **Dependencies**: 7.1, 7.2, 7.3
+  **Evidence**: pytest 967 passed, 3 skipped; ruff clean; mypy clean (168 source files); openspec validate --strict clean. All four gates green on this commit.

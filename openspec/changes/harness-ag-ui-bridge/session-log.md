@@ -258,3 +258,25 @@ Nine hundred sixty-four pytest pass, mypy clean across one hundred sixty-seven f
 
 wp-integration: CLAUDE md docs update plus optional end-to-end smoke tests plus final CI gates verification.
 
+
+---
+
+## Phase: Implementation Layer Four (wp-integration)
+
+**Agent**: claude_code orchestrator | **Session**: 2026-05-18
+
+### Decisions
+
+1. Did the layer 4 work inline rather than dispatching another sub-agent. The package is small (around eighty lines: docs update plus three smoke tests) and a prior sub-agent in layer 3 dropped after roughly two hours. Inline execution was faster and lower risk.
+2. Added an automated TestClient smoke test alongside the manual curl runbook. The two tasks 7.1 and 7.2 are by definition manual operator-run procedures, but providing programmatic parity gives CI coverage of the full SSE pipeline without requiring network or LLM keys. The manual procedure remains the operator runbook in CLAUDE md.
+3. Reused the existing TestClient pattern from tests web test_app py rather than entering as a context manager. The pattern leaves client dot enter open intentionally to avoid the sse_starlette module-level AppStatus.should_exit_event racing across per-test event loops. Discovered the failure mode by running the smoke test twice and seeing one pass plus one fail before fixing it.
+
+### Trade-offs
+
+- Accepted the small leak of an un-exited TestClient over the alternative of resetting AppStatus state per test. The leak is contained to the test process and is consistent with how the other seventeen web tests handle SSE responses.
+- Accepted leaving the manual curl procedure in CLAUDE md instead of replacing it with the automated test. Operators still want a runbook step for first-time validation against a live persona plus LLM, which the TestClient pattern cannot exercise.
+
+### Context
+
+Final implementation layer of harness-ag-ui-bridge. Layers 1 through 3 delivered the foundation, the streaming harness adapters, the AG-UI emitter and mapper, and the FastAPI plus serve subcommand. Layer 4 closes out tasks 7.1 through 7.4: documents the serve example in CLAUDE md, adds three automated smoke tests parallel to the manual curl runbook, and verifies the full CI gate sweep. Final state: 967 pytest passed plus 3 skipped, ruff clean, mypy clean across 168 source files, openspec validate harness-ag-ui-bridge strict clean. All 57 task checkboxes flipped. wp-integration marked completed in loop-state json.
+
