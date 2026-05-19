@@ -28,7 +28,6 @@ c. **Module docstring declares outbound-only posture** (req
 
 from __future__ import annotations
 
-import importlib
 import sys
 from typing import Any
 
@@ -156,36 +155,47 @@ _FORBIDDEN_INBOUND = {
 def test_telemetry_imports_do_not_pull_inbound_frameworks() -> None:
     """Loading ``assistant.telemetry`` subtree adds no inbound server framework.
 
-    Snapshots ``sys.modules`` before/after a fresh import of every
-    submodule and asserts no forbidden inbound-server module slipped
-    in. The check uses the post-import set rather than the diff because
-    a forbidden module already loaded by an earlier test would still
-    be a violation if it came in via the telemetry import (we can't
-    tell after the fact). To handle that, we ALSO assert no forbidden
-    name appears in ``sys.modules`` *after* the telemetry imports
-    complete. If another test happens to import fastapi first, this
-    assertion will catch any subsequent telemetry-driven import too.
+    Runs the import + sys.modules check in a SUBPROCESS so the assertion is
+    immune to test-order pollution. (When other tests in the same pytest
+    session import fastapi or starlette, an in-process check would falsely
+    flag them as telemetry-induced.) This subprocess-isolated check still
+    enforces observability.12 strictly: telemetry imports only what telemetry
+    imports.
     """
-    # Force-import every telemetry submodule so we can confidently
-    # assert "the entire subtree imports without inbound frameworks".
-    importlib.import_module("assistant.telemetry")
-    importlib.import_module("assistant.telemetry.config")
-    importlib.import_module("assistant.telemetry.context")
-    importlib.import_module("assistant.telemetry.factory")
-    importlib.import_module("assistant.telemetry.flush_hook")
-    importlib.import_module("assistant.telemetry.sanitize")
-    importlib.import_module("assistant.telemetry.decorators")
-    importlib.import_module("assistant.telemetry.tool_wrap")
-    importlib.import_module("assistant.telemetry.providers.base")
-    importlib.import_module("assistant.telemetry.providers.noop")
-    importlib.import_module("assistant.telemetry.providers.langfuse")
+    import subprocess
 
-    loaded = set(sys.modules.keys())
-    intersect = _FORBIDDEN_INBOUND & loaded
-    assert not intersect, (
+    script = (
+        "import sys, importlib\n"
+        "for mod in ("
+        "'assistant.telemetry',"
+        "'assistant.telemetry.config',"
+        "'assistant.telemetry.context',"
+        "'assistant.telemetry.factory',"
+        "'assistant.telemetry.flush_hook',"
+        "'assistant.telemetry.sanitize',"
+        "'assistant.telemetry.decorators',"
+        "'assistant.telemetry.tool_wrap',"
+        "'assistant.telemetry.providers.base',"
+        "'assistant.telemetry.providers.noop',"
+        "'assistant.telemetry.providers.langfuse',"
+        "):\n"
+        "    importlib.import_module(mod)\n"
+        f"forbidden = {set(_FORBIDDEN_INBOUND)!r}\n"
+        "intersect = forbidden & set(sys.modules.keys())\n"
+        "if intersect:\n"
+        "    print(','.join(sorted(intersect)))\n"
+        "    sys.exit(1)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, (
         f"Telemetry import pulled forbidden inbound framework(s) into "
-        f"sys.modules: {sorted(intersect)}. Per req observability.12, the "
-        "telemetry module is outbound-only — no inbound HTTP/gRPC/webhook "
+        f"sys.modules: {result.stdout.strip()}. Per req observability.12, the "
+        "telemetry module is outbound-only - no inbound HTTP/gRPC/webhook "
         "interfaces."
     )
 
