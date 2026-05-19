@@ -67,7 +67,11 @@ class TextDelta(BaseModel):
 
     kind: Literal["text_delta"] = "text_delta"
     message_id: str = Field(..., min_length=1, description="Stable within one logical message.")
-    text: str = Field(default="", description="Partial chunk; MAY be empty (keepalive).")
+    text: str = Field(
+        default="",
+        max_length=1_048_576,  # 1 MiB per delta — guards against runaway harnesses.
+        description="Partial chunk; MAY be empty (keepalive).",
+    )
 
 
 class ToolCallStart(BaseModel):
@@ -91,7 +95,10 @@ class ToolCallArgs(BaseModel):
 
     kind: Literal["tool_call_args"] = "tool_call_args"
     call_id: str = Field(..., min_length=1)
-    args_chunk: str = Field(default="")
+    args_chunk: str = Field(
+        default="",
+        max_length=1_048_576,  # 1 MiB per chunk — guards against runaway harnesses.
+    )
 
 
 class ToolCallEnd(BaseModel):

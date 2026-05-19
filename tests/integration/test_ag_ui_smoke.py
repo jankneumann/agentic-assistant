@@ -58,9 +58,20 @@ class _FakeHarness:
     def thread_id(self) -> str:
         return self._thread_id
 
-    async def astream_invoke(self, message: str) -> Any:
+    async def create_agent(
+        self, tools: list[Any], extensions: list[Any]
+    ) -> Any:
+        return object()
+
+    async def astream_invoke(
+        self, agent: Any, message: str
+    ) -> Any:
         for evt in self._events:
             yield evt
+
+
+async def _trivial_agent_factory(harness: Any, pc: Any, rc: Any, persona_reg: Any) -> Any:
+    return await harness.create_agent(tools=[], extensions=[])
 
 
 def _make_app(harness: _FakeHarness):
@@ -77,7 +88,10 @@ def _make_app(harness: _FakeHarness):
             name="personal", default_role="coder"
         )
         mock_rr.return_value.load.return_value = MagicMock(name="coder")
-        return make_app("personal", "coder", "deep_agents")
+        return make_app(
+            "personal", "coder", "deep_agents",
+            _agent_factory=_trivial_agent_factory,
+        )
 
 
 def _parse_sse(body: str) -> list[dict]:

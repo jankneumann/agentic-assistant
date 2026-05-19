@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "change_id": "harness-ag-ui-bridge",
-  "current_phase": "IMPLEMENT",
-  "previous_phase": "PLAN_REVIEW",
+  "current_phase": "IMPL_ITERATE",
+  "previous_phase": "IMPLEMENT",
   "iteration": 0,
   "total_iterations": 3,
   "max_phase_iterations": 3,
