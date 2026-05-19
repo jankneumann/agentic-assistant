@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "change_id": "harness-ag-ui-bridge",
-  "current_phase": "VALIDATE",
-  "previous_phase": "IMPL_REVIEW",
+  "current_phase": "SUBMIT_PR",
+  "previous_phase": "VALIDATE",
   "iteration": 0,
   "total_iterations": 3,
   "max_phase_iterations": 3,
@@ -109,6 +109,12 @@
       "to": "VALIDATE",
       "at": "2026-05-19T14:25:00Z",
       "note": "Round 3 (3-vendor): 1 finding total — claude 0, codex 0, gemini 1 (low polish). Trend: 13→7→1. Inline polish landed without round-4 dispatch (max_rounds=3): MSAgentFrameworkHarness.astream_invoke return type AsyncIterator[Any]→AsyncIterator[HarnessEvent], HarnessEvent added to imports, json import moved to top-level. Convergence declared: 0 critical/high/medium across all 3 vendors. Gates: 981 pytest, ruff/mypy/openspec clean. Transitioning to VALIDATE."
+    },
+    {
+      "from": "VALIDATE",
+      "to": "SUBMIT_PR",
+      "at": "2026-05-19T14:40:00Z",
+      "note": "VALIDATE phase PASS (inline-driven, code-only feature). Applicable phases: architecture diagnostics PASS, spec compliance PASS (0 task drift / 57 checked / openspec --strict valid / 22 requirements with full traceability), quality gates PASS (981 pytest / ruff / mypy / openspec clean). Skipped phases (not applicable to library/CLI v1): Deploy (no docker-compose), Smoke (in-process equivalent in tests/integration/test_ag_ui_smoke.py covers 4 scenarios + 1 round-1 regression), Security (loopback-only by D12), E2E (requires paid LLM API key), Log analysis (no live service). CI/CD status deferred to SUBMIT_PR — GitHub Actions fires on PR creation. Artifacts: validation-report.md + architecture-impact.md committed. val_review_enabled=false → skip VAL_REVIEW; transition to SUBMIT_PR."
     }
   ],
   "plan_review_rounds": [
