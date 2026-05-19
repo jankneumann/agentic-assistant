@@ -1,0 +1,59 @@
+{
+  "review_type": "implementation",
+  "target": "cli-dispatch",
+  "reviewer_vendor": "claude_code",
+  "findings": [
+    {
+      "id": 1,
+      "type": "correctness",
+      "axis": "correctness",
+      "criticality": "high",
+      "severity": "high",
+      "description": "Both SDK harnesses use `except BaseException` followed by a `yield RunFinished(error=type(exc).__name__)` from inside the except block (deep_agents.py:198-207, ms_agent_fw.py:330-337 and 387-394). This is a Python async-generator anti-pattern: `BaseException` includes `GeneratorExit`, `asyncio.CancelledError`, `KeyboardInterrupt`, and `SystemExit`. Yielding while handling `GeneratorExit` raises `RuntimeError('asynchronous generator ignored GeneratorExit')`; cancellation paths get mislabeled as 'errors' and propagate a synthesized terminal event the spec did not ask for. The route's IMPL_ITERATE fix #3 (`aclosing(harness.astream_invoke(...))`) drives exactly this finalization path on every client disconnect \u2014 the spec scenario 'Client disconnect during streaming cancels the harness' is the documented trigger. Because the disconnect test (tests/web/test_app.py:328) uses `_make_text_harness()` (a fake that just yields a fixed event list, with no `try/except BaseException` mirror of the real harness), the bug is uncovered by CI. The same gap exists in tests/harnesses/test_deep_agents_astream.py and test_ms_agent_fw_astream.py \u2014 they exercise Phase 1/2 via `_make_error_stream` (a deliberate Exception raise), never via `aclose()`/`GeneratorExit`.",
+      "resolution": "Narrow the catch to `except Exception as exc` in deep_agents.py:198 and ms_agent_fw.py:330 + :387 so GeneratorExit/CancelledError/KeyboardInterrupt/SystemExit propagate without being mis-mapped to a Phase-1 RunFinished(error=...). Optionally add an explicit `except GeneratorExit: raise` ahead of the Exception catch for clarity. Then add one regression test per harness that wraps the real `astream_invoke()` in `contextlib.aclosing()`, consumes one event, and calls `aclose()`; the test must assert (a) no `RuntimeError` propagates and (b) no `RunFinished(error='GeneratorExit')` event is yielded. A second test using `asyncio.CancelledError` (raised from inside the fake agent's `astream_events`) should assert that CancelledError propagates through the harness without first yielding a synthesized RunFinished \u2014 matching the new narrowed-catch contract.",
+      "disposition": "fix",
+      "status": "open",
+      "package_id": "wp-deep-agents-stream,wp-msaf-stream",
+      "evidence_path": "src/assistant/harnesses/sdk/deep_agents.py:198-207, src/assistant/harnesses/sdk/ms_agent_fw.py:328-337, src/assistant/harnesses/sdk/ms_agent_fw.py:387-394, tests/web/test_app.py:328-341, tests/harnesses/test_deep_agents_astream.py, tests/harnesses/test_ms_agent_fw_astream.py"
+    },
+    {
+      "id": 2,
+      "type": "test_quality",
+      "axis": "test_quality",
+      "criticality": "medium",
+      "severity": "medium",
+      "description": "tests/cli/test_serve.py::test_serve_uses_default_role_when_r_omitted asserts `make_app_calls[0]['role'] in ('chief_of_staff', 'assistant')` \u2014 accepting either of two unrelated values. This is a tautological assertion: it does not verify the `serve` command actually pulled `default_role` off the persona config, only that the value is one of two strings. If the fallback logic in cli.py:327-332 ever regressed to e.g. hard-coding 'assistant' or reading a wrong attribute, the test would still pass. The test should look up the fixture persona's actual `default_role` value (or, better, monkeypatch the loaded PersonaConfig to set a sentinel default_role like 'sentinel-default-role-xyz' and assert exact equality) so the fallback path is genuinely exercised.",
+      "resolution": "Rewrite the test to inject a known sentinel default_role through the existing `_load_persona_or_fail` patch pattern used by `test_serve_no_default_role_persona_without_r` (tests/cli/test_serve.py:235-247). Set `pc.default_role = 'sentinel-default-role'` on the mocked PersonaConfig and assert `make_app_calls[0]['role'] == 'sentinel-default-role'`. This proves the default-role fallback is wired correctly and is robust to fixture churn.",
+      "disposition": "fix",
+      "status": "open",
+      "package_id": "wp-web-cli",
+      "evidence_path": "tests/cli/test_serve.py:143-163"
+    },
+    {
+      "id": 3,
+      "type": "architecture",
+      "axis": "architecture",
+      "criticality": "low",
+      "severity": "low",
+      "description": "`assistant serve` constructs the harness twice. cli.py:341 calls `_create_harness(pc, rc, harness)` to validate the harness type (host-vs-SDK rejection on lines 345-351), then make_app() at cli.py:361 internally calls `create_harness(pc, rc, harness_name)` again at app.py:123. The first instance is discarded immediately. For deep_agents this is harmless; for harnesses with non-trivial __init__ side effects (e.g. seeding ChatClient credentials, opening a checkpointer) it doubles the cost and could surface ordering surprises if a future harness logs at construction time. The same host-vs-SDK rejection is enforced inside make_app (app.py:124-128), so the CLI-side rejection is redundant.",
+      "resolution": "Either (a) remove the CLI-side `_create_harness` validation entirely and rely on make_app's own host-rejection (`isinstance(harness, HostHarnessAdapter)`) \u2014 `make_app()` already raises `ValueError` with the same message; or (b) extend make_app to accept an optional pre-built harness (`make_app(..., _harness: HarnessAdapter | None = None)`) and pass the CLI's already-constructed instance through, mirroring the `_agent_factory` test-injection pattern. Option (a) is the smaller change and keeps the construction flow in one place.",
+      "disposition": "accept",
+      "status": "open",
+      "package_id": "wp-web-cli",
+      "evidence_path": "src/assistant/cli.py:340-362, src/assistant/web/app.py:117-128"
+    },
+    {
+      "id": 4,
+      "type": "security",
+      "axis": "security",
+      "criticality": "low",
+      "severity": "low",
+      "description": "The non-loopback warning in cli.py:353 uses `if host != '127.0.0.1' and not host.startswith('127.')`. This misses two common loopback spellings: `::1` (IPv6 loopback \u2014 fires a 'binding to non-loopback host' warning even though `::1` IS loopback) and `localhost` (resolves to loopback on every default-configured host). The false positive on `::1` is the more interesting case: an operator binding `--host ::1` for IPv6-only is told they are exposing the server, which is wrong and may push them to weaker bindings. Conversely `localhost` triggering the warning is technically correct on locked-down hosts where `/etc/hosts` maps localhost to a non-loopback address, but the same warning will fire on every standard machine where it shouldn't.",
+      "resolution": "Replace the substring check with an allowlist plus `ipaddress.ip_address(host).is_loopback` lookup (wrapped in try/except for non-IP hosts like 'localhost'): treat `host` as loopback if it is exactly 'localhost' OR if `ipaddress.ip_address(host).is_loopback` returns True. Only warn otherwise. Keep the warning text the same.",
+      "disposition": "accept",
+      "status": "open",
+      "package_id": "wp-web-cli",
+      "evidence_path": "src/assistant/cli.py:353-358"
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "review_type": "implementation",
+  "target": "cli-dispatch",
+  "reviewer_vendor": "gemini",
+  "findings": [
+    {
+      "id": "critical-missing-role-text-start",
+      "type": "correctness",
+      "criticality": "critical",
+      "axis": "contract",
+      "description": "The AG-UI mapper fails to include the mandatory 'role' field when yielding TextMessageStartEvent.",
+      "disposition": "fix",
+      "severity": "critical",
+      "resolution": "In `src/assistant/transports/ag_ui/mapper.py`, update the `TextMessageStartEvent` yield to include `role='assistant'`. Per the `ag-ui-events.schema.json` and the AG-UI protocol v0.x contract, the `role` field is required and must be 'assistant' for assistant-originated text streams."
+    },
+    {
+      "id": "high-tool-call-id-mismatch",
+      "type": "correctness",
+      "criticality": "high",
+      "axis": "correctness",
+      "description": "Harnesses synthesize different UUIDs for ToolCallStart and ToolCallEnd when the upstream SDK ID is missing, breaking call bracketing.",
+      "disposition": "fix",
+      "severity": "high",
+      "resolution": "In both `src/assistant/harnesses/sdk/deep_agents.py` and `src/assistant/harnesses/sdk/ms_agent_fw.py`, ensure that if a fallback `call_id` must be synthesized, it is stable across the tool's lifecycle. However, since these IDs should be provided by the SDKs, the harnesses should prioritize using the SDK-provided ID and potentially log a warning or raise if it is missing, rather than generating a fresh UUID at every event stage (start/args/end) which guarantees a mismatch."
+    },
+    {
+      "id": "medium-tool-args-size-limit",
+      "type": "correctness",
+      "criticality": "medium",
+      "axis": "contract",
+      "description": "Harnesses serialize tool arguments into a single ToolCallArgs event without checking the 1MB limit defined in the HarnessEvent schema.",
+      "disposition": "fix",
+      "severity": "medium",
+      "resolution": "In `src/assistant/harnesses/sdk/deep_agents.py` and `src/assistant/harnesses/sdk/ms_agent_fw.py`, check the length of the serialized JSON arguments. If it exceeds a safe threshold (e.g., 512 KB), chunk the payload into multiple `ToolCallArgs` events to ensure no single event exceeds the 1 MiB limit defined in `events.py` and the schema."
+    },
+    {
+      "id": "medium-interleaved-tool-calls",
+      "type": "correctness",
+      "criticality": "medium",
+      "axis": "contract",
+      "description": "The AG-UI mapper does not close open text messages when a tool call starts, leading to interleaved protocol events that may confuse some clients.",
+      "disposition": "fix",
+      "severity": "medium",
+      "resolution": "In `src/assistant/transports/ag_ui/mapper.py`, update the `ToolCallStart` branch to also call `async for close_evt in _close_message(): yield close_evt` before yielding the `ToolCallStartEvent`. This ensures that any preceding text message is explicitly closed before a tool invocation begins."
+    },
+    {
+      "id": "medium-thread-id-instability",
+      "type": "correctness",
+      "criticality": "medium",
+      "axis": "contract",
+      "description": "DeepAgentsHarness overwrites its thread_id in create_agent, violating the stability requirement for the adapter's lifetime.",
+      "disposition": "fix",
+      "severity": "medium",
+      "resolution": "In `src/assistant/harnesses/sdk/deep_agents.py`, remove the `self._thread_id = str(uuid4())` assignment from the `create_agent` method. The `thread_id` should be initialized once in `__init__` (as it already is) and remain stable for the lifetime of the harness instance, as required by the `SdkHarnessAdapter` contract and property documentation."
+    },
+    {
+      "id": "low-traced-harness-generator-exit",
+      "type": "observability",
+      "criticality": "low",
+      "axis": "observability",
+      "description": "The @traced_harness decorator records GeneratorExit (client disconnect) as an error in the LLM trace metadata.",
+      "disposition": "fix",
+      "severity": "low",
+      "resolution": "In `src/assistant/telemetry/decorators.py`, update the `except BaseException as exc` block in `async_gen_wrapper` to check if `exc` is an instance of `GeneratorExit`. If it is, record the span with a specific 'outcome' or 'cancelled' metadata rather than labeling it as a generic 'error' in `trace_llm_call`."
+    }
+  ]
+}

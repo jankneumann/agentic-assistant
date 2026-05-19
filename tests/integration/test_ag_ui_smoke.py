@@ -70,7 +70,13 @@ class _FakeHarness:
             yield evt
 
 
-async def _trivial_agent_factory(harness: Any, pc: Any, rc: Any, persona_reg: Any) -> Any:
+async def _trivial_agent_factory(
+    harness: Any,
+    pc: Any,
+    rc: Any,
+    persona_reg: Any,
+    http_client: Any = None,
+) -> Any:
     return await harness.create_agent(tools=[], extensions=[])
 
 
@@ -183,3 +189,68 @@ def test_smoke_health_endpoint() -> None:
     assert body["persona"] == "personal"
     assert body["role"] == "coder"
     assert body["harness"] == "deep_agents"
+
+
+# ---------------------------------------------------------------------------
+# IMPL_REVIEW round-1 regression — codex #1: SSE payloads MUST be camelCase
+# ---------------------------------------------------------------------------
+
+
+def test_sse_payloads_use_ag_ui_camelcase_aliases() -> None:
+    """SSE event payloads MUST serialize with AG-UI camelCase aliases.
+
+    Regression for IMPL_REVIEW round-1 codex #1: pre-fix, routes.py called
+    ``evt.model_dump_json()`` with no kwargs. Pydantic emitted ``thread_id``
+    / ``run_id`` / ``message_id`` (snake_case) plus null upstream fields,
+    breaking the ag-ui-events.schema.json contract which requires
+    ``threadId`` / ``runId`` / ``messageId`` (camelCase) and
+    ``additionalProperties=false``. After the fix the routes use
+    ``by_alias=True, exclude_none=True``.
+    """
+    run_id = str(uuid4())
+    msg_id = str(uuid4())
+    events = [
+        RunStarted(run_id=run_id, started_at=_now_iso()),
+        TextDelta(message_id=msg_id, text="Hello"),
+        RunFinished(run_id=run_id, finished_at=_now_iso()),
+    ]
+    harness = _FakeHarness(events)
+    app = _make_app(harness)
+    client = TestClient(app, raise_server_exceptions=False)
+    client.__enter__()
+    resp = client.post("/chat", json={"message": "hello"})
+    assert resp.status_code == 200
+
+    parsed = _parse_sse(resp.text)
+    assert parsed, f"expected SSE events; got {resp.text!r}"
+
+    # Find RUN_STARTED and assert camelCase keys are present (and snake_case absent).
+    run_started = next(e for e in parsed if e.get("type") == "RUN_STARTED")
+    assert "threadId" in run_started, (
+        f"RUN_STARTED must use camelCase 'threadId'; got {list(run_started.keys())}"
+    )
+    assert "runId" in run_started, (
+        f"RUN_STARTED must use camelCase 'runId'; got {list(run_started.keys())}"
+    )
+    assert "thread_id" not in run_started, (
+        "snake_case 'thread_id' must not leak into SSE payload"
+    )
+    assert "run_id" not in run_started, (
+        "snake_case 'run_id' must not leak into SSE payload"
+    )
+
+    # No null fields anywhere (exclude_none=True).
+    for evt in parsed:
+        null_keys = [k for k, v in evt.items() if v is None]
+        assert not null_keys, (
+            f"Event {evt.get('type')} leaks null fields {null_keys} "
+            f"— exclude_none=True is required for AG-UI contract conformance"
+        )
+
+    # TEXT_MESSAGE_START must carry messageId AND role='assistant'
+    # (gemini #1 — role is required by the AG-UI protocol).
+    text_start = next(e for e in parsed if e.get("type") == "TEXT_MESSAGE_START")
+    assert text_start.get("messageId") == msg_id
+    assert text_start.get("role") == "assistant", (
+        f"TEXT_MESSAGE_START must include role='assistant'; got {text_start!r}"
+    )

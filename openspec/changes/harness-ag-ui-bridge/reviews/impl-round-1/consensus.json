@@ -1,0 +1,199 @@
+{
+  "schema_version": 1,
+  "review_type": "implementation",
+  "target": "harness-ag-ui-bridge",
+  "reviewers": [
+    {
+      "vendor": "claude_code",
+      "agent_id": "claude_code",
+      "success": true,
+      "findings_count": 4,
+      "elapsed_seconds": 0.0,
+      "error": null
+    },
+    {
+      "vendor": "codex",
+      "agent_id": "codex",
+      "success": true,
+      "findings_count": 3,
+      "elapsed_seconds": 0.0,
+      "error": null
+    },
+    {
+      "vendor": "gemini",
+      "agent_id": "gemini",
+      "success": true,
+      "findings_count": 6,
+      "elapsed_seconds": 0.0,
+      "error": null
+    }
+  ],
+  "quorum_met": true,
+  "quorum_requested": 3,
+  "quorum_received": 3,
+  "consensus_findings": [
+    {
+      "id": 1,
+      "status": "unconfirmed",
+      "primary_vendor": "codex",
+      "primary_finding_id": 1,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "contract_mismatch",
+      "agreed_criticality": "critical",
+      "recommended_disposition": "accept",
+      "description": "The /chat SSE payloads are serialized with Pydantic's default field names and include null upstream AG-UI fields, so they do not validate against contracts/events/ag-ui-events.schema.json. src/assistant/web/routes.py:47 and :58 call model_dump_json() without by_alias=True or exclude_none=True; a RunStartedEvent serializes as thread_id/run_id plus timestamp/raw_event/parent_run_id/input null fields, while the contract requires threadId/runId and additionalProperties=false. Existing web and smoke tests only assert the type field, so this contract break is not caught."
+    },
+    {
+      "id": 2,
+      "status": "unconfirmed",
+      "primary_vendor": "codex",
+      "primary_finding_id": 2,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "correctness",
+      "agreed_criticality": "critical",
+      "recommended_disposition": "accept",
+      "description": "The production web agent factory closes the httpx.AsyncClient that discovered HTTP tools before the agent can use those tools. discover_tools explicitly documents that returned tools close over the caller-owned client and require it to live as long as the registry, but src/assistant/web/app.py:69-75 creates the client inside an async with and then passes closed-client tools into harness.create_agent. Any /chat turn that invokes a discovered HTTP tool will fail at runtime with a closed client."
+    },
+    {
+      "id": 3,
+      "status": "unconfirmed",
+      "primary_vendor": "gemini",
+      "primary_finding_id": "critical-missing-role-text-start",
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "correctness",
+      "agreed_criticality": "critical",
+      "recommended_disposition": "accept",
+      "description": "The AG-UI mapper fails to include the mandatory 'role' field when yielding TextMessageStartEvent."
+    },
+    {
+      "id": 4,
+      "status": "unconfirmed",
+      "primary_vendor": "claude_code",
+      "primary_finding_id": 1,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "correctness",
+      "agreed_criticality": "high",
+      "recommended_disposition": "accept",
+      "description": "Both SDK harnesses use `except BaseException` followed by a `yield RunFinished(error=type(exc).__name__)` from inside the except block (deep_agents.py:198-207, ms_agent_fw.py:330-337 and 387-394). This is a Python async-generator anti-pattern: `BaseException` includes `GeneratorExit`, `asyncio.CancelledError`, `KeyboardInterrupt`, and `SystemExit`. Yielding while handling `GeneratorExit` raises `RuntimeError('asynchronous generator ignored GeneratorExit')`; cancellation paths get mislabeled as 'errors' and propagate a synthesized terminal event the spec did not ask for. The route's IMPL_ITERATE fix #3 (`aclosing(harness.astream_invoke(...))`) drives exactly this finalization path on every client disconnect \u2014 the spec scenario 'Client disconnect during streaming cancels the harness' is the documented trigger. Because the disconnect test (tests/web/test_app.py:328) uses `_make_text_harness()` (a fake that just yields a fixed event list, with no `try/except BaseException` mirror of the real harness), the bug is uncovered by CI. The same gap exists in tests/harnesses/test_deep_agents_astream.py and test_ms_agent_fw_astream.py \u2014 they exercise Phase 1/2 via `_make_error_stream` (a deliberate Exception raise), never via `aclose()`/`GeneratorExit`."
+    },
+    {
+      "id": 5,
+      "status": "unconfirmed",
+      "primary_vendor": "codex",
+      "primary_finding_id": 3,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "resilience",
+      "agreed_criticality": "high",
+      "recommended_disposition": "accept",
+      "description": "The client-disconnect cleanup is still incomplete because @traced_harness wraps astream_invoke in a second async generator that does not close the inner harness generator when the wrapper is aclose()d. routes.py correctly uses contextlib.aclosing on harness.astream_invoke(...), but that closes only the traced wrapper; decorators.py:246-248 iterates the inner fn(...) generator without aclosing/finally, so a mid-stream disconnect can leave the underlying LangGraph or MSAF stream unclosed."
+    },
+    {
+      "id": 6,
+      "status": "unconfirmed",
+      "primary_vendor": "gemini",
+      "primary_finding_id": "high-tool-call-id-mismatch",
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "correctness",
+      "agreed_criticality": "high",
+      "recommended_disposition": "accept",
+      "description": "Harnesses synthesize different UUIDs for ToolCallStart and ToolCallEnd when the upstream SDK ID is missing, breaking call bracketing."
+    },
+    {
+      "id": 7,
+      "status": "unconfirmed",
+      "primary_vendor": "claude_code",
+      "primary_finding_id": 2,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "test_quality",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "tests/cli/test_serve.py::test_serve_uses_default_role_when_r_omitted asserts `make_app_calls[0]['role'] in ('chief_of_staff', 'assistant')` \u2014 accepting either of two unrelated values. This is a tautological assertion: it does not verify the `serve` command actually pulled `default_role` off the persona config, only that the value is one of two strings. If the fallback logic in cli.py:327-332 ever regressed to e.g. hard-coding 'assistant' or reading a wrong attribute, the test would still pass. The test should look up the fixture persona's actual `default_role` value (or, better, monkeypatch the loaded PersonaConfig to set a sentinel default_role like 'sentinel-default-role-xyz' and assert exact equality) so the fallback path is genuinely exercised."
+    },
+    {
+      "id": 8,
+      "status": "unconfirmed",
+      "primary_vendor": "gemini",
+      "primary_finding_id": "medium-tool-args-size-limit",
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "correctness",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "Harnesses serialize tool arguments into a single ToolCallArgs event without checking the 1MB limit defined in the HarnessEvent schema."
+    },
+    {
+      "id": 9,
+      "status": "unconfirmed",
+      "primary_vendor": "gemini",
+      "primary_finding_id": "medium-interleaved-tool-calls",
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "correctness",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "The AG-UI mapper does not close open text messages when a tool call starts, leading to interleaved protocol events that may confuse some clients."
+    },
+    {
+      "id": 10,
+      "status": "unconfirmed",
+      "primary_vendor": "gemini",
+      "primary_finding_id": "medium-thread-id-instability",
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "correctness",
+      "agreed_criticality": "medium",
+      "recommended_disposition": "accept",
+      "description": "DeepAgentsHarness overwrites its thread_id in create_agent, violating the stability requirement for the adapter's lifetime."
+    },
+    {
+      "id": 11,
+      "status": "unconfirmed",
+      "primary_vendor": "claude_code",
+      "primary_finding_id": 3,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "architecture",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "`assistant serve` constructs the harness twice. cli.py:341 calls `_create_harness(pc, rc, harness)` to validate the harness type (host-vs-SDK rejection on lines 345-351), then make_app() at cli.py:361 internally calls `create_harness(pc, rc, harness_name)` again at app.py:123. The first instance is discarded immediately. For deep_agents this is harmless; for harnesses with non-trivial __init__ side effects (e.g. seeding ChatClient credentials, opening a checkpointer) it doubles the cost and could surface ordering surprises if a future harness logs at construction time. The same host-vs-SDK rejection is enforced inside make_app (app.py:124-128), so the CLI-side rejection is redundant."
+    },
+    {
+      "id": 12,
+      "status": "unconfirmed",
+      "primary_vendor": "claude_code",
+      "primary_finding_id": 4,
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "security",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "The non-loopback warning in cli.py:353 uses `if host != '127.0.0.1' and not host.startswith('127.')`. This misses two common loopback spellings: `::1` (IPv6 loopback \u2014 fires a 'binding to non-loopback host' warning even though `::1` IS loopback) and `localhost` (resolves to loopback on every default-configured host). The false positive on `::1` is the more interesting case: an operator binding `--host ::1` for IPv6-only is told they are exposing the server, which is wrong and may push them to weaker bindings. Conversely `localhost` triggering the warning is technically correct on locked-down hosts where `/etc/hosts` maps localhost to a non-loopback address, but the same warning will fire on every standard machine where it shouldn't."
+    },
+    {
+      "id": 13,
+      "status": "unconfirmed",
+      "primary_vendor": "gemini",
+      "primary_finding_id": "low-traced-harness-generator-exit",
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "observability",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "The @traced_harness decorator records GeneratorExit (client disconnect) as an error in the LLM trace metadata."
+    }
+  ],
+  "summary": {
+    "total_unique_findings": 13,
+    "confirmed_count": 0,
+    "unconfirmed_count": 13,
+    "disagreement_count": 0,
+    "blocking_count": 0
+  }
+}

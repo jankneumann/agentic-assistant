@@ -41,12 +41,11 @@ class DeepAgentsHarness(SdkHarnessAdapter):
     def __init__(self, persona: PersonaConfig, role: RoleConfig) -> None:
         super().__init__(persona, role)
         self._active_model: str = self._DEFAULT_MODEL
-        # Synthesize a UUID at construction time so ``thread_id`` is
-        # non-empty from the moment the harness is instantiated (spec:
-        # "thread_id must be stable for the lifetime of the adapter instance").
-        # ``create_agent`` overwrites this with a fresh UUID so each
-        # agent-build starts a new conversation thread.  ``/role <new>``
-        # rebuilds the harness entirely, which also gives a fresh thread.
+        # Synthesize a UUID at construction so ``thread_id`` is non-empty
+        # and STABLE for the lifetime of this adapter instance (spec:
+        # "thread_id must persist for the lifetime of the adapter instance
+        # across multiple invoke / astream_invoke calls"). ``create_agent``
+        # MUST NOT reassign this — IMPL_REVIEW round-1 gemini #5.
         self._thread_id: str = str(uuid4())
 
     def name(self) -> str:
@@ -56,10 +55,10 @@ class DeepAgentsHarness(SdkHarnessAdapter):
     def thread_id(self) -> str:
         """Stable conversation-thread identifier for this adapter instance.
 
-        Returns ``self._thread_id``, which is set at construction time to a
-        synthetic UUID and overwritten at ``create_agent`` time so the same
-        value is used for every ``invoke`` and ``astream_invoke`` call during
-        the lifetime of this harness instance (per spec D4 / D3).
+        Synthesized once at ``__init__`` and never reassigned for the
+        lifetime of this harness instance — the same value is used for every
+        ``invoke`` and ``astream_invoke`` call so prior turns remain visible
+        to the model via the InMemorySaver checkpointer (spec D4 / D3).
         """
         return self._thread_id
 
@@ -82,8 +81,6 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         skills_dirs: list[str] = ["./src/assistant/skills"]
         if self.role.skills_dir:
             skills_dirs.append(self.role.skills_dir)
-
-        self._thread_id = str(uuid4())
 
         return create_deep_agent(
             model=init_chat_model(model_id),
@@ -142,6 +139,13 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         for observability and re-raises so the mapper layer can absorb it.
         """
         run_id = str(uuid4())
+        # Per-stream mapping from LangGraph upstream run_id → our call_id.
+        # Lets on_tool_end correlate with the call_id we emitted on the
+        # matching on_tool_start, including when the upstream run_id is
+        # empty for both events (then on_tool_start's synthesized UUID is
+        # not stored but the upstream-consistent path still works for the
+        # vast majority of LangGraph emissions). IMPL_REVIEW round-1 gemini #2.
+        open_tool_calls: dict[str, str] = {}
         yield RunStarted(
             run_id=run_id,
             started_at=datetime.now(UTC).isoformat(),
@@ -182,6 +186,9 @@ class DeepAgentsHarness(SdkHarnessAdapter):
 
                 elif event_name == "on_tool_start":
                     call_id = tool_run_id or str(uuid4())
+                    if tool_run_id:
+                        # Remember the call_id so on_tool_end can correlate.
+                        open_tool_calls[tool_run_id] = call_id
                     yield ToolCallStart(call_id=call_id, tool_name=tool_name)
                     # Serialize input args as a single JSON chunk per ToolCallArgs.
                     tool_input = data.get("input") or {}
@@ -191,13 +198,29 @@ class DeepAgentsHarness(SdkHarnessAdapter):
                     )
 
                 elif event_name == "on_tool_end":
-                    call_id = tool_run_id or str(uuid4())
+                    # Look up the start's call_id; fall back to a fresh
+                    # UUID only if the upstream run_id was missing on both
+                    # start AND end (a degenerate LangGraph emission).
+                    if tool_run_id and tool_run_id in open_tool_calls:
+                        call_id = open_tool_calls.pop(tool_run_id)
+                    else:
+                        call_id = str(uuid4())
                     output = data.get("output")
                     yield ToolCallEnd(call_id=call_id, result=output)
 
-        except BaseException as exc:
+        except GeneratorExit:
+            # Client disconnected mid-stream. Propagate unchanged so async
+            # generator finalization (PEP 525) is honored. DO NOT synthesize
+            # a terminal RunFinished here — yielding while handling
+            # GeneratorExit raises RuntimeError per Python's generator
+            # contract. IMPL_REVIEW round-1 claude #1.
+            raise
+        except Exception as exc:
             # Phase 1: yield terminal RunFinished with error class name only
-            # (D8 redaction rule — no message body, no traceback).
+            # (D8 redaction rule — no message body, no traceback). Catches
+            # Exception (NOT BaseException) so GeneratorExit / CancelledError
+            # / KeyboardInterrupt / SystemExit propagate without being
+            # mis-mapped to a Phase-1 RunFinished(error=...).
             yield RunFinished(
                 run_id=run_id,
                 finished_at=datetime.now(UTC).isoformat(),

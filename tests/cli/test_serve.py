@@ -141,7 +141,12 @@ def test_serve_defaults_host_to_loopback():
 
 
 def test_serve_uses_default_role_when_r_omitted():
-    """`serve` must fall back to persona.default_role when -r is not supplied."""
+    """`serve` must fall back to persona.default_role when -r is not supplied.
+
+    Injects a sentinel default_role on a mocked PersonaConfig so the test
+    proves the exact value was propagated to make_app() rather than just
+    accepting "any non-None role" (IMPL_REVIEW round-1 claude #2).
+    """
     make_app_calls: list = []
 
     def fake_make_app(persona, role, harness_name):
@@ -150,17 +155,26 @@ def test_serve_uses_default_role_when_r_omitted():
 
     runner = CliRunner()
     with (
+        patch("assistant.cli._load_persona_or_fail") as mock_load,
+        patch("assistant.cli.RoleRegistry") as mock_role_reg_cls,
         patch("assistant.cli._create_harness", side_effect=_fake_sdk_harness),
         patch("assistant.web.app.make_app", side_effect=fake_make_app),
         patch("uvicorn.run") as mock_uv_run,
     ):
+        pc = MagicMock()
+        pc.default_role = "sentinel-default-role"
+        mock_load.return_value = pc
+        # Accept the sentinel as a valid role name so the test exercises
+        # the default-role fallback path independently of the on-disk
+        # role registry.
+        mock_role_reg_cls.return_value.load.return_value = MagicMock(
+            name="sentinel-default-role",
+        )
         mock_uv_run.return_value = None
-        # The fixture persona has default_role=chief_of_staff
         result = runner.invoke(main, ["serve", "-p", "personal"], catch_exceptions=False)
 
     assert result.exit_code == 0, result.output
-    # Role should be the persona's default_role value
-    assert make_app_calls[0]["role"] in ("chief_of_staff", "assistant")
+    assert make_app_calls[0]["role"] == "sentinel-default-role"
 
 
 # ---------------------------------------------------------------------------

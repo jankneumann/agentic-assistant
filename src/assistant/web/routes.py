@@ -44,7 +44,12 @@ def register_routes(app: FastAPI) -> None:
                     async for evt in map_harness_to_ag_ui(
                         hs, thread_id=harness.thread_id
                     ):
-                        yield evt.model_dump_json()
+                        # by_alias + exclude_none keeps the SSE payloads in
+                        # the AG-UI camelCase shape (threadId, runId,
+                        # messageId, toolCallId) and drops null upstream
+                        # fields the contract schema declares as
+                        # additionalProperties=false.
+                        yield evt.model_dump_json(by_alias=True, exclude_none=True)
                 except Exception as exc:
                     # The mapper only propagates exceptions when the harness
                     # raised WITHOUT yielding a Phase-1 terminal
@@ -55,7 +60,7 @@ def register_routes(app: FastAPI) -> None:
                     # harnesses. Class-name only per D8 redaction rule.
                     cls_name = type(exc).__name__
                     err = RunErrorEvent(message=cls_name, code=cls_name)
-                    yield err.model_dump_json()
+                    yield err.model_dump_json(by_alias=True, exclude_none=True)
 
         # Cache-Control + X-Accel-Buffering prevent reverse-proxy buffering
         # (nginx default-buffers SSE bodies which breaks real-time delivery).

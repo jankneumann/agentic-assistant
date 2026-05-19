@@ -320,6 +320,12 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         """
         run_id = str(uuid.uuid4())
         message_id = str(uuid.uuid4())
+        # Track the most-recent missing-id start so a subsequent missing-id
+        # function_result can correlate with it (best-effort for sequential
+        # tool calls). When the SDK supplies call_id on both sides the
+        # pending slot is irrelevant — the SDK value is authoritative.
+        # IMPL_REVIEW round-1 gemini #2.
+        pending_orphan_call_id: str | None = None
         started_at = datetime.now(UTC).isoformat()
         yield RunStarted(run_id=run_id, started_at=started_at)
 
@@ -327,7 +333,10 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         # The call itself is synchronous (not awaitable) when stream=True.
         try:
             response_stream = agent.run(message, stream=True)
-        except BaseException as exc:
+        except GeneratorExit:
+            # Client disconnected before stream construction. Propagate.
+            raise
+        except Exception as exc:
             finished_at = datetime.now(UTC).isoformat()
             yield RunFinished(
                 run_id=run_id,
@@ -361,6 +370,11 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
                         # ToolCallStart — name is the tool name
                         tool_name = getattr(content_item, "name", None) or "unknown"
                         effective_call_id = call_id or str(uuid.uuid4())
+                        if not call_id:
+                            # SDK omitted call_id — record the synthesized
+                            # UUID so a missing-id function_result can pair
+                            # with this start.
+                            pending_orphan_call_id = effective_call_id
                         yield ToolCallStart(
                             call_id=effective_call_id, tool_name=tool_name
                         )
@@ -379,12 +393,29 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
                             )
 
                     elif item_type == "function_result":
-                        # ToolCallEnd — carries the result
-                        effective_call_id = call_id or str(uuid.uuid4())
+                        # SDK-provided call_id is authoritative; we use it
+                        # directly. Only fall back to the pending orphan slot
+                        # (a synthesized UUID stashed by a prior missing-id
+                        # start) when the SDK omitted call_id here. Last
+                        # resort: fresh UUID — bracket lost, the scenario
+                        # violates the SDK contract.
+                        if call_id:
+                            effective_call_id = call_id
+                        elif pending_orphan_call_id is not None:
+                            effective_call_id = pending_orphan_call_id
+                            pending_orphan_call_id = None
+                        else:
+                            effective_call_id = str(uuid.uuid4())
                         result = getattr(content_item, "result", None)
                         yield ToolCallEnd(call_id=effective_call_id, result=result)
 
-        except BaseException as exc:
+        except GeneratorExit:
+            # Client disconnected mid-stream. Propagate unchanged so async
+            # generator finalization (PEP 525) is honored. DO NOT yield
+            # while handling GeneratorExit — Python raises RuntimeError.
+            # IMPL_REVIEW round-1 claude #1.
+            raise
+        except Exception as exc:
             finished_at = datetime.now(UTC).isoformat()
             yield RunFinished(
                 run_id=run_id,
