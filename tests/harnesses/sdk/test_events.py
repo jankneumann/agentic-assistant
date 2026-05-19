@@ -245,3 +245,34 @@ def test_harness_event_union_tool_call_end_parse() -> None:
     adapter: TypeAdapter[HarnessEvent] = TypeAdapter(HarnessEvent)
     ev = adapter.validate_python({"kind": "tool_call_end", "call_id": "c-001"})
     assert isinstance(ev, ToolCallEnd)
+
+
+# ---------------------------------------------------------------------------
+# IMPL_ITERATE robustness: defensive max_length on streaming fields.
+# ---------------------------------------------------------------------------
+
+_ONE_MIB = 1_048_576
+
+
+def test_text_delta_accepts_one_mib_text() -> None:
+    """TextDelta.text MUST accept exactly 1 MiB — the documented upper bound."""
+    ev = TextDelta(message_id="m-1", text="x" * _ONE_MIB)
+    assert len(ev.text) == _ONE_MIB
+
+
+def test_text_delta_rejects_text_over_one_mib() -> None:
+    """TextDelta.text > 1 MiB MUST be rejected (guards against runaway harnesses)."""
+    with pytest.raises(ValidationError):
+        TextDelta(message_id="m-1", text="x" * (_ONE_MIB + 1))
+
+
+def test_tool_call_args_accepts_one_mib_chunk() -> None:
+    """ToolCallArgs.args_chunk MUST accept exactly 1 MiB."""
+    ev = ToolCallArgs(call_id="c-1", args_chunk="x" * _ONE_MIB)
+    assert len(ev.args_chunk) == _ONE_MIB
+
+
+def test_tool_call_args_rejects_chunk_over_one_mib() -> None:
+    """ToolCallArgs.args_chunk > 1 MiB MUST be rejected."""
+    with pytest.raises(ValidationError):
+        ToolCallArgs(call_id="c-1", args_chunk="x" * (_ONE_MIB + 1))

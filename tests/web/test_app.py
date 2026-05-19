@@ -74,7 +74,16 @@ class _FakeHarness:
     def thread_id(self) -> str:
         return self._thread_id
 
-    async def astream_invoke(self, message: str) -> AsyncIterator[Any]:
+    async def create_agent(
+        self, tools: list[Any], extensions: list[Any]
+    ) -> Any:
+        # Tests don't exercise the agent's behavior — return a sentinel
+        # that astream_invoke ignores.
+        return object()
+
+    async def astream_invoke(
+        self, agent: Any, message: str
+    ) -> AsyncIterator[Any]:
         self.astream_invoke_call_count += 1
         for evt in self._events:
             yield evt
@@ -109,14 +118,24 @@ def _make_error_harness() -> _FakeHarness:
     return harness
 
 
-def _make_app_with_harness(harness: _FakeHarness, harness_name: str = "deep_agents"):
-    """Build a make_app() result but inject a pre-built harness instead of
-    constructing one via the factory.  Used to avoid persona/role plumbing
-    in unit tests.
+async def _trivial_agent_factory(harness: Any, pc: Any, rc: Any, persona_reg: Any) -> Any:
+    """Test-only agent factory: bypasses tool discovery / capability resolution
+    and just calls ``harness.create_agent([], [])`` on the fake.
+
+    Production code uses the default factory in ``assistant.web.app``.
+    """
+    return await harness.create_agent(tools=[], extensions=[])
+
+
+def _make_app_with_harness(harness: Any, harness_name: str = "deep_agents"):
+    """Build a make_app() result but inject a pre-built harness and a trivial
+    agent factory instead of constructing them via the production pipeline.
+    Used to avoid persona/role plumbing in unit tests.
 
     The patches remain active only during construction (factory call site).
-    The returned app has the harness pre-wired via the lifespan closure.
-    Callers must use TestClient as a context manager so the lifespan fires.
+    The returned app has the harness pre-wired via the lifespan closure and
+    the trivial agent factory injected. Callers must use TestClient as a
+    context manager so the lifespan fires.
     """
     from assistant.web.app import make_app
 
@@ -130,7 +149,10 @@ def _make_app_with_harness(harness: _FakeHarness, harness_name: str = "deep_agen
             name="personal", default_role="assistant"
         )
         mock_rr.return_value.load.return_value = MagicMock(name="assistant")
-        app = make_app("personal", "assistant", harness_name)
+        app = make_app(
+            "personal", "assistant", harness_name,
+            _agent_factory=_trivial_agent_factory,
+        )
 
     return app
 
@@ -364,7 +386,10 @@ def test_lifespan_constructs_harness_once():
             name="personal", default_role="assistant"
         )
         mock_rr.return_value.load.return_value = MagicMock(name="assistant")
-        app = make_app("personal", "assistant", "deep_agents")
+        app = make_app(
+            "personal", "assistant", "deep_agents",
+            _agent_factory=_trivial_agent_factory,
+        )
 
     client = _client(app)
     # Make two requests; factory called once.
@@ -470,3 +495,92 @@ def test_health_does_not_invoke_harness():
     client = _client(app)
     client.get("/health")
     assert harness.astream_invoke_call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# 5.9 — Robustness fixes (IMPL_ITERATE round 1)
+# ---------------------------------------------------------------------------
+
+
+def test_chat_sets_no_buffering_headers():
+    """SSE response MUST include Cache-Control: no-cache + X-Accel-Buffering: no
+    so reverse proxies (nginx, Caddy) don't buffer the stream and break
+    real-time delivery for non-loopback deployments."""
+    harness = _make_simple_harness()
+    app = _make_app_with_harness(harness)
+    client = _client(app)
+    resp = client.post("/chat", json={"message": "hi"})
+    assert resp.status_code == 200
+    assert resp.headers.get("cache-control") == "no-cache"
+    assert resp.headers.get("x-accel-buffering") == "no"
+
+
+def test_misbehaving_harness_raw_raise_yields_run_error():
+    """When the harness raises WITHOUT first yielding Phase-1 terminal
+    RunFinished(error=...), the route MUST synthesize a terminal RUN_ERROR
+    so SSE consumers always see a final event (D8 contract robustness)."""
+
+    class _RawRaiseHarness:
+        _thread_id = "thread-raw"
+        astream_invoke_call_count = 0
+
+        @property
+        def thread_id(self) -> str:
+            return self._thread_id
+
+        async def create_agent(self, tools, extensions):
+            return object()
+
+        async def astream_invoke(self, agent, message):
+            self.astream_invoke_call_count += 1
+            yield _run_started()
+            # Skip terminal event entirely — raise raw.
+            raise RuntimeError("upstream failure")
+
+    harness = _RawRaiseHarness()
+    app = _make_app_with_harness(harness)
+    client = _client(app)
+    resp = client.post("/chat", json={"message": "trigger"})
+    assert resp.status_code == 200
+    events = _parse_sse_events(resp.text)
+    types = [e.get("type") for e in events]
+    # Stream must end with RUN_ERROR even though the harness misbehaved.
+    assert types[-1] == "RUN_ERROR"
+    run_error = events[-1]
+    # Class-name redaction (D8): no message body, no traceback.
+    assert run_error["message"] == "RuntimeError"
+    assert run_error["code"] == "RuntimeError"
+
+
+def test_agent_is_passed_to_astream_invoke():
+    """The route MUST call ``harness.astream_invoke(agent, message)`` with the
+    agent that was constructed by the lifespan factory — not call
+    ``astream_invoke(message)`` and lose the agent argument (regression guard
+    for the IMPL_ITERATE critical bug fix)."""
+
+    captured_args: dict[str, Any] = {}
+
+    class _SignatureRecordingHarness:
+        _thread_id = "thread-record"
+        astream_invoke_call_count = 0
+
+        @property
+        def thread_id(self) -> str:
+            return self._thread_id
+
+        async def create_agent(self, tools, extensions):
+            return {"sentinel": "agent-from-create_agent"}
+
+        async def astream_invoke(self, agent, message):
+            self.astream_invoke_call_count += 1
+            captured_args["agent"] = agent
+            captured_args["message"] = message
+            yield _run_started()
+            yield _run_finished("00000000-0000-0000-0000-000000000000")
+
+    harness = _SignatureRecordingHarness()
+    app = _make_app_with_harness(harness)
+    client = _client(app)
+    client.post("/chat", json={"message": "hello"})
+    assert captured_args["message"] == "hello"
+    assert captured_args["agent"] == {"sentinel": "agent-from-create_agent"}
