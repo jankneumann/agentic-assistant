@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "change_id": "harness-ag-ui-bridge",
-  "current_phase": "IMPL_REVIEW",
-  "previous_phase": "IMPL_ITERATE",
+  "current_phase": "VALIDATE",
+  "previous_phase": "IMPL_REVIEW",
   "iteration": 0,
   "total_iterations": 3,
   "max_phase_iterations": 3,
-  "findings_trend": [34, 33, 13, 10],
+  "findings_trend": [34, 33, 13, 10, 9, 13, 7, 1],
   "blocking_findings": [],
   "vendor_availability": {
     "claude_code": true,
@@ -91,6 +91,24 @@
       "to": "IMPL_REVIEW",
       "at": "2026-05-18T19:30:00Z",
       "note": "Round 1 (analyst sub-agent): 9 findings, 1 critical + 3 high + 5 medium. Critical: astream_invoke signature mismatch (routes.py call site missing agent arg) — feature was broken in production despite green gates because fakes mirrored the broken call. Fixed 5 (critical + 2 high + 2 medium), deferred 4 (concurrency-lock + health-auth + tool_run_id fallback + auto-fixed-by-#1). Gates: 974 pytest pass (+7), ruff/mypy/openspec clean. Convergence declared after one round; transitioning to multi-vendor IMPL_REVIEW."
+    },
+    {
+      "from": "IMPL_REVIEW",
+      "to": "IMPL_REVIEW",
+      "at": "2026-05-19T03:31:00Z",
+      "note": "Round 1 (3-vendor: claude_code/codex/gemini local CLIs): 13 unique findings, all single-vendor (0 confirmed) — high breadth, low overlap. Distribution: 4 critical, 3 high, 4 medium, 2 low. Fixed 9 inline (commit 885177c): by_alias serialization, httpx lifespan ownership, TextMessageStart role, except Exception narrowing, traced_harness inner-gen aclose, stable tool_call_id mapping, thread_id stability, GeneratorExit-as-cancelled, sentinel default_role test. Deferred 4 (claude #3 cli double-construct + claude #4 ::1 warning + gemini #3 args chunking + gemini #4 interleaved text/tool). Gates: 980 pytest pass (+6 regressions), ruff/mypy/openspec clean."
+    },
+    {
+      "from": "IMPL_REVIEW",
+      "to": "IMPL_REVIEW",
+      "at": "2026-05-19T13:53:00Z",
+      "note": "Round 2 (3-vendor): 7 findings (down 46% from round 1). Distribution: 0 critical, 0 high, 4 medium, 3 low. ONE cross-vendor confirmation (first of the entire phase): claude-r2-2 + codex-r2-1 both flagged the single-slot pending_orphan_call_id limitation for parallel-MSAF missing-id orphans. Fixed 5 inline (commit d36850c): collections.deque[str] FIFO for orphans, contextlib.aclosing on inner LangGraph stream, defensive aclose pattern for MSAF ResponseStream (per SDK contract), structural inspect.getsource test for thread_id stability (replaces illusory __new__-bypass test), 2 docstring corrections. Deferred 2 (claude-r2-2 partially-deferred as acceptable v1 best-effort but pursued via codex's deque proposal; claude-r2-3 MagicMock auto-truthy httpx in test paths is harmless). Gates: 981 pytest pass (+1 regression), ruff/mypy/openspec clean."
+    },
+    {
+      "from": "IMPL_REVIEW",
+      "to": "VALIDATE",
+      "at": "2026-05-19T14:25:00Z",
+      "note": "Round 3 (3-vendor): 1 finding total — claude 0, codex 0, gemini 1 (low polish). Trend: 13→7→1. Inline polish landed without round-4 dispatch (max_rounds=3): MSAgentFrameworkHarness.astream_invoke return type AsyncIterator[Any]→AsyncIterator[HarnessEvent], HarnessEvent added to imports, json import moved to top-level. Convergence declared: 0 critical/high/medium across all 3 vendors. Gates: 981 pytest, ruff/mypy/openspec clean. Transitioning to VALIDATE."
     }
   ],
   "plan_review_rounds": [
@@ -148,6 +166,66 @@
     "wp_web_cli_split_single_vendor",
     "serve_harness_default_vs_persona_config_single_vendor",
     "tool_name_vs_toolCallName_naming_asymmetry_intentional",
-    "maxlength_chars_vs_bytes_python_default_accepted"
+    "maxlength_chars_vs_bytes_python_default_accepted",
+    "cli_double_harness_construction_low_perf",
+    "ipv6_loopback_warning_false_positive_cosmetic",
+    "tool_args_chunking_unbounded_payload_low_freq",
+    "mapper_interleaved_text_tool_close_single_vendor",
+    "concurrent_chat_thread_id_race_v1_single_user",
+    "health_endpoint_persona_disclosure_loopback_default",
+    "on_tool_end_orphan_uuid_fallback_rare",
+    "ms_agent_fw_test_fakes_magicmock_truthy_tool_sources_harmless"
+  ],
+  "impl_review_rounds": [
+    {
+      "round": 1,
+      "vendors_dispatched": ["claude_code", "codex", "gemini"],
+      "vendors_succeeded": 3,
+      "total_findings": 13,
+      "unique_findings": 13,
+      "confirmed_count": 0,
+      "fixes_applied": [
+        "by_alias_serialization_routes_py",
+        "httpx_async_client_lifespan_ownership",
+        "text_message_start_role_assistant",
+        "except_exception_not_baseexception_both_harnesses",
+        "traced_harness_inner_gen_aclosing",
+        "stable_tool_call_id_dict_correlation_deep_agents",
+        "thread_id_stable_no_create_agent_overwrite",
+        "generator_exit_recorded_as_cancelled",
+        "sentinel_default_role_test_serve"
+      ]
+    },
+    {
+      "round": 2,
+      "vendors_dispatched": ["claude_code", "codex", "gemini"],
+      "vendors_succeeded": 3,
+      "total_findings": 7,
+      "unique_findings": 7,
+      "confirmed_count": 1,
+      "confirmed_findings": ["pending_orphan_call_id_single_slot_msaf_parallel"],
+      "fixes_applied": [
+        "deque_fifo_for_msaf_parallel_orphans",
+        "contextlib_aclosing_inner_langgraph_stream",
+        "defensive_aclose_msaf_response_stream",
+        "structural_inspect_getsource_test_thread_id",
+        "docstring_thread_id_construction_lifetime",
+        "docstring_astream_invoke_open_tool_calls_bookkeeping"
+      ]
+    },
+    {
+      "round": 3,
+      "vendors_dispatched": ["claude_code", "codex", "gemini"],
+      "vendors_succeeded": 3,
+      "total_findings": 1,
+      "unique_findings": 1,
+      "confirmed_count": 0,
+      "fixes_applied": [
+        "msaf_astream_invoke_return_type_harness_event",
+        "msaf_imports_harness_event_added",
+        "msaf_json_import_moved_to_top_level"
+      ],
+      "convergence_reason": "Trend 13→7→1. Round 3 returned 0 findings from claude+codex; the lone gemini finding was a low polish item (type hint + imports) that does not change runtime behavior. Inline-fixed within reviewer-text-edit scope; no round-4 dispatch (would exceed max_rounds=3 contract). Mirrors the PLAN_REVIEW round-3 convergence pattern (10→inline)."
+    }
   ]
 }

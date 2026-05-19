@@ -1,0 +1,17 @@
+{
+  "review_type": "implementation",
+  "target": "cli-dispatch",
+  "reviewer_vendor": "gemini",
+  "findings": [
+    {
+      "id": "gemini-r3-1",
+      "type": "code_quality",
+      "criticality": "low",
+      "axis": "polish",
+      "severity": "low",
+      "description": "MSAgentFrameworkHarness.astream_invoke return type hint is 'AsyncIterator[Any]' instead of 'AsyncIterator[HarnessEvent]', deviating from the SdkHarnessAdapter contract in base.py and the parallel implementation in deep_agents.py. Additionally, HarnessEvent is referenced in the docstring but missing from the module imports, and 'import json' is performed inside the event loop rather than at the top level.",
+      "disposition": "fix",
+      "resolution": "In src/assistant/harnesses/sdk/ms_agent_fw.py: 1) Move 'import json' to the top-level imports. 2) Add 'HarnessEvent' to the import list from assistant.harnesses.sdk.events. 3) Update the MSAgentFrameworkHarness.astream_invoke return type hint to 'AsyncIterator[HarnessEvent]' for contract consistency."
+    }
+  ]
+}
