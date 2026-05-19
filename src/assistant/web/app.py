@@ -33,7 +33,10 @@ from assistant.core.role import RoleRegistry
 from assistant.harnesses.base import HostHarnessAdapter
 from assistant.harnesses.factory import create_harness
 
-AgentFactory = Callable[[Any, Any, Any, PersonaRegistry], Awaitable[Any]]
+AgentFactory = Callable[
+    [Any, Any, Any, PersonaRegistry, "httpx.AsyncClient | None"],
+    Awaitable[Any],
+]
 
 
 def _problem_response(detail: str, status: int = 422) -> JSONResponse:
@@ -50,13 +53,23 @@ def _problem_response(detail: str, status: int = 422) -> JSONResponse:
 
 
 async def _default_agent_factory(
-    harness: Any, pc: Any, rc: Any, persona_reg: PersonaRegistry
+    harness: Any,
+    pc: Any,
+    rc: Any,
+    persona_reg: PersonaRegistry,
+    http_client: httpx.AsyncClient | None,
 ) -> Any:
     """Run the same tool/extension/agent setup pipeline as ``assistant run``.
 
     Lazy-imports the capability + tool-discovery machinery so the
     privacy-boundary test for the telemetry subtree stays clean (no
     eager FastAPI-adjacent imports in the assistant.web module).
+
+    ``http_client`` is owned by the FastAPI lifespan (see ``make_app``) so
+    that discovered HTTP tools — which close over the caller-supplied
+    client per ``discover_tools``' contract — remain usable for the
+    lifetime of the agent. Passing ``None`` is only valid when the
+    persona declares no ``tool_sources``. IMPL_REVIEW round-1 codex #2.
     """
     from assistant.core.capabilities.resolver import CapabilityResolver
     from assistant.http_tools import HttpToolRegistry
@@ -66,13 +79,12 @@ async def _default_agent_factory(
 
     tool_sources = getattr(pc, "tool_sources", None) or {}
     if tool_sources:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(10.0, connect=5.0),
-            follow_redirects=False,
-            verify=True,
-            limits=httpx.Limits(max_connections=20, max_keepalive_connections=5),
-        ) as client:
-            registry = await discover_tools(tool_sources, client=client)
+        if http_client is None:
+            raise ValueError(
+                "http_client is required when persona declares tool_sources "
+                "(discovered tools close over the caller-owned AsyncClient)"
+            )
+        registry = await discover_tools(tool_sources, client=http_client)
     else:
         registry = HttpToolRegistry()
 
@@ -129,13 +141,36 @@ def make_app(
 
     @asynccontextmanager
     async def _lifespan(app: FastAPI):
-        agent = await _agent_factory(harness, pc, rc, persona_reg)
-        app.state.harness = harness
-        app.state.agent = agent
-        app.state.persona = persona
-        app.state.role = role
-        app.state.harness_name = harness_name
-        yield
+        # The AsyncClient is owned by the lifespan so that discovered HTTP
+        # tools — which close over the caller-supplied client — remain
+        # usable for the lifetime of the agent. Closing the client before
+        # the agent is destroyed would orphan every discovered tool.
+        # IMPL_REVIEW round-1 codex #2.
+        tool_sources = getattr(pc, "tool_sources", None) or {}
+        http_client: httpx.AsyncClient | None = None
+        if tool_sources:
+            http_client = httpx.AsyncClient(
+                timeout=httpx.Timeout(10.0, connect=5.0),
+                follow_redirects=False,
+                verify=True,
+                limits=httpx.Limits(
+                    max_connections=20, max_keepalive_connections=5,
+                ),
+            )
+        try:
+            agent = await _agent_factory(
+                harness, pc, rc, persona_reg, http_client,
+            )
+            app.state.harness = harness
+            app.state.agent = agent
+            app.state.persona = persona
+            app.state.role = role
+            app.state.harness_name = harness_name
+            app.state.http_client = http_client
+            yield
+        finally:
+            if http_client is not None:
+                await http_client.aclose()
 
     app = FastAPI(title="agentic-assistant AG-UI bridge", lifespan=_lifespan)
 

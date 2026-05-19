@@ -1,0 +1,55 @@
+{
+  "review_type": "implementation",
+  "target": "cli-dispatch",
+  "reviewer_vendor": "codex",
+  "findings": [
+    {
+      "id": 1,
+      "type": "contract_mismatch",
+      "criticality": "critical",
+      "description": "The /chat SSE payloads are serialized with Pydantic's default field names and include null upstream AG-UI fields, so they do not validate against contracts/events/ag-ui-events.schema.json. src/assistant/web/routes.py:47 and :58 call model_dump_json() without by_alias=True or exclude_none=True; a RunStartedEvent serializes as thread_id/run_id plus timestamp/raw_event/parent_run_id/input null fields, while the contract requires threadId/runId and additionalProperties=false. Existing web and smoke tests only assert the type field, so this contract break is not caught.",
+      "disposition": "fix",
+      "axis": "correctness",
+      "severity": "critical",
+      "resolution": "Serialize every AG-UI event sent over SSE with evt.model_dump_json(by_alias=True, exclude_none=True), including the synthesized RunErrorEvent path. Add a regression test that parses each SSE data payload and validates it against contracts/events/ag-ui-events.schema.json, including assertions for camelCase fields such as threadId, runId, messageId, toolCallId, and no null extra fields.",
+      "package_id": "whole-branch",
+      "file_path": "src/assistant/web/routes.py",
+      "line_range": {
+        "start": 47,
+        "end": 58
+      }
+    },
+    {
+      "id": 2,
+      "type": "correctness",
+      "criticality": "critical",
+      "description": "The production web agent factory closes the httpx.AsyncClient that discovered HTTP tools before the agent can use those tools. discover_tools explicitly documents that returned tools close over the caller-owned client and require it to live as long as the registry, but src/assistant/web/app.py:69-75 creates the client inside an async with and then passes closed-client tools into harness.create_agent. Any /chat turn that invokes a discovered HTTP tool will fail at runtime with a closed client.",
+      "disposition": "fix",
+      "axis": "correctness",
+      "severity": "critical",
+      "resolution": "Move HTTP discovery client ownership into the FastAPI lifespan so the AsyncClient stays open for the lifetime of app.state.agent, and close it only during lifespan shutdown. For example, create the client in _lifespan, pass it into the default discovery/agent construction path, store it on app.state if needed, and close it in a finally block after yield. Add a production-path test with a persona tool_source that verifies an authorized HTTP tool can still make a request after app startup.",
+      "package_id": "whole-branch",
+      "file_path": "src/assistant/web/app.py",
+      "line_range": {
+        "start": 69,
+        "end": 84
+      }
+    },
+    {
+      "id": 3,
+      "type": "resilience",
+      "criticality": "high",
+      "description": "The client-disconnect cleanup is still incomplete because @traced_harness wraps astream_invoke in a second async generator that does not close the inner harness generator when the wrapper is aclose()d. routes.py correctly uses contextlib.aclosing on harness.astream_invoke(...), but that closes only the traced wrapper; decorators.py:246-248 iterates the inner fn(...) generator without aclosing/finally, so a mid-stream disconnect can leave the underlying LangGraph or MSAF stream unclosed.",
+      "disposition": "fix",
+      "axis": "performance",
+      "severity": "critical",
+      "resolution": "In traced_harness's async-generator path, ensure the inner generator returned by fn(self_obj, *args, **kwargs) is closed when the wrapper is closed, e.g. use async with contextlib.aclosing(fn(...)) as gen around the async for loop or an equivalent finally block that awaits gen.aclose(). Add a regression test with an inner astream_invoke generator that sets a flag in finally, consume one event from the decorated wrapper, call aclose(), and assert the inner finally ran; extend the web disconnect test to assert the fake harness generator was closed.",
+      "package_id": "whole-branch",
+      "file_path": "src/assistant/telemetry/decorators.py",
+      "line_range": {
+        "start": 243,
+        "end": 250
+      }
+    }
+  ]
+}

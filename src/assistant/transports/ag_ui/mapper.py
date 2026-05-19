@@ -115,7 +115,14 @@ async def map_harness_to_ag_ui(
                         yield close_evt
                     # Open new message.
                     _open_message_id = event.message_id
-                    yield TextMessageStartEvent(message_id=event.message_id)
+                    # role="assistant" is required by the AG-UI contract for
+                    # assistant-originated text streams. Without it the
+                    # upstream RunErrorEvent shape rejects the payload at
+                    # the consumer (round-1 gemini #1).
+                    yield TextMessageStartEvent(
+                        message_id=event.message_id,
+                        role="assistant",
+                    )
                 yield TextMessageContentEvent(
                     message_id=event.message_id,
                     delta=event.text,

@@ -118,11 +118,19 @@ def _make_error_harness() -> _FakeHarness:
     return harness
 
 
-async def _trivial_agent_factory(harness: Any, pc: Any, rc: Any, persona_reg: Any) -> Any:
+async def _trivial_agent_factory(
+    harness: Any,
+    pc: Any,
+    rc: Any,
+    persona_reg: Any,
+    http_client: Any = None,
+) -> Any:
     """Test-only agent factory: bypasses tool discovery / capability resolution
     and just calls ``harness.create_agent([], [])`` on the fake.
 
-    Production code uses the default factory in ``assistant.web.app``.
+    Production code uses the default factory in ``assistant.web.app``. The
+    ``http_client`` arg matches the production signature (IMPL_REVIEW
+    round-1 codex #2) but is ignored — fakes don't issue HTTP requests.
     """
     return await harness.create_agent(tools=[], extensions=[])
 

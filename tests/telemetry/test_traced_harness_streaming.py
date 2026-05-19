@@ -264,3 +264,101 @@ async def test_traced_harness_single_decorator_works_on_both_shapes(
     # Each call emits exactly one trace
     calls = spy_provider.calls["trace_llm_call"]
     assert len(calls) == 2, f"Expected 2 total traces (one per call); got {len(calls)}"
+
+
+# ---------------------------------------------------------------------------
+# IMPL_REVIEW round-1 regression tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_traced_harness_aclose_finalizes_inner_generator(
+    monkeypatch: pytest.MonkeyPatch, spy_provider: Any
+) -> None:
+    """Closing the outer wrapper MUST finalize the inner harness generator.
+
+    Regression for IMPL_REVIEW round-1 codex #3: pre-fix, the wrapper
+    iterated ``fn(...)`` without aclose, so the inner generator was
+    orphaned on client disconnect. After the fix, ``aclosing(gen)``
+    inside the wrapper guarantees the inner's ``finally`` block fires
+    when the outer wrapper is closed.
+    """
+    _install_spy(monkeypatch, spy_provider)
+    inner_finalized = {"flag": False}
+
+    class H(_FakeStreamHarness):
+        @_traced
+        async def astream_invoke(
+            self, agent: Any, message: str
+        ) -> AsyncIterator[HarnessEvent]:
+            try:
+                yield RunStarted(run_id="r-1", started_at="2026-05-16T09:00:00Z")
+                # Yield many events so we can break the consumer mid-stream.
+                for _i in range(100):
+                    yield RunStarted(
+                        run_id=f"r-{_i + 2}",
+                        started_at="2026-05-16T09:00:01Z",
+                    )
+            finally:
+                inner_finalized["flag"] = True
+
+    h = H("p", "r", "m")
+    from contextlib import aclosing
+
+    async with aclosing(h.astream_invoke(object(), "msg")) as gen:
+        seen = 0
+        async for _evt in gen:
+            seen += 1
+            if seen >= 2:
+                break
+    # The async-with exit calls aclose() on the wrapper, which (with the
+    # codex #3 fix) calls aclose() on the inner gen, which fires the
+    # inner's finally block.
+    assert inner_finalized["flag"], (
+        "inner generator's finally did not run — wrapper aclose() did not "
+        "propagate to the inner gen (codex #3 regression)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_traced_harness_generator_exit_recorded_as_cancelled(
+    monkeypatch: pytest.MonkeyPatch, spy_provider: Any
+) -> None:
+    """GeneratorExit MUST be recorded as cancelled=True, not as an error.
+
+    Regression for IMPL_REVIEW round-1 gemini #6: pre-fix, the wrapper
+    branched on ``except BaseException`` and labelled every termination
+    (including normal client disconnect) as ``error: GeneratorExit``.
+    After the fix, GeneratorExit is recorded with
+    ``metadata={"streaming": True, "cancelled": True}`` so dashboards
+    can distinguish "shut down cleanly" from "crashed".
+    """
+    _install_spy(monkeypatch, spy_provider)
+
+    class H(_FakeStreamHarness):
+        @_traced
+        async def astream_invoke(
+            self, agent: Any, message: str
+        ) -> AsyncIterator[HarnessEvent]:
+            for i in range(50):
+                yield RunStarted(
+                    run_id=f"r-{i}",
+                    started_at="2026-05-16T09:00:00Z",
+                )
+
+    h = H("p", "r", "m")
+    from contextlib import aclosing
+
+    async with aclosing(h.astream_invoke(object(), "msg")) as gen:
+        async for _evt in gen:
+            break  # Consume one, then aclose via context-manager exit.
+
+    calls = spy_provider.calls["trace_llm_call"]
+    assert len(calls) == 1, f"Expected 1 trace; got {len(calls)}"
+    metadata = calls[0].get("metadata") or {}
+    assert metadata.get("cancelled") is True, (
+        f"GeneratorExit must be recorded as cancelled=True; got metadata={metadata!r}"
+    )
+    assert "error" not in metadata, (
+        f"GeneratorExit must NOT be labelled as error; got metadata={metadata!r}"
+    )

@@ -40,7 +40,7 @@ import hashlib
 import inspect
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine, Iterator
-from contextlib import contextmanager
+from contextlib import aclosing, contextmanager
 from contextvars import ContextVar
 from typing import Any
 
@@ -243,11 +243,35 @@ def traced_harness(
             try:
                 with _scoped_usage_callback() as cb:
                     try:
+                        # ``aclosing`` finalizes the inner harness generator
+                        # when the outer wrapper is closed (PEP 525 / 533) —
+                        # without it, a mid-stream client disconnect leaves
+                        # the upstream LangGraph or MSAF generator orphaned.
+                        # IMPL_REVIEW round-1 codex #3.
                         gen: AsyncGenerator[Any, None] = fn(self_obj, *args, **kwargs)
-                        async for event in gen:
-                            yield event
+                        async with aclosing(gen) as managed:
+                            async for event in managed:
+                                yield event
                     finally:
                         in_tok, out_tok = _sum_usage_metadata(cb.usage_metadata)
+            except GeneratorExit:
+                # Client disconnect / outer ``aclose()``. Record as a
+                # cancellation rather than an error so observability shows
+                # this is a normal-shutdown path, not a failure. Re-raise
+                # so async generator finalization remains correct.
+                # IMPL_REVIEW round-1 gemini #6.
+                duration_ms = (time.perf_counter() - start) * 1000.0
+                provider.trace_llm_call(
+                    model=model,
+                    persona=persona,
+                    role=role,
+                    messages=None,
+                    input_tokens=in_tok,
+                    output_tokens=out_tok,
+                    duration_ms=duration_ms,
+                    metadata={"streaming": True, "cancelled": True},
+                )
+                raise
             except BaseException as exc:
                 duration_ms = (time.perf_counter() - start) * 1000.0
                 provider.trace_llm_call(

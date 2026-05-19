@@ -624,3 +624,91 @@ def test_astream_invoke_is_decorated_with_traced_harness() -> None:
     assert inspect.isfunction(method) or callable(method), (
         f"astream_invoke must be callable; got {type(method)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# IMPL_REVIEW round-1 regression tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_astream_invoke_disconnect_via_aclose_does_not_raise_runtime_error() -> None:
+    """Client disconnect (aclose mid-stream) MUST propagate GeneratorExit unchanged.
+
+    Regression for IMPL_REVIEW round-1 claude #1: ``except BaseException``
+    inside the harness caught GeneratorExit and then yielded a synthesized
+    ``RunFinished(error=...)``. Yielding while handling GeneratorExit raises
+    ``RuntimeError("asynchronous generator ignored GeneratorExit")``. After
+    the narrow-catch fix (``except Exception``), GeneratorExit must
+    propagate cleanly — no RuntimeError, no synthesized terminal event.
+    """
+    from contextlib import aclosing
+
+    harness = _make_harness()
+    # An agent that yields a long sequence so we can disconnect mid-stream.
+    long_run = [_text_chunk_event(f"chunk-{i}") for i in range(20)]
+    agent = _make_fake_agent(long_run)
+
+    async with aclosing(harness.astream_invoke(agent, "hi")) as gen:
+        # Consume just the RunStarted + a couple of text deltas, then exit
+        # the context manager — aclose() will inject GeneratorExit into gen.
+        seen = 0
+        async for _evt in gen:
+            seen += 1
+            if seen >= 3:
+                break
+    # If RuntimeError leaked, the ``async with`` exit would have raised.
+    # Reaching this point means the GeneratorExit path was clean.
+
+
+@pytest.mark.asyncio
+async def test_tool_call_id_stable_across_start_args_end_when_run_id_consistent() -> None:
+    """Tool-call lifecycle events MUST share the same call_id (gemini #2).
+
+    Regression for IMPL_REVIEW round-1 gemini #2: when LangGraph supplied
+    a consistent ``run_id`` for ``on_tool_start`` and ``on_tool_end``, the
+    pre-fix code synthesized a *fresh* UUID inside each branch when
+    ``tool_run_id`` was falsy, breaking call_id bracketing. The fix uses
+    a per-stream dict keyed by upstream run_id so start/args/end share an id.
+    """
+    harness = _make_harness()
+    events = [
+        _tool_start_event("search", {"q": "weather"}, run_id="tool-run-X"),
+        _tool_end_event("search", "sunny", run_id="tool-run-X"),
+    ]
+    agent = _make_fake_agent(events)
+
+    collected: list[Any] = []
+    async for ev in harness.astream_invoke(agent, "search the weather"):
+        collected.append(ev)
+
+    starts = [e for e in collected if isinstance(e, ToolCallStart)]
+    argss = [e for e in collected if isinstance(e, ToolCallArgs)]
+    ends = [e for e in collected if isinstance(e, ToolCallEnd)]
+    assert len(starts) == 1 and len(argss) == 1 and len(ends) == 1
+    assert starts[0].call_id == argss[0].call_id == ends[0].call_id, (
+        "start/args/end MUST share call_id — got "
+        f"start={starts[0].call_id!r} args={argss[0].call_id!r} end={ends[0].call_id!r}"
+    )
+    # And the value should be the upstream run_id (preferred), not a synthesized UUID.
+    assert starts[0].call_id == "tool-run-X"
+
+
+@pytest.mark.asyncio
+async def test_thread_id_unchanged_after_imports() -> None:
+    """thread_id from __init__ MUST be preserved (gemini #5).
+
+    Regression for IMPL_REVIEW round-1 gemini #5: pre-fix, ``create_agent``
+    reassigned ``self._thread_id = str(uuid4())``, defeating the
+    SdkHarnessAdapter contract that thread_id is stable for the adapter
+    instance's lifetime. ``_make_harness`` synthesizes a known sentinel
+    ``thread_id``; assert the property returns that sentinel unchanged.
+    """
+    harness = _make_harness()
+    initial = harness.thread_id
+    # Read the property multiple times to be sure it isn't computed
+    # off some mutable side state.
+    assert harness.thread_id == initial
+    assert harness.thread_id == initial
+    # The sentinel from _make_harness is "thread-test-uuid-1234".
+    assert initial == "thread-test-uuid-1234"
