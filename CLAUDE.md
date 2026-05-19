@@ -38,6 +38,11 @@ uv sync                                            # install deps
 
 # Run
 uv run assistant -p personal                       # CLI with persona
+uv run assistant serve -p personal -r coder        # AG-UI SSE server (loopback only)
+# Smoke test from another shell:
+#   curl -N -H 'Content-Type: application/json' \
+#     -d '{"message":"hello"}' http://127.0.0.1:8765/chat
+#   curl http://127.0.0.1:8765/health
 
 # Test (public suite — uses fixtures, never real submodule)
 uv run pytest tests/
