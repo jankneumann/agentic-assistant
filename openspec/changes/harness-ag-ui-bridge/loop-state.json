@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "change_id": "harness-ag-ui-bridge",
-  "current_phase": "IMPL_ITERATE",
-  "previous_phase": "IMPLEMENT",
+  "current_phase": "IMPL_REVIEW",
+  "previous_phase": "IMPL_ITERATE",
   "iteration": 0,
   "total_iterations": 3,
   "max_phase_iterations": 3,
@@ -79,6 +79,18 @@
       "to": "IMPLEMENT",
       "at": "2026-05-16T15:15:00Z",
       "note": "Round 3 (3-vendor): 10 findings, all completeness-of-round-2-fixes; inline-fixed without round 4 dispatch (within reviewer-text-edit scope). Convergence declared: trend 34→33→13→10, no new architectural concerns, validate --strict passes."
+    },
+    {
+      "from": "IMPLEMENT",
+      "to": "IMPL_ITERATE",
+      "at": "2026-05-18T18:00:00Z",
+      "note": "All 6 work packages complete (57/57 tasks); transitioning to self-review."
+    },
+    {
+      "from": "IMPL_ITERATE",
+      "to": "IMPL_REVIEW",
+      "at": "2026-05-18T19:30:00Z",
+      "note": "Round 1 (analyst sub-agent): 9 findings, 1 critical + 3 high + 5 medium. Critical: astream_invoke signature mismatch (routes.py call site missing agent arg) — feature was broken in production despite green gates because fakes mirrored the broken call. Fixed 5 (critical + 2 high + 2 medium), deferred 4 (concurrency-lock + health-auth + tool_run_id fallback + auto-fixed-by-#1). Gates: 974 pytest pass (+7), ruff/mypy/openspec clean. Convergence declared after one round; transitioning to multi-vendor IMPL_REVIEW."
     }
   ],
   "plan_review_rounds": [
