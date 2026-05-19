@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "review_type": "implementation",
+  "target": "harness-ag-ui-bridge",
+  "reviewers": [
+    {
+      "vendor": "claude_code",
+      "agent_id": "claude_code",
+      "success": true,
+      "findings_count": 0,
+      "elapsed_seconds": 0.0,
+      "error": null
+    },
+    {
+      "vendor": "codex",
+      "agent_id": "codex",
+      "success": true,
+      "findings_count": 0,
+      "elapsed_seconds": 0.0,
+      "error": null
+    },
+    {
+      "vendor": "gemini",
+      "agent_id": "gemini",
+      "success": true,
+      "findings_count": 1,
+      "elapsed_seconds": 0.0,
+      "error": null
+    }
+  ],
+  "quorum_met": true,
+  "quorum_requested": 3,
+  "quorum_received": 3,
+  "consensus_findings": [
+    {
+      "id": 1,
+      "status": "unconfirmed",
+      "primary_vendor": "gemini",
+      "primary_finding_id": "gemini-r3-1",
+      "matched_findings": [],
+      "match_score": 0.0,
+      "agreed_type": "code_quality",
+      "agreed_criticality": "low",
+      "recommended_disposition": "accept",
+      "description": "MSAgentFrameworkHarness.astream_invoke return type hint is 'AsyncIterator[Any]' instead of 'AsyncIterator[HarnessEvent]', deviating from the SdkHarnessAdapter contract in base.py and the parallel implementation in deep_agents.py. Additionally, HarnessEvent is referenced in the docstring but missing from the module imports, and 'import json' is performed inside the event loop rather than at the top level."
+    }
+  ],
+  "summary": {
+    "total_unique_findings": 1,
+    "confirmed_count": 0,
+    "unconfirmed_count": 1,
+    "disagreement_count": 0,
+    "blocking_count": 0
+  }
+}

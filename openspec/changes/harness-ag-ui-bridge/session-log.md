@@ -309,3 +309,53 @@ Analyst sub-agent ran on commit 7c9d863 and produced nine findings (one critical
 
 Final state: pytest 974 passed plus 3 skipped (7 new tests added), ruff clean, mypy clean across 168 files, openspec validate harness-ag-ui-bridge strict clean. One round of IMPL_ITERATE deemed sufficient — round 2 would surface only low-criticality polish.
 
+---
+
+## Phase: IMPL_REVIEW Multi-Vendor Convergence (2026-05-19)
+
+**Agent**: autopilot (inline-driven, claude_code orchestrator) | **Vendors**: claude-local, codex-local, gemini-local (all 3 successful in every round)
+
+### Decisions
+
+1. **Round 1 dispatched against post-IMPL_ITERATE commit cf4c154.** Three vendor CLIs in parallel produced 13 unique findings with 0 cross-vendor confirmation — each vendor specialized (claude on Python async gotchas, codex on contract/lifecycle, gemini on AG-UI protocol details).
+
+2. **Operational blocking threshold is the convergence-loop definition, not the synthesizer's.** The synthesizer reported `Blocking: 0` because it requires cross-vendor confirmation. The convergence-loop's `_BLOCKING_CRITICALITIES = {medium, high, critical}` predicate is the autopilot operational definition. All 4 critical + 3 high single-vendor findings were treated as blocking, regardless of cross-vendor agreement.
+
+3. **Round 1 fix list — 9 fixed, 4 deferred** (commit 885177c). Critical: by_alias serialization (camelCase per AG-UI contract), httpx client lifespan ownership, TextMessageStartEvent role='assistant'. High: narrow `except Exception` not `except BaseException` (GeneratorExit was being mis-mapped — this is what triggered the IMPL_ITERATE aclosing path to crash with RuntimeError in production), traced_harness inner-gen aclose, stable tool_call_id correlation. Medium: thread_id stability, GeneratorExit-as-cancelled in trace metadata, sentinel default_role test.
+
+4. **Round 2 dispatched against round-1 commit 885177c.** 7 findings (46% reduction). 0 critical, 0 high, 4 medium, 3 low. ONE cross-vendor confirmation emerged: claude-r2-2 + codex-r2-1 both flagged the single-slot pending_orphan_call_id limitation for parallel-MSAF orphans. Adopted codex's deque proposal since cross-vendor agreement + small fix delta makes "fix" preferable to "accept."
+
+5. **Round 2 fix list — 5 fixed, 2 deferred** (commit d36850c). Medium: deque[str] FIFO for MSAF orphans (cross-vendor confirmed), contextlib.aclosing on inner LangGraph stream, defensive aclose for MSAF ResponseStream (SDK doesn't guarantee aclose), structural inspect.getsource test for thread_id replacing the illusory behavioral test (claude-r2-1 — the IMPL_ITERATE-equivalent meta-finding: test passed but couldn't detect the regression it claimed to guard). Low: 2 docstring corrections.
+
+6. **Round 3 dispatched against round-2 commit d36850c.** ONE finding total (claude 0, codex 0, gemini 1). The lone gemini-r3-1 was a low polish item: AsyncIterator[Any] → AsyncIterator[HarnessEvent] return type, HarnessEvent import added, top-level json import. Inline-fixed within reviewer-text-edit scope; no round-4 dispatch (would exceed max_rounds=3).
+
+7. **Convergence declared after round 3.** Trend 13→7→1, zero remaining critical/high/medium findings, three-vendor unanimous on no blocking issues. Phase transitions to VALIDATE.
+
+### Alternatives Considered
+
+- **Skip round 3 after round 2 fixes.** Rejected: substantive round-2 fix delta (deque + aclose + new test) warranted verification; ~8 min wall time is cheap for the assurance.
+- **Treat the round-1 13 single-vendor findings as non-blocking** (per the synthesizer's `Blocking: 0`). Rejected: this would discard 4 verified critical bugs because no single bug happened to land in two vendors' reports. The convergence-loop predicate is the operational definition.
+- **Accept the parallel-MSAF orphan limitation rather than fix it.** Rejected: cross-vendor confirmation on existence is the strongest signal of the entire IMPL_REVIEW phase. Deque is 3-5 lines; resilience added at minimal complexity.
+
+### Trade-offs
+
+- Accepted defensive try/finally with `inspect.iscoroutine` over strict `contextlib.aclosing` in MSAF. SDK contract doesn't require aclose, and test fakes don't expose it. Strict aclosing would have broken 21 tests.
+- Accepted single-vendor structural test (`inspect.getsource`) over behavioral test for the create_agent thread_id contract. Source-shape coupled but 100% revert-detecting; the behavioral test was illusory.
+- Accepted three rounds of vendor dispatch (~25 min wall + ~3000 tokens of synthesis) for the assurance that IMPL_REVIEW caught 17 unique findings the analyst sub-agent in IMPL_ITERATE missed.
+
+### Context
+
+Round trends:
+- Round 1 (cf4c154 → 885177c): 13 findings → 9 fixed, 4 deferred. Gates: 980 pytest pass (+6 regressions).
+- Round 2 (885177c → d36850c): 7 findings → 5 fixed, 2 deferred (1 cross-vendor). Gates: 981 pytest pass (+1 regression).
+- Round 3 (d36850c → forthcoming): 1 finding (low polish) → 3 inline polish edits. Gates: 981 pytest pass.
+
+Vendor effectiveness across all 3 rounds (raised / fixed):
+- claude: 7 raised. Deep insight on Python async (except BaseException, illusory tests), surfaced meta-findings about the review process itself.
+- codex: 4 raised. Sharpest on contract + lifecycle (by_alias, httpx ownership, decorator gen-cleanup); proposed the deque resolution.
+- gemini: 10 raised. Broadest coverage of AG-UI protocol details (role, tool_call_id, thread_id, GeneratorExit-as-cancelled, type hints, imports, docstrings).
+
+Cross-vendor confirmation: 1 finding total (parallel-MSAF orphan, round 2). All others were single-vendor — high breadth, low overlap, the healthy multi-vendor signal.
+
+Final state: pytest 981 + 3 skipped (8 new regression tests across rounds 1+2), ruff clean, mypy clean across 168 source files, openspec validate harness-ag-ui-bridge --strict clean. Transitioning to VALIDATE.
+

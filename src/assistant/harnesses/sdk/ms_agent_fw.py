@@ -21,6 +21,7 @@ Design references (``openspec/changes/ms-graph-extension``):
 from __future__ import annotations
 
 import inspect
+import json
 import uuid
 from collections import deque
 from collections.abc import AsyncIterator
@@ -31,6 +32,7 @@ from assistant.core.persona import PersonaConfig
 from assistant.core.role import RoleConfig
 from assistant.harnesses.base import SdkHarnessAdapter
 from assistant.harnesses.sdk.events import (
+    HarnessEvent,
     RunFinished,
     RunStarted,
     TextDelta,
@@ -296,7 +298,7 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
     @traced_harness
     async def astream_invoke(
         self, agent: Any, message: str
-    ) -> AsyncIterator[Any]:
+    ) -> AsyncIterator[HarnessEvent]:
         """Stream a harness invocation as a sequence of HarnessEvent instances.
 
         Calls ``agent.run(messages, stream=True)`` which returns a
@@ -400,8 +402,6 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
                         arguments = getattr(content_item, "arguments", None)
                         if arguments is not None:
                             if not isinstance(arguments, str):
-                                import json
-
                                 try:
                                     arguments = json.dumps(arguments)
                                 except (TypeError, ValueError):

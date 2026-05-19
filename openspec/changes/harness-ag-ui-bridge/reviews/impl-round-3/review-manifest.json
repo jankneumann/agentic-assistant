@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "change_id": null,
+  "review_type": "implementation",
+  "created_at": "2026-05-19T14:18:45Z",
+  "target": "cli-dispatch",
+  "dispatches": [
+    {
+      "vendor": "claude_code",
+      "success": true,
+      "model_used": "(default)",
+      "models_attempted": [
+        "(default)"
+      ],
+      "elapsed_seconds": 198.685258832993,
+      "error": null,
+      "error_class": null
+    },
+    {
+      "vendor": "codex",
+      "success": true,
+      "model_used": "gpt-5.5",
+      "models_attempted": [
+        "gpt-5.5"
+      ],
+      "elapsed_seconds": 217.94500154198613,
+      "error": null,
+      "error_class": null
+    },
+    {
+      "vendor": "gemini",
+      "success": true,
+      "model_used": "gemini-3-flash-preview",
+      "models_attempted": [
+        "gemini-3-flash-preview"
+      ],
+      "elapsed_seconds": 149.9319004160352,
+      "error": null,
+      "error_class": null
+    }
+  ],
+  "quorum_requested": 3,
+  "quorum_received": 3,
+  "vendors": [
+    {
+      "name": "claude_code",
+      "findings_path": "findings-claude_code-implementation.json",
+      "finding_count": 0
+    },
+    {
+      "name": "codex",
+      "findings_path": "findings-codex-implementation.json",
+      "finding_count": 0
+    },
+    {
+      "name": "gemini",
+      "findings_path": "findings-gemini-implementation.json",
+      "finding_count": 1
+    }
+  ]
+}
