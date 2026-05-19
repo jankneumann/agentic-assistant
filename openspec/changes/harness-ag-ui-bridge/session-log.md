@@ -359,3 +359,43 @@ Cross-vendor confirmation: 1 finding total (parallel-MSAF orphan, round 2). All 
 
 Final state: pytest 981 + 3 skipped (8 new regression tests across rounds 1+2), ruff clean, mypy clean across 168 source files, openspec validate harness-ag-ui-bridge --strict clean. Transitioning to VALIDATE.
 
+---
+
+## Phase: VALIDATE (2026-05-19)
+
+**Agent**: autopilot (inline-driven, claude_code orchestrator) | **Outcome**: PASS
+
+### Decisions
+
+1. **Most validate-feature phases skipped as not-applicable to this code-only library/CLI feature.** Deploy/Smoke/Security/E2E/Log assume a deployed HTTP service to test. The bridge IS the service; the in-process automated equivalents in `tests/integration/test_ag_ui_smoke.py` cover the same surface (real FastAPI app via TestClient against a fake harness). Documented in `validation-report.md` per-phase rather than silently dropped.
+
+2. **Spec compliance phase is the load-bearing validate phase for code-only features.** Task checkbox drift (0/57), openspec validate --strict (clean), full requirement traceability (22 SHALL/MUST requirements, each mapped to implementation + test, no orphans either direction) — these are the genuine validation signals when there's no live service to poke.
+
+3. **CI/CD status deferred to SUBMIT_PR.** No PR exists yet on the branch (creating one is the next phase); GitHub Actions only fires on PR creation, not on branch push. The SUBMIT_PR phase will embed `gh pr checks` results in the PR description and update validation-report.md if CI surfaces anything blocking.
+
+4. **`change-context.md` was not created during IMPLEMENT.** The implement-feature skill section 3a expects a Requirement Traceability Matrix during the GREEN phase; this file is missing. The equivalent content is captured retroactively in validation-report.md's traceability table. Filed as a process gap (not a validation failure) — needs a fix in `/implement-feature` itself to enforce the artifact on the way through.
+
+### Trade-offs
+
+- Accepted artifact-after-the-fact (validation-report.md + architecture-impact.md created in VALIDATE rather than incremental during IMPLEMENT). The autopilot lifecycle hasn't standardized incremental capture of these artifacts; the trade-off is "one-shot generation at validate time" vs "per-task incremental updates." One-shot keeps the artifacts coherent (single voice, consistent terminology) at the cost of being a single-point dependency on the validate phase landing.
+
+### Context
+
+Final quality gates at d75847d:
+- pytest: 981 passed, 3 skipped (8 new regression tests across IMPL_REVIEW rounds 1+2)
+- ruff (src tests): clean
+- mypy (src tests): clean across 168 source files
+- openspec validate harness-ag-ui-bridge --strict: clean
+- task drift: 0 unchecked / 57 checked
+
+Branch state:
+- `openspec/harness-ag-ui-bridge` @ d75847d (41 commits ahead of main)
+- up-to-date with origin
+- no PR yet (next phase)
+
+Artifacts produced:
+- `validation-report.md` — per-phase PASS/SKIP/DEFERRED with full requirement traceability table
+- `architecture-impact.md` — module-level diff, dependency direction proof, design-decision trace, public API surface delta
+
+Transitioning to SUBMIT_PR.
+
