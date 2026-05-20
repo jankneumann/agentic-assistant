@@ -17,10 +17,10 @@
       "Bash(alembic *)",
       "Bash(psql *)",
       "Bash(railway *)",
-      "Bash(env *)"
+      "Bash(env *)",
+      "Bash(curl *)"
     ],
     "deny": [
-      "Bash(curl *)",
       "Bash(rm -rf *)",
       "Bash(rm -r -f *)",
       "Bash(git reset --hard *)",
