@@ -215,5 +215,6 @@ personas/*.env
 
 # Ephemeral local infrastructure — should never be committed
 .git-worktrees/
+.claude/worktrees/
 .claude/scheduled_tasks.lock
 
