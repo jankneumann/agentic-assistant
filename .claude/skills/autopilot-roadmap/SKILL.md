@@ -27,6 +27,24 @@ Optional flags:
 - Shared runtime at `skills/roadmap-runtime/scripts/` (models, checkpoint, learning, context)
 - At least one vendor CLI available for `/implement-feature` invocation
 
+## Local CLI Mutation Boundary
+
+`autopilot-roadmap` writes checkpoint, roadmap status, learning entries, and may
+invoke implementation/validation skills for roadmap items. In local CLI
+execution, every mutating run MUST start from a managed worktree unless
+`--dry-run` is set.
+
+Before loading or updating the roadmap workspace, run:
+
+```bash
+CHANGE_ID="roadmap-<workspace-name>"
+eval "$(python3 "<skill-base-dir>/../worktree/scripts/worktree.py" setup "$CHANGE_ID")"
+cd "$WORKTREE_PATH"
+skills/.venv/bin/python skills/shared/checkout_policy.py require-mutation
+```
+
+`--dry-run` remains read-only and may run from the shared checkout.
+
 ## Input
 
 A roadmap workspace path containing:
@@ -120,6 +138,19 @@ All data model operations use the shared runtime at `skills/roadmap-runtime/scri
 - `checkpoint.py` - CheckpointManager for save/restore/advance
 - `learning.py` - Learning entry write/read/compact
 - `context.py` - Bounded context assembly
+
+## Design Principle: Host-Assisted Only
+
+**Autopilot-roadmap must not make direct LLM API calls.** All reasoning happens in one of two places:
+
+1. **The orchestrating Claude Code agent**, via the `dispatch_fn` callback. `orchestrator.execute_roadmap()` hands `(item_id, phase, context)` tuples to the callback; the agent runs `/implement-feature` / `/validate-feature` / friends in response. The host agent is the LLM runtime; no external API key is required.
+2. **Deterministic code** — `replanner.replan()` (regex text matching over learning entries), `policy.evaluate_policy()` (arithmetic/rule-based vendor decisions).
+
+Any future work that needs semantic reasoning must be expressed as either (a) a new callback delegated to the host agent, or (b) a new dispatch phase routed through `/implement-feature`. Reaching for `llm_client.py` or an SDK like `anthropic` / `openai` / `google.generativeai` inside `skills/autopilot-roadmap/scripts/` is out of bounds and enforced by a guard test (`skills/tests/autopilot-roadmap/test_host_assisted_invariant.py`).
+
+The same principle applies to `skills/autopilot/scripts/`. The invariant exists because autopilot is typically invoked from a Claude Code session that already has a paid-for model loaded; routing reasoning through a second external API would double-bill and fragment the session's context.
+
+The one intentional exception elsewhere in the codebase is `skills/parallel-infrastructure/scripts/review_dispatcher.py` (used by `parallel-review-plan` and `parallel-review-implementation`), where vendor diversity is the feature — multi-vendor review requires calling *different* models to get independent findings. That's not host-assistable by construction.
 
 ## Next Step
 

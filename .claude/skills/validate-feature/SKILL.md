@@ -36,6 +36,13 @@ Valid phase names: `deploy`, `smoke`, `gen-eval`, `security`, `e2e`, `architectu
 - Approved OpenSpec proposal exists at `openspec/changes/<change-id>/`
 - Run `/implement-feature` first if no implementation exists
 
+## Provider-Neutral Dispatch
+
+When validation delegates checks or evidence review, treat the provider-neutral dispatch adapter
+as the canonical cross-provider path. Claude Code, Codex, and
+Gemini/Jules are first-class providers when configured; Claude-specific harness
+examples are adapter internals, with inline validation as the fallback.
+
 ## OpenSpec Execution Preference
 
 Use OpenSpec-generated runtime assets first, then CLI fallback:
@@ -51,6 +58,21 @@ Use `docs/coordination-detection-template.md` as the shared detection preamble.
 - Detect transport and capability flags at skill start
 - Execute hooks only when the matching `CAN_*` flag is `true`
 - If coordinator is unavailable, continue with standalone behavior
+
+## Local CLI Mutation Boundary
+
+Validation writes reports, evidence, logs, and sometimes follow-up artifacts. In
+local CLI execution, validation MUST run inside the feature worktree or another
+managed worktree before the first write:
+
+```bash
+eval "$(python3 "<skill-base-dir>/../worktree/scripts/worktree.py" setup "$CHANGE_ID")"
+cd "$WORKTREE_PATH"
+skills/.venv/bin/python skills/shared/checkout_policy.py require-mutation
+```
+
+Read-only CI status checks may inspect from the shared checkout, but any report
+or evidence file must be written in a worktree so it lands on the PR branch.
 
 ## Steps
 
@@ -167,11 +189,19 @@ else
   echo "  Compose file: $COMPOSE_FILE"
   echo "  Log file: $LOG_FILE"
 
-  # Start services with DEBUG logging, redirect output to log file
+  # Start services with DEBUG logging, redirect output to log file.
+  #
+  # When the compose file gates the API server behind a profile (e.g. the
+  # agent-coordinator's `coordinator-api` service uses `profiles: [api]` so it
+  # doesn't auto-start during simple `docker compose up`), pass
+  # `COMPOSE_PROFILES` so the API process IS started here — without it the
+  # smoke + e2e phases get connection-refused on the API port. Multiple
+  # profiles can be comma-separated (`api,langfuse`).
   AGENT_COORDINATOR_DB_PORT=${AGENT_COORDINATOR_DB_PORT:-54322} \
-  AGENT_COORDINATOR_REST_PORT=${AGENT_COORDINATOR_REST_PORT:-3000} \
+  AGENT_COORDINATOR_REST_PORT=${AGENT_COORDINATOR_REST_PORT:-8081} \
   AGENT_COORDINATOR_REALTIME_PORT=${AGENT_COORDINATOR_REALTIME_PORT:-4000} \
-  LOG_LEVEL=DEBUG docker-compose -f "$COMPOSE_FILE" up -d 2>&1 | tee "$LOG_FILE"
+  COMPOSE_PROFILES=${COMPOSE_PROFILES:-api} \
+  LOG_LEVEL=DEBUG docker-compose -f "$COMPOSE_FILE" up -d --build 2>&1 | tee "$LOG_FILE"
 
   # Wait for health checks
   echo "Waiting for services to be healthy..."
@@ -186,9 +216,10 @@ else
     sleep 1
   done
 
-  # Wait for REST API (up to 15 seconds)
-  for i in $(seq 1 15); do
-    if curl -s http://localhost:${AGENT_COORDINATOR_REST_PORT:-3000}/ > /dev/null 2>&1; then
+  # Wait for REST API health endpoint (up to 30 seconds — the API container
+  # may need build time on first run + warmup before /health flips to 200)
+  for i in $(seq 1 30); do
+    if curl -sf http://localhost:${AGENT_COORDINATOR_REST_PORT:-8081}/health > /dev/null 2>&1; then
       echo "REST API is ready"
       break
     fi
@@ -253,7 +284,11 @@ If Smoke fails (SMOKE_EXIT != 0 and != 5), stop validation and skip to Teardown.
 **Phase name:** `gen-eval`
 **Criticality:** Non-critical (continues on failure)
 
-Run generator-evaluator testing when interface descriptors exist for the project. This phase auto-detects descriptor files and runs in `template-only` mode by default, requiring no CLI or SDK dependencies.
+Run generator-evaluator testing when interface descriptors exist for the project. This phase auto-detects descriptor files and selects between two modes:
+
+- **`cli-augmented` mode** when both an interface descriptor AND an OpenSpec change directory at `openspec/changes/<change-id>/specs/` exist. Gen-eval is invoked with `--mode cli-augmented --openspec-change <change-id>` so the generator seeds scenarios from the change's WHEN/THEN spec blocks.
+- **`template-only` mode** (existing fallback) when descriptors exist but no OpenSpec change directory. Requires no CLI or SDK dependencies.
+- **Skipped** when no descriptors are found.
 
 ```bash
 # Auto-detect gen-eval descriptors
@@ -263,7 +298,19 @@ if [ -z "$GENEVAL_DESCRIPTORS" ]; then
   echo "SKIP: No gen-eval descriptors found. Skipping gen-eval phase."
   GENEVAL_RESULT="skip"
 else
-  echo "Running gen-eval testing (template-only mode)..."
+  # Mode selection: cli-augmented requires both descriptor AND OpenSpec change dir
+  GENEVAL_CHANGE_DIR="$PROJECT_ROOT/openspec/changes/$CHANGE_ID/specs"
+  if [ -d "$GENEVAL_CHANGE_DIR" ]; then
+    GENEVAL_MODE_FLAGS="--mode cli-augmented --openspec-change $CHANGE_ID"
+    GENEVAL_MODE_LABEL="mode=cli-augmented"
+    echo "gen-eval: $GENEVAL_MODE_LABEL (descriptor + OpenSpec change present at $GENEVAL_CHANGE_DIR)"
+  else
+    GENEVAL_MODE_FLAGS="--mode template-only --no-services"
+    GENEVAL_MODE_LABEL="mode=template-only"
+    echo "gen-eval: $GENEVAL_MODE_LABEL (no OpenSpec change at openspec/changes/$CHANGE_ID/specs/, falling back to template-only)"
+  fi
+
+  echo "Running gen-eval testing ($GENEVAL_MODE_LABEL)..."
   GENEVAL_FAILED=false
 
   for DESCRIPTOR in $GENEVAL_DESCRIPTORS; do
@@ -274,8 +321,7 @@ else
     if [ ! -f "$GENEVAL_PYTHON" ]; then GENEVAL_PYTHON="python3"; fi
     (cd "$GENEVAL_MODULE_ROOT" && "$GENEVAL_PYTHON" -m evaluation.gen_eval \
       --descriptor "$DESCRIPTOR" \
-      --mode template-only \
-      --no-services \
+      $GENEVAL_MODE_FLAGS \
       --report-format both \
       --output-dir "$PROJECT_ROOT/openspec/changes/$CHANGE_ID" 2>&1)
     GENEVAL_EXIT=$?
@@ -298,7 +344,7 @@ else
 fi
 ```
 
-Gen-eval failures are non-critical and do not block validation. Results are included in the validation report for informational purposes.
+Gen-eval failures are non-critical and do not block validation. Results are included in the validation report for informational purposes. cli-augmented mode failures (e.g., from prompt-injection attempts caught by the parser) still degrade gracefully — the validate-feature pipeline continues to subsequent phases.
 
 ### 5. Security Phase
 
@@ -425,7 +471,41 @@ Report architecture diagnostics including broken flows, missing test coverage, o
 ### 7. Spec Compliance Phase (via Change Context)
 
 **Phase name:** `spec`
-**Criticality:** Non-critical (continues on failure)
+**Criticality:** Non-critical (continues on failure) — EXCEPT the task-drift gate (7.0) which is CRITICAL within this phase.
+
+#### 7.0. Task Checkbox Drift Gate (CRITICAL)
+
+Before verifying requirements against the live system, enforce that `tasks.md` reflects commit reality. Drift between the two is a spec-compliance failure: the plan document either overstates completeness (dangerous) or understates it (bookkeeping debt that breaks archive-time invariants).
+
+```bash
+# Run from the change's worktree or feature branch
+TASKS_FILE="openspec/changes/<change-id>/tasks.md"
+UNCHECKED=$(grep -cE "^\s*- \[ \]" "$TASKS_FILE" 2>/dev/null || echo 0)
+
+# Count commits on the feature branch since divergence from main
+# (excludes commits on main that the branch inherited)
+COMMIT_COUNT=$(git rev-list --count main..HEAD 2>/dev/null || echo 0)
+
+if [ "$UNCHECKED" -gt 0 ] && [ "$COMMIT_COUNT" -gt 0 ]; then
+  echo "FAIL: task checkbox drift detected"
+  echo "  $TASKS_FILE has $UNCHECKED unchecked boxes"
+  echo "  branch has $COMMIT_COUNT commit(s) since main"
+  echo ""
+  echo "Either:"
+  echo "  (a) complete the remaining tasks — in which case this validation run is premature"
+  echo "  (b) reconcile — flip checkboxes for tasks whose code has landed (new commit, do NOT amend)"
+  echo "  (c) defer — move genuinely-skipped tasks to deferred-tasks.md"
+  echo ""
+  echo "Do not proceed to requirement verification with drifted tasks.md."
+  exit 1  # CRITICAL failure — halts the spec phase
+fi
+```
+
+**Why this is CRITICAL**: Archive validation (`openspec archive`) checks the tasks artifact's overall status, not individual checkboxes — meaning drift can slip through archive-time and leave inaccurate history. Catching it here, before the archive path, ensures the spec phase is the single source of truth for "does the plan document match what was built?" Per the incident log, `specialized-workflow-agents` shipped 29 tasks' worth of implementation to main with 0/29 checkboxes flipped because the validation gate didn't catch the drift (this check was added 2026-04-22 in response).
+
+**In CI-vs-local behavior**: In local validation, `exit 1` halts the phase immediately. In CI-invoked validation (where halting would abort merge-gate automation unhelpfully), record the drift as a CRITICAL finding in `validation-report.md` under "Phase Results" with Result=`fail` and Details listing the specific unchecked task IDs — do not silently continue.
+
+#### 7.1. Requirement Traceability (per-requirement live verification)
 
 Use the `change-context.md` traceability matrix as the spec compliance artifact:
 
@@ -692,35 +772,46 @@ fi
 
 ### 14. Append Session Log
 
-Append a `Validation` phase entry to the session log, then commit and push.
+Construct a `PhaseRecord` for the `Validation` phase and call `write_both()`. Validation phases are typically read-only; emphasize the validation outcomes (pass/fail summary, waivers, deferred issues) in the structured fields rather than free-form prose.
 
-**Phase entry template:**
+**Capture from this validation:**
 
-```markdown
----
+- **Decisions** — Decisions about waivers granted, phases run/skipped, or deferred issues. For clean passes, leave empty (the rendered markdown omits the Decisions section).
+- **Open Questions** — Questions raised by validation that need follow-up (e.g., "Is X behavior intentional?").
+- **Completed Work** — Phases that ran and passed (e.g., `["spec", "evidence", "deploy", "smoke"]`).
+- **Next Steps** — Recommended next workflow step (cleanup, iterate-on-implementation, etc.).
+- **Summary** — 2–3 sentences: what was validated, pass/fail summary, any waivers.
 
-## Phase: Validation (<YYYY-MM-DD>)
-
-**Agent**: <agent-type> | **Session**: <session-id-or-N/A>
-
-### Decisions
-1. **<Decision title>** — <rationale>
-
-### Context
-<2-3 sentences: what was validated, pass/fail summary, any waivers granted>
-```
-
-**Focus on**: Validation results, phases run, any waivers or deferred issues. For clean validation passes, use "No significant decisions required" in Decisions and focus on Context.
-
-**Sanitize-then-verify:**
+**Persist via `PhaseRecord.write_both()`:**
 
 ```bash
-python3 "<skill-base-dir>/../session-log/scripts/sanitize_session_log.py" \
-  "openspec/changes/<change-id>/session-log.md" \
-  "openspec/changes/<change-id>/session-log.md"
+python3 - <<'EOF'
+import sys
+sys.path.insert(0, "skills/session-log/scripts")
+from phase_record import PhaseRecord, Decision
+
+record = PhaseRecord(
+    change_id="<change-id>",
+    phase_name="Validation",
+    agent_type="<agent-type>",
+    summary="<2-3 sentences: phases run, pass/fail summary, waivers>",
+    decisions=[
+        Decision(title="<title>", rationale="<rationale>"),
+    ],
+    completed_work=["spec", "evidence"],   # phases that passed
+    next_steps=["/cleanup-feature <change-id>"],
+)
+result = record.write_both()
+print(f"markdown_path={result.markdown_path}")
+print(f"sanitized={result.sanitized}")
+print(f"handoff_id={result.handoff_id or '(local fallback)'}")
+print(f"handoff_local_path={result.handoff_local_path}")
+for w in result.warnings:
+    print(f"WARN: {w}", file=sys.stderr)
+EOF
 ```
 
-Read the sanitized output and verify: (1) all sections present, (2) no incorrect `[REDACTED:*]` markers, (3) markdown intact. If over-redacted, rewrite without secrets, re-sanitize (one attempt max). If sanitization exits non-zero, skip session log and proceed.
+`write_both()` runs three best-effort steps internally: append rendered markdown → sanitize in-place → coordinator handoff (or local fallback at `openspec/changes/<change-id>/handoffs/validation-<N>.json`). Each step logs warnings on failure but does not raise.
 
 **Commit and push** (validate-feature is read-only, so this needs a dedicated commit):
 
