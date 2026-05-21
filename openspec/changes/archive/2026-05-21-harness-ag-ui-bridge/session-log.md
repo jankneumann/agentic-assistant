@@ -399,3 +399,44 @@ Artifacts produced:
 
 Transitioning to SUBMIT_PR.
 
+
+---
+
+## Phase: Cleanup (2026-05-21)
+
+**Agent**: claude_code (Opus 4.7 1M context) | **Session**: local (driven from /merge-pull-requests + /cleanup-feature --post-merge)
+
+### Decisions
+
+1. **Rebase-merge strategy chosen for PR #40.** Skill default for `openspec` origin (preserves per-task commit history for git blame/bisect). Operator confirmed `r` over squash. 41 commits landed on main individually; the SUBMIT_PR phase's autopilot state-update commit (96b3e9c, no code change) is also preserved.
+
+2. **Skipped fresh multi-vendor IMPL_REVIEW at merge time.** Per the merge-pull-requests skill Step 9 eligibility, PR #40 met all five conditions for vendor review dispatch (openspec origin, non-draft, no approvals, no CHANGES_REQUESTED, non-trivial). Skipped anyway because (a) 3 rounds of multi-vendor IMPL_REVIEW already ran during autopilot (claude+codex+gemini, 21 findings, 15 fixed inline, documented in `reviews/impl-round-{1,2,3}/`), (b) re-running on a 342-file diff would be expensive and slow with no expected new signal, (c) the operator explicitly wanted to merge.
+
+3. **Step 9.5 Merge-Time Validation Gate satisfied by the existing validation-report.md.** All four Docker-dependent phases (deploy, smoke, security, e2e) addressed in the report with documented N/A rationale per design D12 (loopback single-user local-trust posture). No need to dispatch /validate-feature with Docker phases.
+
+4. **Skipped Step 5c Pre-Launch Checklist and Step 5d Staged Rollout.** Same rationale as the validation-report's Deploy/Smoke/Security/E2E dispositions: this is a code-only library/CLI feature shipping no production artifact. The `assistant serve` command runs loopback-only on the operator's machine; no production environment exists to gate traffic into, no feature flag flips, no error-rate dashboards to compare against a 24h baseline. Mirroring the validation-report's stance: phase recorded as N/A rather than silently dropped.
+
+5. **Closed PR #30 (Dependabot mem0ai 1.0.11→2.0.0b2) in favor of a fresh Dependabot run.** Post #40 merge, PR #30 became stale (55 commits behind, `ci_merge_base_stale: true`, guaranteed uv.lock conflict with #40's new fastapi/sse-starlette/uvicorn/ag-ui-protocol additions). Beyond staleness: mem0ai is a transitive dep via agent-framework-mem0, not directly used in src/, and 1.0.11 → 2.0.0b2 crosses both a major version boundary and into a beta release — a combination that warrants human evaluation, not auto-merge. Dependabot will reopen against current main if the upgrade is still flagged.
+
+### Trade-offs
+
+- **Cleanup performed directly on `main` rather than in a separate cleanup worktree** (per the skill's Step 1 invariant). The skill's "cleanup worktree on a --cleanup scratch branch" pattern exists to isolate from a still-running implementation worktree. For `--post-merge` mode after the parent feature is already merged, there is no parallel work to collide with — the `.git-worktrees/harness-ag-ui-bridge` worktree is idle. Skipping the worktree avoided ~5 min of bootstrap overhead for an operation that's exclusively file moves + git ops.
+
+### Context
+
+Local main state at cleanup start:
+- 3 chore commits ahead of origin/main (curl-allow, gitignore-worktrees, skills-sync), all unrelated to PR #40
+- PR #40 merged via rebase on origin/main (41 commits landed)
+- 0 unchecked tasks in tasks.md (all 57 completed during IMPLEMENT)
+- No submodule SHA changes from #40 (no fast-forward needed)
+- No rework-report.json present (no holdout gate to clear)
+
+Archive outcome:
+- `openspec/changes/harness-ag-ui-bridge/` moved to `openspec/changes/archive/2026-05-21-harness-ag-ui-bridge/`
+- Delta specs from `specs/` merged into `openspec/specs/`
+- `openspec validate --strict` clean post-archive
+
+Worktree/branch cleanup:
+- `.git-worktrees/harness-ag-ui-bridge` torn down
+- Local branch `openspec/harness-ag-ui-bridge` deleted
+- Coordinator registry entry removed
