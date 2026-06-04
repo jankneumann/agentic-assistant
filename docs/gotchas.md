@@ -288,3 +288,49 @@ in the submodule's own README, and in the failure message itself so
 maintainers always know the exact incantation to bypass. The parent-repo
 run never sets this env var, so the cross-repo invariant is exercised
 every time the full suite runs from a parent checkout.
+
+---
+
+## G8. Advisor anti-pattern: transcript summarization before advisor call
+
+**Symptom**: The advisor (Opus) gives generic or unhelpful guidance even
+though the executor (Sonnet/Haiku) is stuck on a specific tool-result
+error. The quality gap between advisor-assisted and solo execution
+shrinks or disappears.
+
+**Root cause**: To save tokens, the implementation summarized the
+executor's transcript before passing it to the advisor call. The advisor
+now sees a compressed version that strips tool-result details, error
+messages, and the sequence of failed attempts — exactly the information
+it needs to diagnose "stuck" states. The blog's quality numbers
+(Sonnet+Opus +2.7pp on SWE-bench Multilingual) were measured on
+full-context advisor calls.
+
+**Fix**: pass the full executor transcript to the advisor. If budget is
+a concern, cap the advisor's *response* via `budget_tokens` in the
+role's `advisor:` block, not the input context. The advisor reads
+everything; it responds concisely.
+
+**Reference**: `openspec/changes/patterns-architecture/design.md` §D6
+anti-pattern AP1.
+
+---
+
+## G9. Advisor anti-pattern: conflating advisor with delegation
+
+**Symptom**: ADVISE is implemented as a special case of DELEGATE (spawn
+a sub-agent with the advisor model). The advisor produces a plan that
+ignores the executor's recent progress, or repeats work already done.
+
+**Root cause**: delegation creates a fresh context — the sub-agent does
+not see the parent's transcript. The advisor pattern's value is
+shared-context consultation: it reads the executor's full conversation
+and returns guidance within the same conceptual session. Implementing
+ADVISE via DELEGATE loses the shared context and with it the quality win.
+
+**Fix**: ADVISE and DELEGATE are separate capabilities with distinct
+contracts (per P1.6 `patterns-architecture`). ADVISE shares context;
+DELEGATE forks it. Never implement one in terms of the other.
+
+**Reference**: `openspec/changes/patterns-architecture/design.md` §D6
+anti-pattern AP2.
