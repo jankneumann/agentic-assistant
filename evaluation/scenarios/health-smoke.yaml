@@ -1,0 +1,29 @@
+# Plumbing smoke: /health returns the persona/role/harness JSON that the
+# operator runbook (CLAUDE.md "Essential Commands") promises.
+#
+# This scenario is the floor for the AG-UI bridge — if /health works the
+# subprocess is up, uvicorn bound 127.0.0.1:8765, FastAPI app loaded, and
+# the persona/role/harness factory wired correctly. It does NOT exercise
+# the harness itself or any LLM credentials.
+id: ag-ui-bridge-health-smoke
+name: "AG-UI bridge /health returns persona/role/harness"
+description: >-
+  GET /health on the running bridge must return HTTP 200 and a JSON body
+  with the persona, role, and harness this server was started with. This
+  is the canonical operator readiness check (see web/routes.py:health).
+category: plumbing
+priority: 1
+interfaces: ["GET /health"]
+tags: [plumbing, health, ag-ui-bridge]
+
+steps:
+  - id: get_health
+    transport: http
+    method: GET
+    endpoint: /health
+    expect:
+      status: 200
+      body:
+        persona: personal
+        role: coder
+        harness: deep_agents

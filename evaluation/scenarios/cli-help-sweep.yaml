@@ -1,0 +1,75 @@
+# Plumbing smoke: every documented `assistant` subcommand responds to
+# --help with exit 0. This is the cheapest possible CLI wiring check —
+# it confirms Click is installed, the entry point resolves, every
+# subcommand is registered, and the deferred imports inside each
+# subcommand load without crashing.
+#
+# Does NOT exercise persona loading, harness invocation, or database
+# I/O — those are separate scenarios (and require either a fixture
+# persona or credentials to be present).
+#
+# Note: each step uses `args:` rather than `command:` because gen-eval's
+# CliClient runs `asyncio.create_subprocess_exec(*[service.command,
+# step.command, *step.args])` without shlex-splitting any element — so
+# putting "run --help" in step.command would exec it as a single argv
+# entry. The list form sidesteps that.
+id: cli-help-sweep
+name: "All CLI subcommands respond to --help with exit 0"
+description: >-
+  Sweep the documented subcommand surface and confirm each one's
+  --help path loads without raising. Catches import-time regressions
+  introduced by refactors in src/assistant/cli.py and command modules.
+category: plumbing
+priority: 1
+interfaces: ["cli:run", "cli:serve", "cli:export", "cli:export-memory", "cli:db"]
+tags: [plumbing, cli]
+
+steps:
+  - id: run_help
+    transport: cli
+    args: ["run", "--help"]
+    expect:
+      exit_code: 0
+      not_empty: true
+
+  - id: serve_help
+    transport: cli
+    args: ["serve", "--help"]
+    expect:
+      exit_code: 0
+      not_empty: true
+
+  - id: export_help
+    transport: cli
+    args: ["export", "--help"]
+    expect:
+      exit_code: 0
+      not_empty: true
+
+  - id: export_memory_help
+    transport: cli
+    args: ["export-memory", "--help"]
+    expect:
+      exit_code: 0
+      not_empty: true
+
+  - id: db_help
+    transport: cli
+    args: ["db", "--help"]
+    expect:
+      exit_code: 0
+      not_empty: true
+
+  - id: db_upgrade_help
+    transport: cli
+    args: ["db", "upgrade", "--help"]
+    expect:
+      exit_code: 0
+      not_empty: true
+
+  - id: db_downgrade_help
+    transport: cli
+    args: ["db", "downgrade", "--help"]
+    expect:
+      exit_code: 0
+      not_empty: true

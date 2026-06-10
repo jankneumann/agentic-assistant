@@ -1,0 +1,31 @@
+# Plumbing smoke: POST /chat opens an SSE stream and emits RUN_STARTED.
+#
+# The bridge's contract at the plumbing layer is: accept a JSON body,
+# return 200 with text/event-stream, emit at least one event. The
+# harness behaviour BELOW that is exercised by separate scenarios once
+# credentials are wired (today the harness raises TypeError immediately
+# after RUN_STARTED — surfaced via RUN_ERROR; that's a real bug masked
+# by the _FakeHarness in tests/integration/test_ag_ui_smoke.py and
+# tracked separately).
+id: ag-ui-bridge-chat-accepts-post
+name: "AG-UI bridge /chat accepts POST and opens SSE stream"
+description: >-
+  POST /chat with a minimal message body. The bridge must respond with
+  HTTP 200 and a non-empty body (the SSE stream). This is the
+  process-boundary plumbing check; deeper assertions about event shape
+  belong in a separate scenario family.
+category: plumbing
+priority: 1
+interfaces: ["POST /chat"]
+tags: [plumbing, chat, ag-ui-bridge, sse]
+
+steps:
+  - id: post_chat
+    transport: http
+    method: POST
+    endpoint: /chat
+    body:
+      message: "ping"
+    expect:
+      status: 200
+      not_empty: true

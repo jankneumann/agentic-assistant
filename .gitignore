@@ -218,3 +218,7 @@ personas/*.env
 .claude/worktrees/
 .claude/scheduled_tasks.lock
 
+# gen-eval generated reports (descriptors + scenarios are source; reports
+# are output artifacts regenerated on every run)
+evaluation/reports/
+

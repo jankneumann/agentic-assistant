@@ -1,0 +1,90 @@
+# Interface descriptor for agentic-assistant.
+#
+# Consumed by the gen-eval framework to verify the AG-UI SSE bridge HTTP
+# surface and the `assistant` CLI from real-process integration scenarios.
+# Per the agentic-tests-must-exercise-real-wiring rule (memory), this
+# descriptor must drive a real subprocess + real socket — no mocks at the
+# cross-system boundary.
+#
+# Schema: gen_eval.descriptor.InterfaceDescriptor
+# Spec:   openspec/specs/{web-server,ag-ui-emitter,cli-interface}/spec.md
+
+project: agentic-assistant
+version: "0.1.0"
+
+services:
+  # ── AG-UI SSE bridge ────────────────────────────────────────────────
+  # Two-endpoint loopback service introduced by the harness-ag-ui-bridge
+  # change (P14, archived 2026-05-21). Per design D12 the bridge is
+  # single-user / loopback-only, so no auth block.
+  - name: ag-ui-bridge
+    type: http
+    base_url: http://127.0.0.1:8765
+    endpoints:
+      - path: /health
+        method: GET
+        auth_required: false
+        description: >-
+          Returns persona/role/harness for operator readiness checks.
+          Deterministic JSON shape; safe to poll.
+        tags: [health, read]
+      - path: /chat
+        method: POST
+        auth_required: false
+        description: >-
+          Stream AG-UI SSE events from the harness for a user message.
+          Response is text/event-stream with RunStarted → (TextDelta |
+          ToolCall*) → RunFinished framing.
+        tags: [chat, write, sse]
+
+  # ── CLI surface ─────────────────────────────────────────────────────
+  # The `assistant` console script (Click). Service-level `command:` must
+  # be a single argv[0] (gen-eval's CliClient calls
+  # asyncio.create_subprocess_exec without shlex-splitting). Scenarios
+  # pass subcommand + flags via `args:` for the same reason. Using
+  # `.venv/bin/assistant` lets us run without the `uv run` warm-up cost
+  # each scenario.
+  - name: cli
+    type: cli
+    # Wrapper drops a langgraph PendingDeprecationWarning that gen-eval's
+    # CliClient otherwise flags as a step error. See the wrapper for the
+    # source-fix follow-up; the warning is suppression-resistant via
+    # PYTHONWARNINGS.
+    command: "evaluation/bin/assistant-quiet"
+    commands:
+      - name: run
+        description: Interactive REPL (default subcommand when no other is given)
+        tags: [cli, repl]
+      - name: serve
+        description: Start the AG-UI bridge HTTP server (loopback)
+        tags: [cli, server]
+      - name: export
+        description: Export composed prompt + role config to file
+        tags: [cli, export]
+      - name: export-memory
+        description: Export per-persona memory snapshot to file
+        tags: [cli, memory]
+      - name: db
+        subcommands: [upgrade, downgrade]
+        description: Alembic schema migrations for the persona DB
+        tags: [cli, db]
+
+# Scenario locations (paths resolved relative to this descriptor file).
+scenario_dirs:
+  - ../scenarios/
+
+# Lifecycle for the HTTP service. Skipped when invoked with --no-services
+# (i.e. when the operator is managing the service externally), but the
+# block is required by the schema and must always parse.
+startup:
+  # `> log 2>&1 &` is load-bearing: gen-eval invokes startup via
+  # `subprocess.run(..., shell=True, capture_output=True, timeout=120)`,
+  # which keeps the stdout/stderr pipes open until any inheriting child
+  # closes them. A bare `&` leaves the backgrounded uvicorn holding the
+  # pipes and the orchestrator blocks until its 120s timeout. Redirecting
+  # stdio to a log file detaches the child cleanly.
+  command: "uv run assistant serve -p personal -r coder --host 127.0.0.1 --port 8765 > /tmp/agentic-assistant-serve.log 2>&1 &"
+  health_check: "http://127.0.0.1:8765/health"
+  health_timeout_seconds: 30
+  health_retry_count: 10
+  teardown: "pkill -f 'assistant serve.*--port 8765' || true"
