@@ -1,29 +1,39 @@
-# agentic-assistant — OpenSpec Roadmap v2
+# agentic-assistant — OpenSpec Roadmap v3
 
-> **Supersedes** the original roadmap derived solely from
-> `docs/agentic-assistant-bootstrap-v4.1.md`. This v2 integrates perplexity
-> review feedback (`docs/perplexity-feedback.md`) and reorders phases per
-> §8 "Recommended Implementation Order." The original roadmap is preserved
-> in git history.
+> **Supersedes** roadmap v2 (`roadmap-v2-perplexity-integration`, reconciled
+> by `roadmap-v2-reconciliation`). v3 integrates the 2026-07-07 architecture
+> review (`docs/architecture-analysis/2026-07-07-architecture-review.md`),
+> which re-targets the project at a **heterogeneous fleet**: ASUS Ascent
+> GX10 (local inference / always-on node), PowerSpec G762 (workstation),
+> Claude/Gemini/Codex subscription seats (host-harness tier), OpenRouter +
+> hyperscaler model gardens (metered SDK tier), and optional meta-harness
+> control planes (Omnigent, NemoClaw). The v2 roadmap is preserved in git
+> history.
 >
-> Change that introduced this rewrite: `roadmap-v2-perplexity-integration`.
+> Change that introduced this rewrite: `roadmap-v3-heterogeneous-fleet`.
 
 ## Guiding principles
 
-1. **One OpenSpec proposal per §8 item** — fine-grained, independently
+1. **One OpenSpec proposal per phase** — fine-grained, independently
    reviewable, each eligible for `/plan-feature` → `/autopilot`.
-2. **§8 ordering is informational, not a hard constraint** — adopted
-   as the default ordering where the original roadmap had a different
-   order. The **Dependency graph** below represents real functional
-   prerequisites; phases shown as siblings have no functional coupling
-   and MAY run in any order. `P1.7 bootstrap-fixes` is a functional
-   prerequisite for a handful of phases (explicitly noted in the
-   graph), not a global gate. (P1.5 / P1.6 are hygiene / spec-sync
-   rows that already shipped before bootstrap-fixes was planned.)
-3. **Old P2–P10 items without perplexity coverage are folded in at the
-   end** so no prior scope is silently dropped.
-4. **Docs — not CI — enforce the DAG**. Consult this file before
-   invoking `/plan-feature` or `/autopilot` for any phase.
+2. **The Dependency graph represents real functional prerequisites** —
+   phases shown as siblings have no functional coupling and MAY run in
+   any order. The "Recommended execution order" section is advisory.
+3. **Change-ids are the identity; `#` labels are ordering hints only.**
+   v3 keeps all v2 numbers for unchanged scope and appends P19+ / X3+
+   for new scope. (`P14a` exists because `harness-ag-ui-bridge` was
+   labeled "P14" in its archive commit while the v2 table already used
+   P14 for `google-extensions` — v3 records both without renumbering.)
+4. **Docs — not CI — enforce the DAG.** Consult this file before invoking
+   `/plan-feature` or `/autopilot` for any phase.
+5. **One model seam, not two.** All SDK-tier LLM access goes through the
+   LangChain `init_chat_model()` seam (P19); no parallel provider
+   abstraction (e.g., LiteLLM) unless that seam proves insufficient —
+   recorded as an ADR when P19 lands.
+6. **Stay the persona/role/capability layer.** Meta-harnesses (Omnigent,
+   NemoClaw) are control planes *above* this repo; we integrate under
+   them (P22) rather than rebuilding session-sharing, sandbox fleets, or
+   governance planes in-repo.
 
 ## Proposal sequence
 
@@ -32,26 +42,33 @@
 | P1 | `bootstrap-vertical-slice` | phase | **archived** (2026-04-12) | — | original P1 | Core library + Deep Agents harness + CLI + 5 roles + personal persona + delegation + tests + CI |
 | P1.5 | `test-privacy-boundary` | phase | **archived** (2026-04-13) | — | new (IR hygiene from P1 validation) | Separate public tests from private persona data: two-layer (collection-time substring scan + runtime FS patching) boundary guard, `ASSISTANT_PERSONAS_DIR` env-var contract, `scripts/push-with-submodule.sh` atomic dual-commit push wrapper |
 | P1.6 | `sync-test-privacy-boundary-spec` | non-phase (spec-sync) | **archived** (2026-04-13) | — | spec-sync follow-up of P1.5 | Listed for chronological context. Spec-only change that codified five drift items found during P1.5 validation (env-var contract, subprocess `executable=`/`cwd=` kwarg coverage, hygiene-test exclusion list, submodule `parents[N]` abstraction, atomic-push wrapper requirement) |
-| P1.7 | `bootstrap-fixes` | phase | **archived** (2026-04-20) | §7.1–§7.5 | perplexity §7 | All items resolved: §7.1 CLI `-H` fix landed in P1; §7.3 `deepagents` v0.5.2 confirmed valid; §7.4 entry point landed in P1; §7.5 `src_name` fix landed in P1. §7.2 (`sqlalchemy.text()`) is deferred to P2 — no database code exists yet |
+| P1.7 | `bootstrap-fixes` | phase | **archived** (2026-04-20) | §7.1–§7.5 | perplexity §7 | All items resolved: §7.1 CLI `-H` fix landed in P1; §7.3 `deepagents` v0.5.2 confirmed valid; §7.4 entry point landed in P1; §7.5 `src_name` fix landed in P1. §7.2 (`sqlalchemy.text()`) was deferred to P2 |
 | P1.8 | `capability-protocols` | phase | **archived** (2026-04-20) | — | new (harness architecture redesign) | Five capability protocols (GuardrailProvider, SandboxProvider, MemoryPolicy, ToolPolicy, ContextProvider) + CapabilityResolver + two-tier harness split (SDK vs Host) + ClaudeCodeHarness + CLI export subcommand + delegation guardrail integration |
 | P2 | `memory-architecture` | phase | **archived** (2026-04-21) | §1.2, §8.1 | perplexity §8.1 + old P3 | `core/memory.py` MemoryManager + `core/graphiti.py` Graphiti/FalkorDB client factory + per-persona AsyncEngine + `memory`/`preferences`/`interactions` tables + CLI `db upgrade/downgrade` + `export-memory` subcommands. Implements `MemoryPolicy` protocol from P1.8. `PostgresGraphitiMemoryPolicy` auto-selected when `database_url` configured |
 | P3 | `http-tools-layer` | phase | **archived** (2026-04-24) | §8.2 | perplexity §8.2 + old P2 | `src/assistant/http_tools/` — `/openapi.json`-based discovery with `$ref` resolution (D10), `_build_tool()` Pydantic-model + async-callable generator, auth header handling (D11 structured + legacy compat), registry, `--list-tools` CLI flag, integration tests against mock server under D9 security posture (streaming 10 MiB cap, no redirects, credential redaction) |
 | P4 | `observability` | phase | **archived** (2026-05-03) | §1.1, §8.3 | perplexity §8.3 (new) | `core/observability.py` — `@traced` decorator, spans on `HarnessAdapter.invoke()` and `DelegationSpawner.delegate()`, token + latency + cost tracking per persona/role. Langfuse backend default; OpenLLMetry adapter optional |
 | P5 | `ms-graph-extension` | phase | **archived** (2026-05-09) | §8.4 | perplexity §8.4 + old P5 | Real `ms_graph`, `teams`, `sharepoint`, `outlook` extensions (replaces P1 stubs). MSAL auth, httpx client, OAuth refresh. Full MS Agent Framework harness implementation replacing P1's `NotImplementedError` stub |
-| P6 | `a2a-server` | phase | pending | §6, §8.5 | perplexity §8.5 (new; was Phase-16 "out of scope") | `src/assistant/a2a/` — server.py, task_handler.py, agent_card.py. Exposes `/a2a/v1/message:stream` endpoint. Serves `.well-known/agent.json`. Lets Copilot Studio Chief of Staff delegate to this assistant |
-| P7 | `scheduler` | phase | pending | §2.1, §8.6 | perplexity §8.6 (new) | `core/scheduler.py` — cron (croniter) + calendar-event + polling triggers. `schedules:` section in `persona.yaml`. `--daemon` CLI flag. Morning briefing / email triage / pre-meeting brief hooks |
-| P8 | `obsidian-vault` | phase | pending | §2.2, §8.7 | perplexity §8.7 (new) | Bi-directional Obsidian vault sync, split by authoring domain. Vault config declares `notes_dir` (human-authored: frameworks, meeting notes, raw thoughts — synced **into** ACA as indexed source) and `agent_dir` (agent-authored: entity hub pages, compiled summaries — rendered **from** ACA; frontmatter declares `agent_maintained: true`, `compiled_from: <entity_id>`, `regenerated_at: <ts>`; hand-edits may be overwritten on regeneration). Preferred: two endpoints on `agentic-content-analyzer` (`/index/vault-notes` for inbound, `/render/agent-folder` for outbound) invoked by a persona extension. Fallback: standalone `extensions/obsidian.py` with wikilink parsing + pgvector index covers the `notes_dir → ACA` direction only; `agent_dir` rendering deferred until ACA endpoint exists. Headless personas (no vault) skip both directions without penalty. Doctrine/frameworks remain in the persona submodule (loaded via P1.8 `ContextProvider`) — explicitly **not** vault content. |
-| P9 | `error-resilience` | phase | **archived** (2026-05-04) | §1.3, §8.8 | perplexity §8.8 (new) | `core/resilience.py` — `tenacity`-based retry on transient HTTP failures, circuit breaker per backend, graceful degradation (agent notes unavailability instead of silent omission). Applied to http_tools client + extension `health_check()` |
+| P6 | `a2a-server` | phase | pending | §6, §8.5 | perplexity §8.5 (new; was Phase-16 "out of scope") | `src/assistant/a2a/` — server.py, task_handler.py, agent_card.py. Exposes `/a2a/v1/message:stream` endpoint. Serves `.well-known/agent.json`. Lets external orchestrators (Copilot Studio, meta-harnesses) delegate to this assistant. Also a prerequisite surface for P22 meta-harness composition |
+| P7 | `scheduler` | phase | pending | §2.1, §8.6 | perplexity §8.6 (new) | `core/scheduler.py` — cron (croniter) + calendar-event + polling triggers. `schedules:` section in `persona.yaml`. `--daemon` CLI flag. Morning briefing / email triage / pre-meeting brief hooks. Scheduled work SHOULD default to the local/cheap routing tiers from P19/P20 |
+| P8 | `obsidian-vault` | phase | pending | §2.2, §8.7 | perplexity §8.7 (new) | Bi-directional Obsidian vault sync, split by authoring domain. Vault config declares `notes_dir` (human-authored — synced **into** ACA as indexed source) and `agent_dir` (agent-authored — rendered **from** ACA; frontmatter declares `agent_maintained: true`, `compiled_from: <entity_id>`, `regenerated_at: <ts>`). Preferred: two endpoints on `agentic-content-analyzer` invoked by a persona extension. Fallback: standalone `extensions/obsidian.py` covering `notes_dir → ACA` only. Headless personas skip both directions. Doctrine/frameworks remain in the persona submodule (loaded via P1.8 `ContextProvider`) |
+| P9 | `error-resilience` | phase | **archived** (2026-05-04) | §1.3, §8.8 | perplexity §8.8 (new) | `core/resilience.py` — `tenacity`-based retry on transient HTTP failures, circuit breaker per backend, graceful degradation. Applied to http_tools client + extension `health_check()` |
 | P10 | `extension-lifecycle` | phase | pending | §3.1, §8.9 | perplexity §8.9 (new) | Extend `Extension` protocol with `initialize()`, `shutdown()`, `refresh_credentials()` lifecycle hooks. `PersonaRegistry.load_extensions()` calls `initialize()` post-load; registers shutdown handler |
-| P11 | `harness-routing` | phase | pending | §3.2, §8.10 | perplexity §8.10 (new) | Dynamic harness selection in `harnesses/factory.py`. `--harness auto` default. Routes M365-tool tasks → MS Agent Framework, complex reasoning → Deep Agents |
-| P12 | `delegation-context` | phase | pending | §3.3, §5 P1, §8.11 | perplexity §8.11 + old P8 + §5 P1 router | `DelegationContext` dataclass (parent_role, delegation_chain, memory_snippets, conversation_summary, constraints). Cycle detection. `delegate_parallel`. Monitoring/cancellation. Delegation analytics tables. **Includes `delegation/router.py` intent-classification logic** for automatic delegation routing (perplexity §5 P1 item; was missing from v2 scope) |
-| P13 | `security-hardening` | phase | pending | §4, §8.12 | perplexity §8.12 (new) | Per-persona env var scoping in `_env()` helper. Per-persona `.env` files. Extension `manifest.yaml` with SHA-256 hashes verified before `spec.loader.exec_module()` |
+| P11 | `harness-routing` | phase | pending | §3.2, §8.10 | perplexity §8.10, reframed by arch-review G-C | Dynamic **harness** selection in `harnesses/factory.py` (`--harness auto`). Routes M365-tool tasks → MS Agent Framework, complex reasoning → Deep Agents, interactive/coding tasks → host-harness (subscription) tier. Consumes the capability vocabulary and routing engine from P19 — **model** routing lives in P19, harness routing here |
+| P12 | `delegation-context` | phase | pending | §3.3, §5 P1, §8.11 | perplexity §8.11 + old P8 + §5 P1 router | `DelegationContext` dataclass (parent_role, delegation_chain, memory_snippets, conversation_summary, constraints). Cycle detection. `delegate_parallel`. Monitoring/cancellation. Delegation analytics tables. Includes `delegation/router.py` intent-classification logic |
+| P13 | `security-hardening` | phase | pending | §4, §8.12 | perplexity §8.12 (new) | Per-persona env var scoping in `_env()` helper. Per-persona `.env` files. Extension `manifest.yaml` with SHA-256 hashes verified before `spec.loader.exec_module()`. First non-allow-all `GuardrailProvider` (budget + action policies shared with P19 routing) |
 | P14 | `google-extensions` | phase | pending | — | original P4 | Real `gmail`, `gcal`, `gdrive` extension implementations. OAuth refresh via the P10 lifecycle hooks |
+| P14a | `harness-ag-ui-bridge` | phase | **archived** (2026-05-21) | — | new (openspec/explore/generative-ui-layer.md) | AG-UI SSE transport: `transports/ag_ui/` event mapper (9 AG-UI v1 event types, D8 two-phase error contract), `web/` FastAPI app factory + `POST /chat` SSE + `GET /health`, `assistant serve` CLI subcommand. Added `ag-ui-emitter` + `web-server` capability specs. *Row added retroactively by v3 — the change was archived without a v2 row; its archive commit label "P14" collided with `google-extensions` above* |
 | P15 | `work-persona-config` | phase | pending | — | original P6 | Create `assistant-config-work` submodule, wire into `.gitmodules`, populate work persona config + role overrides. Deferred until work machine available |
-| P16 | `cli-harness-integrations` | phase | pending | — | original P7 | Deeper Claude Code / Codex / Gemini integrations — slash commands in `.claude/commands/`, `.codex/skills/`, `.gemini/settings.json`. Persona-aware routing |
-| P17 | `mcp-server-exposure` | phase | pending | — | original P9 | Expose the assistant as an MCP server so other Claude Code sessions can invoke it as a tool. Complementary to P6 A2A (different protocols, different clients) |
-| P18 | `railway-deployment` | phase | pending | — | original P10 | Run persona instances as Railway services + deployment manifests |
-| X1 | `add-teacher-role` | non-phase (feature) | archived 2026-05-15 | — | user-requested (2026-04-16) | Add `teacher` role with Feynman + Socratic skill files; `--method` CLI flag and `/method` / `/methods` REPL commands; declare `content_analyzer:*` preferred tools that bind via the archived P3 http-tools layer once ACA aligns its operationIds. Independent of the P-phase DAG. Followups: ACA#421 (operationIds), assistant#31 (observability), #32 (role-params abstraction when N≥2 roles), #33 (persona-scoped LLM auth). |
+| P16 | `cli-harness-integrations` | phase | pending | — | original P7 + arch-review G-C/H4 | Subscription-tier completion: register the `codex` host harness (currently in the persona template but **not** in `harnesses/factory.py`), add a `gemini_cli` host harness, deeper Claude Code / Codex / Gemini integrations (slash commands in `.claude/commands/`, `.codex/skills/`, `.gemini/`), persona-aware routing, template↔registry consistency test |
+| P17 | `mcp-server-exposure` | phase | pending | — | original P9 | Expose the assistant as an MCP server so other sessions/harnesses can invoke it as a tool. Complementary to P6 A2A (different protocols, different clients); together they form the composition surface consumed by P22 |
+| P19 | `model-provider-routing` | phase | pending | — | new (arch-review G-A) | Provider-agnostic model layer + **capability-based model routing**. Persona-level `models:` registry — named entries with provider string (`anthropic:`, `openai:`, `google_genai:`, `google_vertexai:`, `bedrock_converse:`, `ollama:`, OpenRouter via OpenAI-compatible `base_url`), capability tags (`fast`, `cheap`, `long-context`, `coding`, `vision`, `local-only`, `private-data-ok`), and ordered fallback chains. `core/model_router.py` resolves (capability requirements → model) on the `init_chat_model()` seam; per-persona API-key env indirection consistent with `_env()`; budget enforcement via `GuardrailProvider`; cost attribution through existing telemetry spans. Both SDK harnesses consume the router instead of raw model-id strings |
+| P20 | `local-inference-node` | phase | pending | — | new (arch-review G-B) | GX10 (or any OpenAI-compatible local endpoint: NIM / vLLM / Ollama) as first-class model-registry entries. Local embedding model wiring for Graphiti/memory search. Routing policy: `private-data-ok`-tagged operations (memory summarization, embeddings, interaction logging) resolve local-first; scheduled/background work prefers local/cheap tiers. Health-checked endpoints with cloud fallback via P19 fallback chains |
+| P21 | `memory-retrieval-activation` | phase | pending | §1.2 (completion) | new (arch-review G-E; promoted from the "P5b candidate" note in CLAUDE.md) | Make memory *felt*: implement real `MemoryPolicy.get_recent_snippets()` against `MemoryManager` (all four policies currently return `[]`), wire `MemoryManager` retrieval into the DeepAgents context path (today it uses only `InMemorySaver` + file memory), post-turn interaction/episode capture, and MSAF `## Recent context` fed with live snippets. Retrieval + summarization SHOULD be routable to local models once P20 lands |
+| P22 | `meta-harness-compat` | phase | pending | — | new (arch-review G-D) | Composition **under** external meta-harnesses rather than rebuilding one. Deliverables: Omnigent-composable agent definition (agent YAML + common API surface over the existing AG-UI/A2A/MCP endpoints), evaluation of NemoClaw/OpenShell as the sandboxed always-on runtime for the GX10 deployment, and the first real `SandboxProvider` implementation (container/OpenShell-backed) replacing `PassthroughSandbox`. Outcome is an ADR: adopt / integrate / defer per meta-harness |
+| P23 | `deployment-topology` | phase | pending | — | new (arch-review G-F); absorbs old P18 `railway-deployment` (original P10) | Home-lab deployment: GX10 as always-on node (assistant daemon, per-persona Postgres/ParadeDB + FalkorDB, local inference from P20), G762 as interactive workstation, LAN exposure of AG-UI/A2A/MCP surfaces, service definitions (systemd or compose), per-persona secrets handling, DB backup/restore runbook. Railway (the entire scope of former P18) demoted to an optional cloud-variant appendix of this phase |
+| X1 | `add-teacher-role` | non-phase (feature) | **archived** (2026-05-15) | — | user-requested (2026-04-16) | Add `teacher` role with Feynman + Socratic skill files; `--method` CLI flag and `/method` / `/methods` REPL commands; declare `content_analyzer:*` preferred tools binding via the P3 http-tools layer once ACA aligns its operationIds. Followups: ACA#421, assistant#31, #32, #33 |
+| X2 | `fix-harness-conversation-memory` | non-phase (fix) | **archived** (2026-05-15) | — | bug fix (harness conversation continuity) | Listed for chronological context (row added retroactively by v3). Fixed cross-turn conversation memory in SDK harnesses |
+| X3 | `repo-hygiene` | non-phase (maintenance) | pending | — | new (arch-review §4 H1–H5) | Backfill `## Purpose` in all 25 capability specs (all currently "TBD"); seed `docs/decisions/` with retroactive ADRs (SDK/Host split, capability protocols, AG-UI adoption, privacy boundary, model-seam choice); fix `gen-eval` path dependency (`[tool.uv.sources]` breaks standalone clones on new machines) via publish/vendor/optional-group; pin `agent-framework-core` directly to dodge the namespace-package quirk. (`codex` registration moved to P16 where the harness work lives) |
 
 ## Status lifecycle
 
@@ -63,48 +80,70 @@ record — update it as part of the phase's final commit.
 ## Dependency graph
 
 Edges represent **functional prerequisites** — phase B depends on a
-concrete output of phase A — not chronological or stylistic preference.
-Phases drawn as siblings have no functional dependency on each other
-and MAY run in any order.
+concrete output of phase A — not chronological preference. Siblings MAY
+run in any order.
 
 ```
 P1 bootstrap-vertical-slice (archived)
  │
- ├─→ P1.5 test-privacy-boundary (archived; tests/ infrastructure)
- │    └─→ P1.6 sync-test-privacy-boundary-spec (archived; spec-sync of P1.5)
+ ├─→ P1.5 test-privacy-boundary (archived) ─→ P1.6 (archived; spec-sync)
+ ├─→ P1.7 bootstrap-fixes (archived)
  │
- ├─→ P1.7 bootstrap-fixes (archived; all §7 items resolved or folded into P2)
+ ├─→ P1.8 capability-protocols (archived)
+ │    ├─→ P2 memory-architecture (archived)
+ │    ├─→ P3 http-tools-layer (archived)
+ │    ├─→ P13 security-hardening          (implements GuardrailProvider; also needs P10)
+ │    ├─→ P16 cli-harness-integrations    (extends HostHarnessAdapter exports)
+ │    └─→ P19 model-provider-routing      (router slots into CapabilityResolver;
+ │                                         budget checks via GuardrailProvider;
+ │                                         cost spans via P4 observability)
+ │         ├─→ P11 harness-routing        (consumes P19 capability vocabulary;
+ │         │                              M365 routing also needs P5 — archived)
+ │         └─→ P20 local-inference-node   (GX10 endpoints as registry entries)
  │
- ├─→ P1.8 capability-protocols (archived; harness architecture redesign)
- │    ├─→ P2 memory-architecture             (implements MemoryPolicy protocol;
- │    │                                       §7.2 sqlalchemy.text() folded into P2 scope)
- │    ├─→ P3 http-tools-layer                (implements ToolPolicy source)
- │    ├─→ P11 harness-routing                (three-tier routing uses CapabilityResolver)
- │    ├─→ P13 security-hardening             (implements GuardrailProvider;
- │    │                                       also needs P10 lifecycle hooks)
- │    └─→ P16 cli-harness-integrations       (extends HostHarnessAdapter exports)
+ ├─→ P4 observability (archived)
+ ├─→ P10 extension-lifecycle              (independent; initialize/shutdown hooks)
  │
- ├─→ P4 observability                        (independent of P1.7/P1.8; lands early for tracing)
- ├─→ P10 extension-lifecycle                 (independent of P1.7/P1.8; initialize/shutdown hooks)
+ ├─→ P2 memory-architecture (archived) ──┬─→ P7 scheduler                (needs memory for briefings)
+ │                                       ├─→ P8 obsidian-vault           (needs memory for indexing)
+ │                                       ├─→ P12 delegation-context      (needs memory snippets)
+ │                                       └─→ P21 memory-retrieval-activation
+ │                                            (snippets into harness context;
+ │                                            local summarization once P20 lands)
  │
- ├─→ P2 memory-architecture (archived) ──┬─→ P7 scheduler         (needs memory for briefings)
- │                            ├─→ P8 obsidian-vault    (needs memory for indexing backend)
- │                            └─→ P12 delegation-context  (needs memory for context snippets;
- │                                                        scope includes delegation/router.py
- │                                                        intent classification per §5 P1)
+ ├─→ P3 http-tools-layer (archived) ─────┬─→ P5 ms-graph-extension (archived) ─┬─→ P6 a2a-server
+ │                                       │                                    └─→ P14 google-extensions
+ │                                       └─→ P9 error-resilience (archived)
  │
- ├─→ P3 http-tools-layer ─────┬─→ P5 ms-graph-extension ──┬─→ P6 a2a-server           (exposes assistant via A2A)
- │                            │                          └─→ P14 google-extensions    (gmail/gcal/gdrive)
- │                            └─→ P9 error-resilience     (retries applied to http_tools client)
- │
- ├─→ P10 extension-lifecycle ─→ P13 security-hardening  (manifest validation uses lifecycle hook)
- └─→ P5 ms-graph-extension    ─→ P11 harness-routing    (routes M365 tasks once MS Agent Framework is real)
+ ├─→ P10 extension-lifecycle ─→ P13 security-hardening   (manifest validation uses lifecycle hook)
+ ├─→ P14a harness-ag-ui-bridge (archived) ─→ P22 meta-harness-compat
+ │                                            (composition surface = AG-UI + A2A + MCP;
+ │                                            also needs P6 and/or P17;
+ │                                            SandboxProvider impl feeds back into P13 posture)
+ └─→ P6 a2a-server ─→ P17 mcp-server-exposure   (protocol siblings; either unblocks P22)
 
 # Independent / long-range
-P15 work-persona-config       needs P5 + P8; also triggered by machine availability
-P17 mcp-server-exposure       needs P6 (protocol parallel; A2A and MCP expose the same assistant)
-P18 railway-deployment        needs P15, P16
+X3  repo-hygiene              no prerequisites; do first (unblocks clean clones on new machines)
+P15 work-persona-config       needs P5 (archived); triggered by work-machine availability
+P23 deployment-topology       needs P20 (local inference) + P7 (daemon mode);
+                              Railway variant additionally needs P15, P16
 ```
+
+## Recommended execution order (advisory)
+
+Rationale in `docs/architecture-analysis/2026-07-07-architecture-review.md` §5.
+
+1. **X3 `repo-hygiene`** — cheap; unblocks standalone clones (GX10 setup) and pays down doc debt.
+2. **P19 `model-provider-routing`** ∥ **P21 `memory-retrieval-activation`** — the two highest-leverage gaps: multi-provider access and memory that is actually used. Independent of each other.
+3. **P10 `extension-lifecycle`** → **P13 `security-hardening`** — lifecycle + first real guardrails (budgets shared with P19).
+4. **P20 `local-inference-node`** — once the GX10 is racked; local/private routing tiers go live.
+5. **P7 `scheduler`** — proactive value, now cheap to run on local tiers.
+6. **P6 `a2a-server`** ∥ **P17 `mcp-server-exposure`** — the interop/composition surface.
+7. **P11 `harness-routing`** — auto-selection across harness + subscription tiers.
+8. **P22 `meta-harness-compat`** — compose under Omnigent; evaluate NemoClaw for the GX10 runtime.
+9. **P8 `obsidian-vault`** ∥ **P12 `delegation-context`** — knowledge + delegation depth.
+10. **P14 `google-extensions`**, **P15 `work-persona-config`**, **P16 `cli-harness-integrations`** — extension/persona breadth as machines and accounts allow.
+11. **P23 `deployment-topology`** — solidify the fleet once its components exist.
 
 ## Phase-by-phase execution via autopilot
 
@@ -112,7 +151,7 @@ Per phase:
 
 ```bash
 # 1. Plan
-/plan-feature <change-id>   # e.g. memory-architecture
+/plan-feature <change-id>   # e.g. model-provider-routing
 
 # 2. Implement (once plan approved at Gate 2)
 /autopilot <change-id>
@@ -130,17 +169,34 @@ re-prefix with dates; the roadmap is the identity source.
 
 | Theme | Phases that touch it |
 |-------|----------------------|
-| **Capability protocols** (guardrails, sandbox, memory policy, tool policy — harness architecture) | P1.8 establishes protocols; P2 implements MemoryPolicy; P3 implements ToolPolicy; P13 implements GuardrailProvider; P11/P16 consume CapabilityResolver |
-| **Memory hierarchy** (memory.md derived from Postgres+Graphiti — perplexity §1.2) | P2 establishes; P7/P8/P12 consume |
-| **Observability** (tracing, cost per persona×role — §1.1) | P4 establishes; all later phases add spans to their new code paths |
-| **Resilience** (retry, circuit breaker — §1.3) | P9 establishes; P3/P5/P14/P17 adopt |
-| **Security boundaries** (credential scoping, manifest validation — §4) | P13 establishes; all phases loading config must comply |
+| **Capability protocols** (guardrails, sandbox, memory policy, tool policy) | P1.8 establishes; P2 MemoryPolicy; P3 ToolPolicy; P13 GuardrailProvider; P22 SandboxProvider; P11/P16/P19 consume CapabilityResolver |
+| **Model & compute tiers** (subscription seats / metered APIs / local inference — arch-review §1) | P19 establishes routing; P20 local tier; P11 harness tier; P16 subscription tier; P7 consumes cheap tiers; P13 enforces budgets |
+| **Memory hierarchy** (Postgres + Graphiti; perplexity §1.2) | P2 establishes; P21 activates retrieval; P7/P8/P12 consume |
+| **Observability** (tracing, cost per persona×role — §1.1) | P4 establishes; P19 attributes cost per model/tier; all later phases add spans |
+| **Resilience** (retry, circuit breaker — §1.3) | P9 establishes; P3/P5/P14/P17/P20 adopt (P20: endpoint health + cloud fallback) |
+| **Security boundaries** (credential scoping, manifest validation, sandboxing — §4) | P13 establishes; P22 provides real sandbox; all config-loading phases comply |
 | **Proactive execution** (scheduler + A2A + Obsidian RAG — §2) | P6/P7/P8 — the differentiated Chief-of-Staff story |
+| **Composition & interop** (be composable, not a control plane) | P6 A2A, P17 MCP, P14a AG-UI (archived), P22 meta-harness compat |
 
-## Out of scope for roadmap v2
+## v3 change log (vs v2)
 
-Items from bootstrap spec Phase 16 not adopted by perplexity §8 and
-still deferred: cross-persona bridge, multi-model routing (beyond the
-harness-routing in P11), role learning, persona config encryption,
-NotebookLM integration. Each may re-enter a future v3 roadmap if
-perplexity-equivalent review surfaces demand.
+- Added retroactive rows **P14a `harness-ag-ui-bridge`** (phase; archived
+  2026-05-21 without a v2 row — spec-invariant fix) and **X2
+  `fix-harness-conversation-memory`** (non-phase; archived 2026-05-15).
+- Added new phases **P19–P23** and non-phase **X3** from the 2026-07-07
+  architecture review (provenance in Source column).
+- **Folded `railway-deployment` (v2 P18, original P10) into P23** as an
+  optional cloud variant; the home-lab topology is now primary. No P18
+  change directory ever existed, so no archive linkage is broken.
+- Reframed **P11** (harness routing only; model routing extracted to P19)
+  and **P16** (explicit `codex` registration + `gemini_cli` host harness).
+- Multi-model routing, previously in v2's "Out of scope" list, is now in
+  scope (P19/P20).
+
+## Out of scope for roadmap v3
+
+Deferred items with no current phase: cross-persona bridge, role
+learning, persona config encryption, NotebookLM integration, in-repo
+session-sharing / multi-user control plane (delegated to meta-harnesses
+per P22's adopt-not-build posture). Each may re-enter a future v4
+roadmap if demand surfaces.
