@@ -50,5 +50,5 @@ implementation code ships in this change.
 
 ## 3. Review
 
-- [ ] 3.1 Owner review + archive (`/openspec-archive-change
+- [x] 3.1 Owner review + archive (`/openspec-archive-change (approved 2026-07-16, verdicts 1-10)
   capability-protocols-v2`; update roadmap P24 status to archived)

@@ -23,10 +23,15 @@ in addition to the existing `name() → str` method.
 
 ### Requirement: Deep Agents Harness Implementation
 
-The system SHALL provide a `DeepAgentsHarness` implementation that constructs
-a Deep Agents agent using the persona's configured model, the composed system
-prompt, and tools from both the discovered HTTP tool list and each loaded
-extension's `as_langchain_tools()`.
+The system SHALL provide a `DeepAgentsHarness` implementation that
+constructs a Deep Agents agent using the persona's configured model,
+the composed system prompt, and exactly the tool list passed to
+`create_agent` — the complete, already-aggregated set produced by
+`ToolPolicy.authorized_tools()` (which merges extension tools and
+discovered HTTP tools and applies telemetry wrapping). The harness
+MUST NOT re-derive tools from the `extensions` argument: it MUST NOT
+call `as_langchain_tools()` (or any extension tool method) and MUST
+NOT re-wrap tools that the tool policy has already wrapped.
 
 #### Scenario: Harness name is deep_agents
 
@@ -40,13 +45,16 @@ extension's `as_langchain_tools()`.
 - **THEN** `create_agent(tools, extensions)` MUST construct a Deep Agents
   agent initialized with that model identifier
 
-#### Scenario: create_agent includes extension tools
+#### Scenario: create_agent uses only the provided tool list
 
-- **WHEN** one of the `extensions` returns `[tool_A]` from
-  `as_langchain_tools()`
-- **AND** `tools == [tool_B]`
-- **THEN** the constructed agent's tool set MUST contain both `tool_A` and
-  `tool_B`
+- **WHEN** `ToolPolicy.authorized_tools()` produced `[tool_A, tool_B]`
+  (where `tool_A` is extension-derived and `tool_B` is an HTTP tool)
+- **AND** `create_agent(tools=[tool_A, tool_B], extensions=exts)` is
+  called
+- **THEN** the constructed agent's tool set MUST contain exactly
+  `tool_A` and `tool_B`
+- **AND** the harness MUST NOT call any tool-producing method on the
+  members of `exts`
 
 #### Scenario: invoke returns the last assistant message content
 
@@ -81,20 +89,28 @@ the methods `create_agent(tools: list, extensions: list) → Any`,
 `invoke(agent: Any, message: str) → str`,
 `astream_invoke(agent: Any, message: str) → AsyncIterator[HarnessEvent]`,
 and `spawn_sub_agent(role: RoleConfig, task: str, tools: list,
-extensions: list) → str`. The `create_agent` signature retains the
-P1 tools/extensions parameters; migration to `CapabilitySet`-based
-invocation is deferred to P2 (memory-architecture) when concrete
-`MemoryPolicy` implementations exist to inject. The `astream_invoke`
-method is an additive streaming variant of `invoke`; it MUST NOT
-replace or alter the contract of the existing blocking `invoke`
-method, which remains callable by the CLI REPL.
+extensions: list) → str`. The `tools` parameter of `create_agent` (and
+`spawn_sub_agent`) is the complete, already-aggregated tool list
+produced by `ToolPolicy.authorized_tools()` — the tool policy is the
+sole tool aggregator. Harness implementations MUST NOT re-aggregate,
+re-derive, filter, or re-wrap extension tools from the `extensions`
+argument; that parameter is retained for non-tool concerns only
+(lifecycle hooks, health checks). This keeps aggregation at one seam
+so a tool-search/ranking stage can slot into the tool policy without
+touching any harness. The `astream_invoke` method is an additive
+streaming variant of `invoke`; it MUST NOT replace or alter the
+contract of the existing blocking `invoke` method, which remains
+callable by the CLI REPL.
 
-#### Scenario: SdkHarnessAdapter.create_agent accepts tools and extensions
+#### Scenario: SdkHarnessAdapter.create_agent consumes the aggregated tool list as-is
 
-- **WHEN** `DeepAgentsHarness.create_agent(tools, extensions)` is called
-- **THEN** the harness MUST construct an agent with the provided tools
-  and extension tools combined
-- **AND** the harness MUST read memory configuration from persona config
+- **WHEN** `create_agent(tools, extensions)` is called on any concrete
+  `SdkHarnessAdapter` implementation
+- **THEN** the harness MUST construct an agent whose tool set is
+  exactly the provided `tools` (rendered to the harness's native tool
+  shape as needed)
+- **AND** the harness MUST NOT derive additional tools from
+  `extensions`
 
 #### Scenario: SdkHarnessAdapter.invoke signature unchanged
 
@@ -559,4 +575,181 @@ metadata field indicating `streaming=True`.
   `metadata={"streaming": True, "error": "RuntimeError"}`
 - **AND** the original `RuntimeError` MUST propagate to the caller
   unchanged
+
+### Requirement: Durable Session Persistence
+
+The system SHALL make SDK harness sessions durable through
+checkpointer-backed persistence. For the DeepAgents harness this
+adopts the LangGraph checkpointer interface rather than inventing a
+session store: the harness SHALL accept an injected checkpointer at
+agent-construction time, keep `InMemorySaver` as the in-process
+default, and support a Postgres checkpointer implementation as the
+durable backend. When a durable checkpointer is configured, all
+conversation state keyed by `thread_id` — including runs suspended by
+the approval interrupt contract — MUST survive process restarts and
+be resumable by `thread_id` alone. Other SDK harnesses SHALL expose
+the same injection seam (a session-persistence object accepted at
+construction) so cross-harness session parity is a wiring concern,
+not a redesign.
+
+#### Scenario: Checkpointer is injectable
+
+- **WHEN** `DeepAgentsHarness` is constructed with an explicit
+  checkpointer
+- **AND** `create_agent(tools, extensions)` is called
+- **THEN** the underlying agent MUST be constructed with that
+  checkpointer instance
+- **AND** omitting the injection MUST preserve the `InMemorySaver`
+  default
+
+#### Scenario: Postgres-backed session survives a restart
+
+- **WHEN** a conversation runs against a Postgres checkpointer with
+  `thread_id="t1"`
+- **AND** the process restarts and a new harness is constructed with
+  the same checkpointer backend
+- **THEN** invoking with `thread_id="t1"` MUST see the prior
+  conversation history
+
+#### Scenario: Suspended runs are resumable by thread_id
+
+- **WHEN** a run on `thread_id="t2"` is suspended awaiting approval
+  (guardrail-provider approval interrupt contract)
+- **THEN** the suspended state MUST be recoverable from the durable
+  checkpointer using `thread_id="t2"` alone
+
+### Requirement: Session Registry
+
+The system SHALL provide a session registry that creates, looks up,
+and expires sessions keyed by `thread_id`, so serving surfaces (web
+transport, the P7 daemon, the P6 A2A server) can multiplex concurrent
+users and tasks instead of binding one global harness at startup.
+`create` SHALL produce a new session (persona/role-bound harness and
+agent) and return its `thread_id`; `lookup` SHALL return the live
+session for a known `thread_id` and signal unknown ids distinctly;
+`expire` SHALL release a session's in-process resources by
+`thread_id` or idle TTL policy — expiry releases the in-process
+session but MUST NOT delete durably checkpointed state, which remains
+resumable by re-creating a session bound to the same `thread_id`.
+
+#### Scenario: Registry multiplexes concurrent sessions
+
+- **WHEN** two sessions are created for the same persona and role
+- **THEN** they MUST have distinct `thread_id` values
+- **AND** invoking one session MUST NOT observe messages from the
+  other
+
+#### Scenario: Lookup returns the live session
+
+- **WHEN** a session is created with `thread_id="t1"`
+- **AND** `lookup("t1")` is called before expiry
+- **THEN** it MUST return the same session instance
+
+#### Scenario: Unknown thread_id is signaled distinctly
+
+- **WHEN** `lookup("never-created")` is called
+- **THEN** the registry MUST signal an unknown-session condition
+  (error or `None` per implementation) rather than silently creating
+  a new session
+
+#### Scenario: Expiry releases the session but not durable state
+
+- **WHEN** a session with a durable checkpointer is expired
+- **AND** a new session is created bound to the same `thread_id`
+- **THEN** the prior conversation history MUST still be visible to
+  the new session
+
+### Requirement: DeepAgents Memory Snippet Injection in create_agent
+
+The `DeepAgentsHarness` SHALL inject the persona's recent memory
+snippets into the `system_prompt` passed to `create_deep_agent` at
+`create_agent` time, achieving parity with the MSAF harness's D27
+prepend. The harness SHALL await the configured async
+`MemoryPolicy.get_recent_snippets(persona, role, limit=N)` (N defaults
+to 10; overridable via the `memory_snippet_limit` constructor kwarg)
+directly on the `create_agent` event loop (owner review verdict C8,
+2026-07-16 — no sync-to-async bridge on the hot path) and SHALL
+prepend the result under a `## Recent context` heading ahead
+of the composed system prompt. The policy is resolved via
+`CapabilityResolver` (SDK tier) unless a `memory_policy` constructor
+kwarg is injected. When the policy returns an empty list, the
+system prompt MUST equal the composed prompt unchanged with no heading
+injected. The `InMemorySaver` checkpointer and thread-id semantics
+MUST be unchanged by this injection. `spawn_sub_agent` MUST propagate
+the parent's injected `memory_policy` and `memory_snippet_limit` to
+the sub-harness.
+
+#### Scenario: Memory snippets prepended to the system prompt
+
+- **WHEN** the configured `MemoryPolicy.get_recent_snippets(persona,
+  role, limit=10)` returns `["snippet-1", "snippet-2"]`
+- **AND** `create_agent(...)` is awaited
+- **THEN** the `system_prompt` passed to `create_deep_agent` MUST
+  contain the substring `"## Recent context"` followed by both
+  snippets
+- **AND** the composed role prompt MUST also appear, after the
+  snippet block
+
+#### Scenario: Empty snippets leave the system prompt unchanged
+
+- **WHEN** `MemoryPolicy.get_recent_snippets(...)` returns `[]`
+- **AND** `create_agent(...)` is awaited
+- **THEN** the `system_prompt` MUST equal
+  `compose_system_prompt(persona, role)` exactly
+- **AND** the substring `"## Recent context"` MUST NOT appear
+
+#### Scenario: Default file policy on an empty persona injects nothing
+
+- **WHEN** the persona has no `database_url` and empty
+  `memory_content`, and no `memory_policy` kwarg is injected
+- **AND** `create_agent(...)` is awaited
+- **THEN** the resolved `FileMemoryPolicy` MUST yield no injection and
+  the prompt MUST NOT contain `"## Recent context"`
+
+### Requirement: SDK Harness Post-Turn Memory Capture
+
+The system SHALL capture completed turns to memory from every concrete
+`SdkHarnessAdapter` after a **successful** `invoke` or
+`astream_invoke`, via a shared `_capture_interaction(user_message,
+response)` helper on the base class. The helper resolves the concrete
+harness's `MemoryPolicy` and awaits
+`record_interaction(persona, role, user_message=..., response=...)`.
+Every failure — policy resolution, missing method on a third-party
+policy, backend write error — MUST be swallowed with a
+`logging.WARNING`-level message: memory failures MUST never break a
+conversation. For `invoke`, `response` is the returned response
+string; for `astream_invoke`, `response` is the concatenation of all
+emitted `TextDelta` text, and capture MUST occur before the terminal
+success `RunFinished` is yielded. Failed invocations and client
+disconnects MUST NOT trigger capture.
+
+#### Scenario: Successful invoke captures the turn
+
+- **WHEN** `invoke(agent, "the question")` succeeds with response
+  `"the answer"` and the resolved policy implements
+  `record_interaction`
+- **THEN** `record_interaction` MUST be awaited once with
+  `user_message="the question"` and `response="the answer"`
+
+#### Scenario: Capture failure is swallowed with a warning
+
+- **WHEN** `record_interaction` raises a connection error during a
+  successful `invoke`
+- **THEN** `invoke` MUST still return the agent's response
+- **AND** a `logging.WARNING`-level message MUST be emitted
+
+#### Scenario: Failed invocation does not capture
+
+- **WHEN** the underlying agent call raises
+- **THEN** `record_interaction` MUST NOT be called
+- **AND** the original exception MUST propagate unchanged
+
+#### Scenario: Streaming success captures accumulated text
+
+- **WHEN** `astream_invoke(agent, "greet me")` completes successfully
+  after emitting `TextDelta` events with texts `"Hello "` and
+  `"world"`
+- **THEN** `record_interaction` MUST be awaited once with
+  `user_message="greet me"` and `response="Hello world"` before the
+  terminal `RunFinished(error=None)` is yielded
 

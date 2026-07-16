@@ -159,32 +159,33 @@ requirement below).
 
 The system SHALL inject the persona's recent memory snippets into the
 constructed `Agent`'s `instructions` parameter at `create_agent`
-time. The harness SHALL request the snippets via the configured
+time. The harness SHALL await the configured async
 `MemoryPolicy.get_recent_snippets(persona, role, limit=N)` (where N
-defaults to 10), and SHALL prepend the resulting text block to the
+defaults to 10) directly on the `create_agent` event loop (owner
+review verdict C8, 2026-07-16 — no sync-to-async bridge on the hot
+path), and SHALL prepend the resulting text block to the
 composed system prompt under a clearly demarcated section heading
 (`## Recent context`). When the persona has no `MemoryPolicy`
 configured, or the policy returns an empty list, no section MUST be
 injected and the instructions MUST equal the composed prompt
 unchanged.
 
-This closes the asymmetry with the DeepAgents harness (which already
-consumes `MemoryPolicy`) by ensuring MSAF agents on the work persona
-have access to the same recent-context snippets without requiring
-any change to the `agent-framework` SDK contract.
+As of `memory-retrieval-activation` (P21) the built-in policies return
+**live** snippets: `PostgresGraphitiMemoryPolicy` retrieves recent
+facts, preferences, interaction summaries, and Graphiti semantic
+results via `MemoryManager.get_recent_snippets`;
+`FileMemoryPolicy` returns bounded `memory.md` excerpts. The
+DeepAgents harness performs the identical prepend, so the two SDK
+harnesses are symmetric.
 
-**Follow-up scope** — P5 deliberately ships the *minimum* viable
-memory injection: a string prepend at `create_agent` time. A
-higher-fidelity integration (live retrieval mid-turn, structured
-memory items rather than concatenated text, write-back of agent
-observations to memory) requires a structured memory hook on the
-`agent-framework` SDK that does not exist in the SDK version pinned
-by P5. Revisiting this is a P5b candidate when (a) the
-`agent-framework` SDK exposes a memory injection point with a stable
-contract, OR (b) usage data shows the prepend approach is
-insufficient for the work persona. Until then, the asymmetry with
-DeepAgents is a documented trade-off (DeepAgents has full
-`MemoryPolicy` consumption; MSAF has prepend-only).
+**Follow-up scope** — the prepend remains the *only* injection
+mechanism. A higher-fidelity integration (live retrieval mid-turn,
+structured memory items rather than concatenated text) still requires
+a structured memory hook on the `agent-framework` SDK that does not
+exist in the SDK version pinned by P5; revisit when the SDK exposes a
+memory injection point with a stable contract. Post-turn write-back of
+completed turns is now covered by the harness-adapter capability's
+"SDK Harness Post-Turn Memory Capture" requirement.
 
 #### Scenario: Memory snippets prepended to instructions
 

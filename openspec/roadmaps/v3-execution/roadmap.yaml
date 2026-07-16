@@ -27,7 +27,7 @@ items:
       - Quality gates green (pytest, ruff, mypy src tests)
   - item_id: P24
     title: capability-protocols-v2
-    status: in_progress
+    status: completed
     priority: 2
     effort: M
     change_id: capability-protocols-v2
@@ -52,7 +52,7 @@ items:
         rationale: Implements the ModelProvider contract defined in P24
   - item_id: P21
     title: memory-retrieval-activation
-    status: in_progress
+    status: completed
     priority: 4
     effort: L
     change_id: memory-retrieval-activation
