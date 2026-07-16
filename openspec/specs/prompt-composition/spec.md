@@ -1,7 +1,12 @@
 # prompt-composition Specification
 
 ## Purpose
-TBD - created by archiving change bootstrap-vertical-slice. Update Purpose after archive.
+Governs the three-layer system prompt composition: the base layer, the
+role's prompt, and the persona's prompt are concatenated in a fixed order,
+with an active-configuration summary appended at the end. It exists so that
+public, reusable role behavior and private persona identity combine
+deterministically into a single system prompt. Consumers are all harness
+adapters, which call the composer at agent-creation time.
 ## Requirements
 ### Requirement: Three-Layer System Prompt Composition
 

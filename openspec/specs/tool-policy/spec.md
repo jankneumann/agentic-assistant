@@ -1,7 +1,14 @@
 # tool-policy Specification
 
 ## Purpose
-TBD - created by archiving change capability-protocols. Update Purpose after archive.
+Governs the `ToolPolicy` runtime-checkable protocol, the
+`DefaultToolPolicy` implementation, and tool manifest export. It exists so
+that which tools a given persona/role composition actually exposes is a
+policy decision made in one place, rather than every discovered or
+registered tool being unconditionally available. Consumers are the
+capability resolver, the harness adapters that filter their aggregated tool
+set through the policy, and the `assistant export` command that emits
+manifests for host harnesses.
 ## Requirements
 ### Requirement: ToolPolicy Protocol
 

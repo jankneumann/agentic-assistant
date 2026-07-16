@@ -1,7 +1,13 @@
 # sandbox-provider Specification
 
 ## Purpose
-TBD - created by archiving change capability-protocols. Update Purpose after archive.
+Governs the `SandboxProvider` runtime-checkable protocol, the
+`ExecutionContext` type, and the `PassthroughSandbox` stub. It exists to
+reserve a pluggable isolation point for tool and code execution so that
+real sandboxing can be introduced later without changing harness or
+capability-resolver interfaces. Consumers are the capability resolver,
+which selects a provider per persona, and harness execution paths; the
+passthrough stub executes without isolation until a real provider lands.
 ## Requirements
 ### Requirement: SandboxProvider Protocol
 

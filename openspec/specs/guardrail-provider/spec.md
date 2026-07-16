@@ -1,7 +1,14 @@
 # guardrail-provider Specification
 
 ## Purpose
-TBD - created by archiving change capability-protocols. Update Purpose after archive.
+Governs the `GuardrailProvider` runtime-checkable protocol together with
+its `ActionRequest`/`ActionDecision` types, the `RiskLevel` enumeration,
+and the `AllowAllGuardrails` stub. It exists to give each persona a
+pluggable pre-action approval point for risky operations (tool calls,
+delegation) without hard-coding policy into core code. Consumers are the
+delegation spawner and harness execution paths, which receive the provider
+through the capability resolver; the stub keeps behavior permissive until a
+persona supplies a real policy.
 ## Requirements
 ### Requirement: GuardrailProvider Protocol
 

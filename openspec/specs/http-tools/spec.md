@@ -1,7 +1,15 @@
 # http-tools Specification
 
 ## Purpose
-TBD - created by archiving change http-tools-layer. Update Purpose after archive.
+Governs the declarative HTTP tools layer: async `discover_tools()` over
+configured OpenAPI sources, parsing operations into typed LangChain
+`StructuredTool`s, auth header resolution, a locked-down HTTP client
+security posture, the `HttpToolRegistry`, CLI startup integration and the
+`--list-tools` subcommand, plus resilience and tracing on every invocation
+and retries during discovery. It exists so a persona can expose external
+HTTP APIs as agent tools purely through configuration, without writing
+extension code. Consumers are the CLI and the harness adapters that
+aggregate the discovered tools.
 ## Requirements
 ### Requirement: HTTP Tool Discovery
 

@@ -1,7 +1,14 @@
 # tooling-roadmap Specification
 
 ## Purpose
-TBD - created by archiving change roadmap-v2-perplexity-integration. Update Purpose after archive.
+Governs roadmap governance for the project: `openspec/roadmap.md` is the
+single authoritative phase registry, each phase moves through a defined
+status lifecycle, inter-phase dependencies are represented as an explicit
+DAG, and externally sourced recommendations carry provenance attribution.
+It exists so phase sequencing, status, and the rationale behind them have
+one auditable source of truth instead of being scattered across proposals
+and session notes. Consumers are planning sessions and skills that sequence
+work, and contributors deciding what to build next.
 ## Requirements
 ### Requirement: Roadmap Document Authoritative
 

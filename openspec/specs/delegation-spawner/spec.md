@@ -1,7 +1,13 @@
 # delegation-spawner Specification
 
 ## Purpose
-TBD - created by archiving change bootstrap-vertical-slice. Update Purpose after archive.
+Governs the `DelegationSpawner`, which spawns sub-agents that inherit the
+current persona while switching role. It exists to make delegation safe and
+bounded: it enforces each role's `allowed_sub_roles` list, a concurrent
+delegation limit, and persona availability, consults the persona's
+`GuardrailProvider` before spawning, and emits an observability span per
+delegation. Consumers are the CLI `/delegate` REPL command and harness-side
+delegation tools.
 ## Requirements
 ### Requirement: Delegation Respects allowed_sub_roles
 

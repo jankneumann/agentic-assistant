@@ -1,7 +1,15 @@
 # ms-extensions Specification
 
 ## Purpose
-TBD - created by archiving change ms-graph-extension. Update Purpose after archive.
+Governs the four real Microsoft 365 extensions — `ms_graph`, `outlook`,
+`teams`, and `sharepoint` (read-only) — including their tool surfaces,
+LangChain/MSAF tool format parity, input URL-encoding and validation, scope
+override semantics, pagination discipline with per-tool page ceilings,
+breaker-aware invocation errors, preserved observability wrapping, and real
+health status. It exists to give personas Microsoft 365 capabilities
+through the shared graph-client transport rather than per-extension HTTP
+code. The implementations live in the public repo and stay disabled until a
+persona's private config enables them.
 ## Requirements
 ### Requirement: ms_graph Extension Real Implementation
 

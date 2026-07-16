@@ -1,7 +1,15 @@
 # ms-agent-framework-harness Specification
 
 ## Purpose
-TBD - created by archiving change ms-graph-extension. Update Purpose after archive.
+Governs the `MSAgentFrameworkHarness` adapter that runs persona/role
+compositions on Microsoft's `agent-framework` SDK: building an
+`agent_framework.Agent` in `create_agent`, string-returning `invoke`,
+nested sub-agent spawning, consumption of resolved capabilities, memory
+snippet prepending under a `## Recent context` heading, and `@traced_harness`
+observability. It exists as the second full harness so Microsoft Graph
+tooling can run natively on the MSAF stack alongside Deep Agents. Memory
+injection is deliberately minimal-prepend only — a documented asymmetry
+versus the Deep Agents harness.
 ## Requirements
 ### Requirement: MSAgentFrameworkHarness Full Implementation
 

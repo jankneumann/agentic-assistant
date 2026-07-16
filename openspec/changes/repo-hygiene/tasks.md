@@ -12,7 +12,7 @@
 
 ## 2. Documentation debt
 
-- [ ] 2.1 Backfill `## Purpose` in all 25 `openspec/specs/*/spec.md`
+- [x] 2.1 Backfill `## Purpose` in all capability specs (24 on disk)
 - [ ] 2.2 Seed `docs/decisions/` with six retroactive ADRs
 
 ## 3. Wrap-up

@@ -1,7 +1,15 @@
 # memory-policy Specification
 
 ## Purpose
-TBD - created by archiving change capability-protocols. Update Purpose after archive.
+Governs the `MemoryPolicy` protocol with its `MemoryConfig` and
+`MemoryScoping` types, and the persistent memory stack behind it: the
+database engine and async session factories, the Graphiti client factory,
+Alembic migration infrastructure, the memory database schema, the
+`MemoryManager`, and the `FileMemoryPolicy` and `PostgresGraphitiMemoryPolicy`
+implementations. It exists to give each persona isolated, pluggable
+conversation memory backed by its own Postgres database. Harnesses consume
+policies through the capability resolver rather than touching storage
+directly.
 ## Requirements
 ### Requirement: MemoryPolicy Protocol
 

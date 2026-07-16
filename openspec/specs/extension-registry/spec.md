@@ -1,7 +1,14 @@
 # extension-registry Specification
 
 ## Purpose
-TBD - created by archiving change bootstrap-vertical-slice. Update Purpose after archive.
+Governs the `Extension` protocol and its registry: how extensions expose
+tools via `as_langchain_tools()`, receive their activation config at
+construction, report `HealthStatus`, emit observability spans on tool
+invocation, and are built through a factory that optionally receives the
+persona. It exists to keep extension implementations in the public repo
+while activation configuration stays in private persona repos, so a persona
+enables only the integrations it needs. Consumers are persona loading, the
+harness adapters that aggregate extension tools, and health checks.
 ## Requirements
 ### Requirement: Extension Protocol
 

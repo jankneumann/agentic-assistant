@@ -1,7 +1,15 @@
 # observability Specification
 
 ## Purpose
-TBD - created by archiving change observability. Update Purpose after archive.
+Governs the `ObservabilityProvider` protocol (with `noop` and `langfuse`
+implementations) and the tracing woven through the system: harness
+invocations, delegation chains, extension and HTTP tool calls, and
+MemoryManager operations, plus secret sanitization, the flush lifecycle,
+three-level graceful degradation, persona-pattern configuration loading,
+and persona/role context propagation. It exists so every agent action is
+traceable end-to-end without any code path depending on a telemetry backend
+being available — the noop provider is the default. Telemetry is emit-only;
+the module exposes no inbound interfaces.
 ## Requirements
 ### Requirement: Observability Provider Contract
 

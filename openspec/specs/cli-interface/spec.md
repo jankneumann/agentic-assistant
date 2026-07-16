@@ -1,7 +1,14 @@
 # cli-interface Specification
 
 ## Purpose
-TBD - created by archiving change bootstrap-vertical-slice. Update Purpose after archive.
+Governs the `assistant` command-line entry point: the click group with its
+`run`, list, `export`, `db`, `export-memory`, and `serve` subcommands,
+persona/role/harness selection flags, and the interactive REPL including
+`/delegate`, teacher-method flags, and tool listing. It exists as the
+primary human interface for composing a persona with a role and running it
+on a chosen harness. The CLI only wires together the core library
+(registries, composition, harness factory) and delegates all agent behavior
+to it.
 ## Requirements
 ### Requirement: CLI Entry Point
 

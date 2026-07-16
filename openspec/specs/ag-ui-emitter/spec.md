@@ -1,7 +1,12 @@
 # ag-ui-emitter Specification
 
 ## Purpose
-TBD - created by archiving change harness-ag-ui-bridge. Update Purpose after archive.
+Governs the translation of the internal `HarnessEvent` stream into AG-UI
+protocol events: the exact v1 event-type subset, the HarnessEvent-to-AG-UI
+mapping rules, run lifecycle ordering, and error mapping. It exists so that
+frontends speaking the AG-UI protocol can render assistant runs without any
+knowledge of harness internals. Its sole consumer is the web-server SSE
+`/chat` endpoint, which serializes the emitted events onto the wire.
 ## Requirements
 ### Requirement: AG-UI Event Type Coverage in v1
 

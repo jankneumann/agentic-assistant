@@ -1,7 +1,17 @@
 # test-privacy-boundary Specification
 
 ## Purpose
-TBD - created by archiving change test-privacy-boundary. Update Purpose after archive.
+Governs the privacy boundary between public tests and private persona
+submodules: public tests load only the fixture persona root under
+`tests/fixtures/personas/`, a two-layer guard enforces the boundary at
+collection time (substring scan) and runtime (filesystem I/O patching),
+persona-submodule test suites must be self-contained, CI stays simple with
+a forward-compatible hygiene check, the rule is documented, and an atomic
+dual-commit push wrapper keeps parent and submodule SHAs consistent. It
+exists to guarantee private persona content can never leak into the public
+repo's tests, fixtures, or CI logs. Consumers are the pytest conftest and
+guard plugin, CI workflows, and contributors writing tests on either side
+of the boundary.
 ## Requirements
 ### Requirement: Public test fixture root
 

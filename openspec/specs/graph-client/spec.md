@@ -1,7 +1,15 @@
 # graph-client Specification
 
 ## Purpose
-TBD - created by archiving change ms-graph-extension. Update Purpose after archive.
+Governs the `CloudGraphClient` protocol and the custom Microsoft Graph HTTP
+implementation behind it: OData pagination with a page ceiling, token
+refresh on 401, Retry-After honoring on 429/503, per-extension circuit
+breaker keys, per-request timeouts, sanitized `GraphAPIError`s,
+transport-level tracing, binary downloads, cross-domain redirect rejection,
+and client lifecycle cleanup. It exists as the single hardened transport
+for all Microsoft Graph traffic so extension code never handles raw HTTP,
+auth, or resilience concerns. Consumers are the four MS extensions
+(`ms_graph`, `outlook`, `teams`, `sharepoint`).
 ## Requirements
 ### Requirement: CloudGraphClient Protocol
 

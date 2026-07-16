@@ -1,7 +1,14 @@
 # capability-resolver Specification
 
 ## Purpose
-TBD - created by archiving change capability-protocols. Update Purpose after archive.
+Governs the `CapabilitySet` type and the `CapabilityResolver` that assembles
+a persona/role pair's effective capabilities — memory policy, guardrails,
+sandbox, and tool policy — into a single resolved object. It exists so that
+harness adapters receive one pre-resolved bundle instead of each harness
+re-deriving capability wiring from persona and role configuration.
+Consumers are the harness adapters (Deep Agents, SDK, MS Agent Framework)
+and the delegation spawner; the resolver is extensible so new capability
+kinds can be added without touching harness code.
 ## Requirements
 ### Requirement: CapabilitySet Type
 

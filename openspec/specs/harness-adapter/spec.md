@@ -1,7 +1,14 @@
 # harness-adapter Specification
 
 ## Purpose
-TBD - created by archiving change bootstrap-vertical-slice. Update Purpose after archive.
+Governs the abstract `HarnessAdapter` contract and everything built on it:
+the concrete Deep Agents, SDK, MS Agent Framework, and host harness
+adapters, two-tier factory routing with validation, the `HarnessEvent`
+discriminated union, streaming invocation, multi-turn conversation memory,
+and observability spans around invocations. It exists so persona-times-role
+composition stays harness-agnostic — the core composes prompts and
+capabilities once, and any registered harness can execute the result.
+Consumers are the CLI, the web server, and the delegation spawner.
 ## Requirements
 ### Requirement: Abstract Harness Adapter Contract
 

@@ -1,7 +1,15 @@
 # persona-registry Specification
 
 ## Purpose
-TBD - created by archiving change bootstrap-vertical-slice. Update Purpose after archive.
+Governs persona discovery and loading: finding personas as subdirectories
+of the configured personas root (mounted private submodules), loading their
+configuration, including persona prompt and memory content, producing a
+helpful error when a submodule is uninitialized, and the extension-loader
+fallback order. It exists because a persona is the execution boundary —
+database, auth, tools, and identity live in private config repos that the
+public code must locate and load without embedding any private content.
+Consumers are the CLI, the web server, prompt composition, and the
+delegation spawner.
 ## Requirements
 ### Requirement: Persona Discovery
 

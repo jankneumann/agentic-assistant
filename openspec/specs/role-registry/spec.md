@@ -1,7 +1,13 @@
 # role-registry Specification
 
 ## Purpose
-TBD - created by archiving change bootstrap-vertical-slice. Update Purpose after archive.
+Governs role discovery and loading: roles are found as subdirectories of
+the configured roles root, availability can be scoped per persona, and
+private persona repos may supply role-specific overrides that are merged at
+load time. It exists so behavioral patterns (prompt, workflow, delegation
+rules) remain public and reusable while each persona can restrict or
+customize them. Consumers are the CLI, prompt composition, and the
+delegation spawner.
 ## Requirements
 ### Requirement: Role Discovery
 
