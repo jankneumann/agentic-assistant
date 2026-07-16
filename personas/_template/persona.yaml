@@ -107,3 +107,40 @@ tool_sources:
 #   1. Private: personas/<name>/extensions/<module>.py (if present)
 #   2. Public:  src/assistant/extensions/<module>.py (generic stubs in P1)
 extensions: []
+
+# ── Guardrails (P13 — security-hardening) ──
+# Optional. Omit the section entirely to keep allow-all behavior.
+# guardrails:
+#   budgets:
+#     model_call:
+#       daily_usd: 5.0              # 0 / omitted = unlimited (UTC calendar day)
+#       monthly_usd: 50.0           # UTC calendar month
+#       default_call_cost_usd: 0.0  # charged when no pricing metadata resolves
+#       estimate_input_tokens: 2000 # feed compute_cost() when only per-token
+#       estimate_output_tokens: 500 #   pricing is known at check time
+#       persist: memory             # "file" → .cache/guardrails/spend.json
+#   policies:                       # first match wins, declaration order
+#     - action_type: model_call     # exact action type, or "*"
+#       resource: "expensive-*"     # glob against the action resource
+#       effect: deny                # allow | deny | require_confirmation
+#       reason: "use the local tier for bulk work"
+#   delegation:
+#     denied_sub_roles: []          # globs matched against sub-role names
+#     max_task_chars: 0             # 0 = unlimited
+#
+# NOTE: require_confirmation on model_call DENIES until the approval
+# interrupt flow lands (needs durable sessions).
+
+# ── Per-persona credentials (.env — P13) ──
+# This directory may contain a git-ignored `.env` (see .gitignore).
+# Its KEY=VALUE entries form a persona-SCOPED credential namespace:
+# refs resolve against it FIRST, then fall back to the process
+# environment. Values are never exported into os.environ, so two
+# personas can hold different values for the same variable name.
+
+# ── Extension integrity manifest (P13) ──
+# `assistant persona hash-extensions -p <name>` writes
+# extensions/manifest.yaml with SHA-256 hashes. When present, private
+# extensions are verified before execution: a hash mismatch disables
+# that extension (no manifest = allowed with a warning). Rerun the
+# command after every intentional extension edit.

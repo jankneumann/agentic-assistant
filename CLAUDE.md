@@ -209,12 +209,31 @@ See `openspec/roadmap.md` for the full sequence. Notable gaps:
   strings are gone; personas without a `models:` section resolve
   against a registry synthesized from the built-in harness defaults
   (`default_model_registry`). Every binding is budget-gated via
-  `GuardrailProvider.check_action(action_type="model_call")` (allow-all
-  today) and API keys resolve through the `CredentialProvider` seam
-  (env backend today). Still deferred: OpenRouter catalog **sync**
-  and health-checked local GX10 entries (P20), non-allow-all budget
-  guardrails (P13), and the MSAF binding covers `openai-compatible`
-  refs only (no connector packages for the other dialects).
+  `GuardrailProvider.check_action(action_type="model_call")` and API
+  keys resolve through the `CredentialProvider` seam. Still deferred:
+  OpenRouter catalog **sync** and health-checked local GX10 entries
+  (P20), and the MSAF binding covers `openai-compatible` refs only
+  (no connector packages for the other dialects).
+- **Security hardening is live** (P13 `security-hardening`):
+  guardrails are no longer allow-all-only — a persona `guardrails:`
+  section (budgets / policies / delegation, see
+  `personas/_template/persona.yaml`) selects `PolicyGuardrails`
+  through the resolver on both host and sdk branches; personas
+  without the section keep `AllowAllGuardrails`. Model-call budgets
+  enforce per-persona daily/monthly USD ceilings from P19 cost
+  metadata (in-memory ledger by default; `persist: file` writes
+  `.cache/guardrails/spend.json`; a persona-DB ledger is deferred).
+  `require_confirmation` on `model_call` still DENIES until the
+  approval interrupt flow exists (needs durable sessions). Credential
+  reads are persona-scoped: a git-ignored persona `.env` loads into a
+  scoped namespace (persona values first, process env fallback, no
+  `os.environ` pollution) consumed via `PersonaConfig.credentials`
+  everywhere (persona load, http_tools auth, model bindings,
+  graphiti, MSAL); OpenBao becomes the production backend in P25.
+  Private extensions are hash-verified against an optional
+  `extensions/manifest.yaml` before execution (`assistant persona
+  hash-extensions` generates it; mismatch disables that extension,
+  missing manifest warns).
 - **Memory retrieval + capture are live but prepend-only** (P21
   `memory-retrieval-activation`): both SDK harnesses (DeepAgents and
   MSAF) consume `MemoryPolicy.get_recent_snippets(persona, role,
