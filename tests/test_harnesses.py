@@ -210,6 +210,139 @@ def test_invoke_returns_empty_when_no_assistant_message() -> None:
     assert result == ""
 
 
+# ── Memory Snippet Injection + Post-Turn Capture (memory-retrieval-activation) ──
+
+
+class _RecordingMemoryPolicy:
+    """Fake MemoryPolicy that returns canned snippets and records captures."""
+
+    def __init__(
+        self, snippets: list[str] | None = None, *, fail_record: bool = False
+    ) -> None:
+        self._snippets = snippets or []
+        self._fail_record = fail_record
+        self.recorded: list[tuple[str, str]] = []
+
+    def resolve(self, persona, harness_name):  # pragma: no cover - unused
+        raise NotImplementedError
+
+    def export_memory_context(self, persona) -> str:
+        return ""
+
+    def get_recent_snippets(self, persona, role, *, limit: int = 10) -> list:
+        return list(self._snippets[:limit])
+
+    async def record_interaction(
+        self, persona, role, *, user_message: str, response: str
+    ) -> None:
+        if self._fail_record:
+            raise ConnectionError("memory backend down")
+        self.recorded.append((user_message, response))
+
+
+def test_create_agent_prepends_recent_context_when_snippets_exist() -> None:
+    """Parity with the MSAF harness: DeepAgents MUST prepend memory
+    snippets under ``## Recent context`` at create_agent time."""
+    with patch(
+        "assistant.harnesses.sdk.deep_agents.init_chat_model",
+        return_value=MagicMock(),
+    ), patch(
+        "assistant.harnesses.sdk.deep_agents.create_deep_agent"
+    ) as cda_mock:
+        cda_mock.return_value = MagicMock()
+        h = DeepAgentsHarness(
+            _persona(),
+            _role(),
+            memory_policy=_RecordingMemoryPolicy(["snippet-1", "snippet-2"]),
+        )
+        asyncio.run(h.create_agent(tools=[], extensions=[]))
+        prompt = cda_mock.call_args.kwargs["system_prompt"]
+        assert "## Recent context" in prompt
+        assert "snippet-1" in prompt
+        assert "snippet-2" in prompt
+        assert "test prompt" in prompt  # composed role prompt still present
+        assert prompt.index("## Recent context") < prompt.index("test prompt")
+
+
+def test_create_agent_prompt_unchanged_when_no_snippets() -> None:
+    from assistant.core.composition import compose_system_prompt
+
+    with patch(
+        "assistant.harnesses.sdk.deep_agents.init_chat_model",
+        return_value=MagicMock(),
+    ), patch(
+        "assistant.harnesses.sdk.deep_agents.create_deep_agent"
+    ) as cda_mock:
+        cda_mock.return_value = MagicMock()
+        persona, role = _persona(), _role()
+        h = DeepAgentsHarness(
+            persona, role, memory_policy=_RecordingMemoryPolicy([])
+        )
+        asyncio.run(h.create_agent(tools=[], extensions=[]))
+        prompt = cda_mock.call_args.kwargs["system_prompt"]
+        assert "## Recent context" not in prompt
+        assert prompt == compose_system_prompt(persona, role)
+
+
+def test_create_agent_default_file_policy_yields_no_injection() -> None:
+    """A persona with no database_url resolves FileMemoryPolicy; with
+    empty memory_content the prompt MUST stay unchanged."""
+    with patch(
+        "assistant.harnesses.sdk.deep_agents.init_chat_model",
+        return_value=MagicMock(),
+    ), patch(
+        "assistant.harnesses.sdk.deep_agents.create_deep_agent"
+    ) as cda_mock:
+        cda_mock.return_value = MagicMock()
+        h = DeepAgentsHarness(_persona(), _role())
+        asyncio.run(h.create_agent(tools=[], extensions=[]))
+        assert "## Recent context" not in cda_mock.call_args.kwargs["system_prompt"]
+
+
+def test_invoke_captures_interaction_on_success() -> None:
+    class _FakeAgent:
+        async def ainvoke(self, payload, config=None):
+            return {"messages": [{"role": "assistant", "content": "the answer"}]}
+
+    policy = _RecordingMemoryPolicy()
+    h = DeepAgentsHarness(_persona(), _role(), memory_policy=policy)
+    result = asyncio.run(h.invoke(_FakeAgent(), "the question"))
+    assert result == "the answer"
+    assert policy.recorded == [("the question", "the answer")]
+
+
+def test_invoke_swallows_capture_failure(caplog: pytest.LogCaptureFixture) -> None:
+    """Memory failures must never break a conversation — a raising
+    record_interaction MUST be swallowed with a warning."""
+    import logging
+
+    class _FakeAgent:
+        async def ainvoke(self, payload, config=None):
+            return {"messages": [{"role": "assistant", "content": "ok"}]}
+
+    policy = _RecordingMemoryPolicy(fail_record=True)
+    h = DeepAgentsHarness(_persona(), _role(), memory_policy=policy)
+
+    with caplog.at_level(logging.WARNING):
+        result = asyncio.run(h.invoke(_FakeAgent(), "q"))
+
+    assert result == "ok"  # invoke succeeded despite capture failure
+    assert policy.recorded == []
+    assert "memory capture failed" in caplog.text.lower()
+
+
+def test_invoke_does_not_capture_on_agent_failure() -> None:
+    class _FailingAgent:
+        async def ainvoke(self, payload, config=None):
+            raise RuntimeError("model exploded")
+
+    policy = _RecordingMemoryPolicy()
+    h = DeepAgentsHarness(_persona(), _role(), memory_policy=policy)
+    with pytest.raises(RuntimeError):
+        asyncio.run(h.invoke(_FailingAgent(), "q"))
+    assert policy.recorded == []
+
+
 # ── Multi-Turn Conversation Memory (#34) ─────────────────────────────
 
 

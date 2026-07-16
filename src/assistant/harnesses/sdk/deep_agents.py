@@ -6,7 +6,7 @@ import json
 from collections.abc import AsyncIterator
 from contextlib import aclosing
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from deepagents import create_deep_agent
@@ -29,6 +29,18 @@ from assistant.harnesses.sdk.events import (
 from assistant.telemetry.decorators import traced_harness
 from assistant.telemetry.tool_wrap import wrap_extension_tools
 
+if TYPE_CHECKING:
+    from assistant.core.capabilities.memory import MemoryPolicy
+
+#: Memory snippet limit — mirrors the MSAF harness's D27 default of 10.
+#: Tests can override via the ``memory_snippet_limit`` constructor kwarg.
+DEFAULT_MEMORY_SNIPPET_LIMIT: int = 10
+
+#: Section heading prepended to the composed prompt when memory
+#: snippets are present (memory-retrieval-activation — parity with the
+#: MSAF harness's D27 prepend).
+_MEMORY_SECTION_HEADING: str = "## Recent context"
+
 
 class DeepAgentsHarness(SdkHarnessAdapter):
     # Class-level default surfaces through ``_resolve_model`` so spans
@@ -39,8 +51,17 @@ class DeepAgentsHarness(SdkHarnessAdapter):
     # is: instance attr (most specific) → persona config → "unknown".
     _DEFAULT_MODEL = "anthropic:claude-sonnet-4-20250514"
 
-    def __init__(self, persona: PersonaConfig, role: RoleConfig) -> None:
+    def __init__(
+        self,
+        persona: PersonaConfig,
+        role: RoleConfig,
+        *,
+        memory_policy: MemoryPolicy | None = None,
+        memory_snippet_limit: int = DEFAULT_MEMORY_SNIPPET_LIMIT,
+    ) -> None:
         super().__init__(persona, role)
+        self._memory_policy = memory_policy
+        self._memory_snippet_limit = memory_snippet_limit
         self._active_model: str = self._DEFAULT_MODEL
         # Synthesize a UUID at construction so ``thread_id`` is non-empty
         # and STABLE for the lifetime of this adapter instance (spec:
@@ -51,6 +72,41 @@ class DeepAgentsHarness(SdkHarnessAdapter):
 
     def name(self) -> str:
         return "deep_agents"
+
+    # ── Memory consumption (memory-retrieval-activation) ─────────────
+
+    def _resolve_memory_policy(self) -> MemoryPolicy:
+        """Return the injected MemoryPolicy or resolve via CapabilityResolver.
+
+        Mirrors ``MSAgentFrameworkHarness._resolve_memory_policy`` so
+        both SDK harnesses consume the same persona-selected policy
+        (``PostgresGraphitiMemoryPolicy`` when ``database_url`` is
+        configured, ``FileMemoryPolicy`` otherwise).
+        """
+        injected = getattr(self, "_memory_policy", None)
+        if injected is not None:
+            return injected
+        from assistant.core.capabilities.resolver import CapabilityResolver
+
+        resolver = CapabilityResolver()
+        return resolver.resolve(self.persona, "sdk", self.role).memory
+
+    def _compose_system_prompt(self) -> str:
+        """Compose system prompt + optional memory snippet block.
+
+        Parity with the MSAF harness's D27 prepend: snippets from
+        ``MemoryPolicy.get_recent_snippets`` are prepended under
+        ``## Recent context``; an empty snippet list leaves the prompt
+        unchanged (no heading injected).
+        """
+        base = compose_system_prompt(self.persona, self.role)
+        snippets = self._resolve_memory_policy().get_recent_snippets(
+            self.persona, self.role, limit=self._memory_snippet_limit
+        )
+        if not snippets:
+            return base
+        snippet_block = "\n\n".join(snippets)
+        return f"{_MEMORY_SECTION_HEADING}\n\n{snippet_block}\n\n{base}"
 
     @property
     def thread_id(self) -> str:
@@ -86,7 +142,7 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         return create_deep_agent(
             model=init_chat_model(model_id),
             tools=[*tools, *ext_tools],
-            system_prompt=compose_system_prompt(self.persona, self.role),
+            system_prompt=self._compose_system_prompt(),
             memory=cfg.get("memory_files") or ["./AGENTS.md"],
             skills=skills_dirs,
             checkpointer=InMemorySaver(),
@@ -107,11 +163,16 @@ class DeepAgentsHarness(SdkHarnessAdapter):
             config={"configurable": {"thread_id": self._thread_id}},
         )
         messages = result.get("messages", [])
+        response = ""
         for msg in reversed(messages):
             role = _msg_role(msg)
             if role == "assistant":
-                return _msg_content(msg)
-        return ""
+                response = _msg_content(msg)
+                break
+        # Post-turn capture (memory-retrieval-activation): best-effort,
+        # error-swallowed — see SdkHarnessAdapter._capture_interaction.
+        await self._capture_interaction(message, response)
+        return response
 
     @traced_harness
     async def astream_invoke(
@@ -147,6 +208,9 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         for observability and re-raises so the mapper layer can absorb it.
         """
         run_id = str(uuid4())
+        # Accumulated assistant text for post-turn memory capture on the
+        # success path (memory-retrieval-activation).
+        captured_text: list[str] = []
         # Per-stream mapping from LangGraph upstream run_id → our call_id.
         # Lets on_tool_end correlate with the call_id we emitted on the
         # matching on_tool_start, including when the upstream run_id is
@@ -197,6 +261,7 @@ class DeepAgentsHarness(SdkHarnessAdapter):
                             )
                         else:
                             text = raw_content or ""
+                        captured_text.append(text)
                         yield TextDelta(message_id=message_id, text=text)
 
                     elif event_name == "on_tool_start":
@@ -244,6 +309,12 @@ class DeepAgentsHarness(SdkHarnessAdapter):
             # Phase 2: re-raise so @traced_harness can record the failure.
             raise
 
+        # Post-turn capture BEFORE the terminal RunFinished yield: once
+        # the consumer sees RunFinished it may close the generator, and
+        # code after the final yield would be skipped by GeneratorExit.
+        # Success path only — errors and disconnects are not captured.
+        await self._capture_interaction(message, "".join(captured_text))
+
         yield RunFinished(
             run_id=run_id,
             finished_at=datetime.now(UTC).isoformat(),
@@ -256,7 +327,12 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         tools: list[Any],
         extensions: list[Any],
     ) -> str:
-        sub = DeepAgentsHarness(self.persona, role)
+        sub = DeepAgentsHarness(
+            self.persona,
+            role,
+            memory_policy=self._memory_policy,
+            memory_snippet_limit=self._memory_snippet_limit,
+        )
         agent = await sub.create_agent(tools, extensions)
         return await sub.invoke(agent, task)
 

@@ -100,8 +100,12 @@ class _FakeChatClient:
 
 
 class _FakeMemoryPolicy:
-    def __init__(self, snippets: list[str]) -> None:
+    def __init__(
+        self, snippets: list[str], *, fail_record: bool = False
+    ) -> None:
         self._snippets = snippets
+        self._fail_record = fail_record
+        self.recorded: list[tuple[str, str]] = []
 
     def resolve(self, persona: Any, harness_name: str) -> MemoryConfig:
         return MemoryConfig(
@@ -117,6 +121,13 @@ class _FakeMemoryPolicy:
         self, persona: Any, role: Any, *, limit: int = 10
     ) -> list[str]:
         return list(self._snippets[:limit])
+
+    async def record_interaction(
+        self, persona: Any, role: Any, *, user_message: str, response: str
+    ) -> None:
+        if self._fail_record:
+            raise ConnectionError("memory backend down")
+        self.recorded.append((user_message, response))
 
 
 class _FakeToolPolicy:
@@ -324,6 +335,46 @@ def test_invoke_propagates_underlying_exceptions() -> None:
     assert fake_provider.trace_llm_call.call_count == 1
     kwargs = fake_provider.trace_llm_call.call_args.kwargs
     assert kwargs["metadata"]["error"] == "ValueError"
+
+
+def test_invoke_captures_interaction_on_success() -> None:
+    """memory-retrieval-activation: post-turn capture on success."""
+    policy = _FakeMemoryPolicy([])
+    h = MSAgentFrameworkHarness(_persona(), _role(), memory_policy=policy)
+    agent = _FakeAgent()
+    agent.run_response = "the answer"
+    result = asyncio.run(h.invoke(agent, "the question"))
+    assert result == "the answer"
+    assert policy.recorded == [("the question", "the answer")]
+
+
+def test_invoke_swallows_capture_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """memory-retrieval-activation: capture failure never breaks a turn."""
+    import logging
+
+    policy = _FakeMemoryPolicy([], fail_record=True)
+    h = MSAgentFrameworkHarness(_persona(), _role(), memory_policy=policy)
+    agent = _FakeAgent()
+    agent.run_response = "ok"
+
+    with caplog.at_level(logging.WARNING):
+        result = asyncio.run(h.invoke(agent, "q"))
+
+    assert result == "ok"
+    assert policy.recorded == []
+    assert "memory capture failed" in caplog.text.lower()
+
+
+def test_invoke_does_not_capture_on_agent_failure() -> None:
+    policy = _FakeMemoryPolicy([])
+    h = MSAgentFrameworkHarness(_persona(), _role(), memory_policy=policy)
+    agent = _FakeAgent()
+    agent.run_response = ValueError("rate limited")
+    with pytest.raises(ValueError, match="rate limited"):
+        asyncio.run(h.invoke(agent, "q"))
+    assert policy.recorded == []
 
 
 def test_invoke_emits_trace_llm_call_on_success() -> None:

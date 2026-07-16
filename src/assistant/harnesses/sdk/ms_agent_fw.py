@@ -293,7 +293,11 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         ``trace_llm_call`` whether the call succeeds or raises.
         """
         result = await agent.run(message)
-        return _stringify_run_result(result)
+        response = _stringify_run_result(result)
+        # Post-turn capture (memory-retrieval-activation): best-effort,
+        # error-swallowed — see SdkHarnessAdapter._capture_interaction.
+        await self._capture_interaction(message, response)
+        return response
 
     @traced_harness
     async def astream_invoke(
@@ -332,6 +336,9 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         # IMPL_REVIEW round-1 gemini #2 (single slot) → round-2 cross-vendor
         # (claude-r2-2 + codex-r2-1) upgraded to a deque for parallel orphans.
         pending_orphan_call_ids: deque[str] = deque()
+        # Accumulated assistant text for post-turn memory capture on the
+        # success path (memory-retrieval-activation).
+        captured_text: list[str] = []
         started_at = datetime.now(UTC).isoformat()
         yield RunStarted(run_id=run_id, started_at=started_at)
 
@@ -372,6 +379,7 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
                     if not isinstance(text, str):
                         text = str(getattr(update, "delta", "") or "")
                 if text:
+                    captured_text.append(text)
                     yield TextDelta(message_id=message_id, text=text)
 
                 # --- Tool-call content ---
@@ -452,6 +460,12 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
                 aclose_result = aclose_fn()
                 if inspect.iscoroutine(aclose_result):
                     await aclose_result
+
+        # Post-turn capture BEFORE the terminal RunFinished yield: once
+        # the consumer sees RunFinished it may close the generator, and
+        # code after the final yield would be skipped by GeneratorExit.
+        # Success path only — errors and disconnects are not captured.
+        await self._capture_interaction(message, "".join(captured_text))
 
         finished_at = datetime.now(UTC).isoformat()
         yield RunFinished(run_id=run_id, finished_at=finished_at, error=None)

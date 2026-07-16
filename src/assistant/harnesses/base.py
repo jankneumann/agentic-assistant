@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
@@ -11,6 +12,8 @@ from assistant.core.role import RoleConfig
 
 if TYPE_CHECKING:
     from assistant.harnesses.sdk.events import HarnessEvent
+
+logger = logging.getLogger(__name__)
 
 
 class HarnessAdapter(ABC):
@@ -101,6 +104,42 @@ class SdkHarnessAdapter(HarnessAdapter):
         tools: list[Any],
         extensions: list[Any],
     ) -> str: ...
+
+    async def _capture_interaction(
+        self, user_message: str, response: str
+    ) -> None:
+        """Best-effort post-turn memory capture (memory-retrieval-activation).
+
+        Called by concrete harnesses after a *successful* ``invoke`` /
+        ``astream_invoke`` completion. Resolves the harness's
+        ``MemoryPolicy`` (via the concrete class's
+        ``_resolve_memory_policy``, when it defines one) and awaits
+        ``record_interaction``. Every failure — policy resolution,
+        missing method, backend write — is swallowed with a WARNING
+        log: memory failures must never break a conversation.
+        """
+        try:
+            resolve = getattr(self, "_resolve_memory_policy", None)
+            if resolve is None:
+                return
+            policy = resolve()
+            record = getattr(policy, "record_interaction", None)
+            if record is None:
+                return
+            await record(
+                self.persona,
+                self.role,
+                user_message=user_message,
+                response=response,
+            )
+        except Exception:
+            logger.warning(
+                "Post-turn memory capture failed for persona '%s' "
+                "(role '%s'); continuing without capture",
+                getattr(self.persona, "name", "<unknown>"),
+                getattr(self.role, "name", "<unknown>"),
+                exc_info=True,
+            )
 
 
 class HostHarnessAdapter(HarnessAdapter):
