@@ -23,6 +23,16 @@
       retained, every phase change has a row, provenance cited, DAG
       acyclic, statuses valid
 
+## 2a. Ecosystem-brief amendment (2026-07-16)
+
+- [x] 2a.1 Seam/abstraction audit of capability protocols vs the owner's
+      six ecosystem pillars (models, tools, harnesses, sandboxes,
+      evals/feedback, multimodal) — findings in
+      `docs/architecture-analysis/2026-07-16-ecosystem-pillars.md`
+- [x] 2a.2 Add roadmap rows P24 (contracts pre-phase) and P25–P29;
+      update DAG, recommended order, cross-cutting themes, change log,
+      out-of-scope (P26/P28 re-enter scope)
+
 ## 3. Validation & handoff
 
 - [x] 3.1 `openspec validate roadmap-v3-heterogeneous-fleet --strict`

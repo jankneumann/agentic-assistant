@@ -52,6 +52,18 @@ operating environment, documented in the 2026-07-07 architecture review
   requirement** to recognize architecture-review documents under
   `docs/architecture-analysis/` as a citable provenance source (the v3
   rows cite "arch-review G-x" findings).
+- **2026-07-16 amendment (owner ecosystem brief)**: add
+  `docs/architecture-analysis/2026-07-16-ecosystem-pillars.md` mapping
+  the six ecosystem pillars (model routing; memory + continual learning;
+  orchestration + agent IAM + clean-room sharing; sandboxing;
+  eval/simulation feedback loop; multimodal I/O) to phases, and add
+  roadmap rows **P24 `capability-protocols-v2`** (contracts-only
+  pre-phase codifying the five seam gaps: ModelProvider capability slot,
+  MCP-shaped ToolSpec, three-plane SandboxConfig, create_agent cleanup,
+  durable sessions) and **P25–P29** (`agent-iam`,
+  `knowledge-clean-room`, `eval-simulation-loop`, `continual-learning`,
+  `multimodal-io`). Cross-persona bridge and role learning re-enter
+  scope as P26/P28.
 
 ## What Does NOT Change
 

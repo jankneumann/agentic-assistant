@@ -8,7 +8,11 @@
 > Claude/Gemini/Codex subscription seats (host-harness tier), OpenRouter +
 > hyperscaler model gardens (metered SDK tier), and optional meta-harness
 > control planes (Omnigent, NemoClaw). The v2 roadmap is preserved in git
-> history.
+> history. Amended 2026-07-16 with the owner's ecosystem brief
+> (`docs/architecture-analysis/2026-07-16-ecosystem-pillars.md`): six
+> pillars — model routing, memory + continual learning, orchestration +
+> agent IAM + clean-room sharing, sandboxing, eval/simulation feedback
+> loop, multimodal I/O — adding rows P24–P29.
 >
 > Change that introduced this rewrite: `roadmap-v3-heterogeneous-fleet`.
 
@@ -66,6 +70,12 @@
 | P21 | `memory-retrieval-activation` | phase | pending | §1.2 (completion) | new (arch-review G-E; promoted from the "P5b candidate" note in CLAUDE.md) | Make memory *felt*: implement real `MemoryPolicy.get_recent_snippets()` against `MemoryManager` (all four policies currently return `[]`), wire `MemoryManager` retrieval into the DeepAgents context path (today it uses only `InMemorySaver` + file memory), post-turn interaction/episode capture, and MSAF `## Recent context` fed with live snippets. Retrieval + summarization SHOULD be routable to local models once P20 lands |
 | P22 | `meta-harness-compat` | phase | pending | — | new (arch-review G-D) | Composition **under** external meta-harnesses rather than rebuilding one. Deliverables: Omnigent-composable agent definition (agent YAML + common API surface over the existing AG-UI/A2A/MCP endpoints), evaluation of NemoClaw/OpenShell as the sandboxed always-on runtime for the GX10 deployment, and the first real `SandboxProvider` implementation (container/OpenShell-backed) replacing `PassthroughSandbox`. Outcome is an ADR: adopt / integrate / defer per meta-harness |
 | P23 | `deployment-topology` | phase | pending | — | new (arch-review G-F); absorbs old P18 `railway-deployment` (original P10) | Home-lab deployment: GX10 as always-on node (assistant daemon, per-persona Postgres/ParadeDB + FalkorDB, local inference from P20), G762 as interactive workstation, LAN exposure of AG-UI/A2A/MCP surfaces, service definitions (systemd or compose), per-persona secrets handling, DB backup/restore runbook. Railway (the entire scope of former P18) demoted to an optional cloud-variant appendix of this phase |
+| P24 | `capability-protocols-v2` | phase | pending | — | new (arch-review §"seams"; ecosystem pillars 1+4) | **Contracts-only pre-phase** (spec deltas, no implementations) codifying five seams before parallel execution: (1) `ModelProvider` as capability slot #6 in `CapabilitySet` (chat + embeddings, capability tags, cost catalog, `GuardrailProvider` budget hook via `ActionRequest(action_type="model_call")`); (2) harness-neutral MCP-shaped `ToolSpec` + per-harness adapters, deprecating per-harness `as_*_tools()` extension methods; (3) `SandboxConfig` v2 with three planes — filesystem (mounts), network (deny-by-default egress), credentials (secret visibility) — and a named enforcement seam at tool invocation; (4) `create_agent(tools)` signature cleanup (ToolPolicy is the sole tool aggregator); (5) durable-session contract (`SessionStore` or `MemoryPolicy.per_session` made real) for daemon/A2A survival across restarts |
+| P25 | `agent-iam` | phase | pending | — | new (ecosystem pillar 3) | Agent identity & access management: `AgentIdentity` principal (persona, role, delegation chain, session) attached to every `ActionRequest`, delegation hop, and inbound/outbound A2A/MCP call; agent-card authn on server surfaces; scoped short-lived per-persona credentials on client side. Extends P13 env scoping; makes P12's `delegation_chain` attributable |
+| P26 | `knowledge-clean-room` | phase | pending | — | new (ecosystem pillar 3); re-scopes the deferred "cross-persona bridge" | Declassification gateway for clean-room knowledge sharing: policy-driven, audited flow `source persona memory → sanitization (reuse telemetry/sanitize.py) → shared knowledge space → consuming persona/external agent`, with per-fact provenance and revocation. Runtime analogue of the test-time privacy boundary |
+| P27 | `eval-simulation-loop` | phase | pending | — | new (ecosystem pillar 5) | Close the feedback loop: **simulation personas** (`tool_sources` pointing at simulator endpoints promoted from `tests/mocks/` + `tests/fixtures/graph_responses/`; `assistant simulate` surface); per-role gen-eval scenario suites (CI + scheduled) building on `evaluation/`; Langfuse trace→eval-dataset export so production regressions become permanent tests; eval gate consumed by P28 and by prompt/routing config changes. Self-improvement is propose → eval → human-approved diff, never self-merge |
+| P28 | `continual-learning` | phase | pending | — | new (ecosystem pillar 2); re-scopes the deferred "role learning" | Memory that grows: scheduled reflection/consolidation jobs (Graphiti episodes → semantic facts → regenerated `memory.md` prompt layer); explicit feedback capture as first-class events (CLI + AG-UI → `interactions`); preference distillation into persona prompt layer; role-learning as prompt-layer suggestions. All learned changes are eval-gated (P27) and land as reviewable diffs in the persona submodule |
+| P29 | `multimodal-io` | phase | pending | — | new (ecosystem pillar 6) + openspec/explore/generative-ui-layer.md | Multimodal in/out: typed image/audio/file parts in the `HarnessEvent` vocabulary + AG-UI mapping; voice via local ASR/TTS on the GX10 (P20 registry entries); document/image ingestion into memory/ACA indexing; generative-UI rendering (OpenUI Lang) as the data-facing modality |
 | X1 | `add-teacher-role` | non-phase (feature) | **archived** (2026-05-15) | — | user-requested (2026-04-16) | Add `teacher` role with Feynman + Socratic skill files; `--method` CLI flag and `/method` / `/methods` REPL commands; declare `content_analyzer:*` preferred tools binding via the P3 http-tools layer once ACA aligns its operationIds. Followups: ACA#421, assistant#31, #32, #33 |
 | X2 | `fix-harness-conversation-memory` | non-phase (fix) | **archived** (2026-05-15) | — | bug fix (harness conversation continuity) | Listed for chronological context (row added retroactively by v3). Fixed cross-turn conversation memory in SDK harnesses |
 | X3 | `repo-hygiene` | non-phase (maintenance) | pending | — | new (arch-review §4 H1–H5) | Backfill `## Purpose` in all 25 capability specs (all currently "TBD"); seed `docs/decisions/` with retroactive ADRs (SDK/Host split, capability protocols, AG-UI adoption, privacy boundary, model-seam choice); fix `gen-eval` path dependency (`[tool.uv.sources]` breaks standalone clones on new machines) via publish/vendor/optional-group; pin `agent-framework-core` directly to dodge the namespace-package quirk. (`codex` registration moved to P16 where the harness work lives) |
@@ -92,14 +102,22 @@ P1 bootstrap-vertical-slice (archived)
  ├─→ P1.8 capability-protocols (archived)
  │    ├─→ P2 memory-architecture (archived)
  │    ├─→ P3 http-tools-layer (archived)
- │    ├─→ P13 security-hardening          (implements GuardrailProvider; also needs P10)
  │    ├─→ P16 cli-harness-integrations    (extends HostHarnessAdapter exports)
- │    └─→ P19 model-provider-routing      (router slots into CapabilityResolver;
- │                                         budget checks via GuardrailProvider;
- │                                         cost spans via P4 observability)
- │         ├─→ P11 harness-routing        (consumes P19 capability vocabulary;
- │         │                              M365 routing also needs P5 — archived)
- │         └─→ P20 local-inference-node   (GX10 endpoints as registry entries)
+ │    └─→ P24 capability-protocols-v2     (contracts-only: ModelProvider slot #6,
+ │         │                              MCP-shaped ToolSpec, SandboxConfig
+ │         │                              three planes, create_agent cleanup,
+ │         │                              durable-session contract)
+ │         ├─→ P13 security-hardening     (implements GuardrailProvider +
+ │         │                              credential plane; also needs P10)
+ │         ├─→ P19 model-provider-routing (implements ModelProvider slot;
+ │         │    │                         budget via GuardrailProvider;
+ │         │    │                         cost spans via P4 observability)
+ │         │    ├─→ P11 harness-routing   (consumes P19 capability vocabulary;
+ │         │    │                         M365 routing also needs P5 — archived)
+ │         │    └─→ P20 local-inference-node (GX10 endpoints as registry entries;
+ │         │                              local ASR/TTS tier feeds P29 voice)
+ │         └─→ P22 meta-harness-compat    (implements the sandbox planes;
+ │                                        composition surface via P14a + P6/P17)
  │
  ├─→ P4 observability (archived)
  ├─→ P10 extension-lifecycle              (independent; initialize/shutdown hooks)
@@ -127,6 +145,11 @@ X3  repo-hygiene              no prerequisites; do first (unblocks clean clones 
 P15 work-persona-config       needs P5 (archived); triggered by work-machine availability
 P23 deployment-topology       needs P20 (local inference) + P7 (daemon mode);
                               Railway variant additionally needs P15, P16
+P25 agent-iam                 needs P13 + an interop surface (P6 and/or P17)
+P26 knowledge-clean-room      needs P25 (identities) + P21 (real retrieval)
+P27 eval-simulation-loop      needs P4 (archived); scheduled runs benefit from P7
+P28 continual-learning        needs P21 + P7 (reflection jobs) + P27 (eval gate)
+P29 multimodal-io             needs P14a (archived); voice tier needs P20
 ```
 
 ## Recommended execution order (advisory)
@@ -134,16 +157,21 @@ P23 deployment-topology       needs P20 (local inference) + P7 (daemon mode);
 Rationale in `docs/architecture-analysis/2026-07-07-architecture-review.md` §5.
 
 1. **X3 `repo-hygiene`** — cheap; unblocks standalone clones (GX10 setup) and pays down doc debt.
-2. **P19 `model-provider-routing`** ∥ **P21 `memory-retrieval-activation`** — the two highest-leverage gaps: multi-provider access and memory that is actually used. Independent of each other.
-3. **P10 `extension-lifecycle`** → **P13 `security-hardening`** — lifecycle + first real guardrails (budgets shared with P19).
-4. **P20 `local-inference-node`** — once the GX10 is racked; local/private routing tiers go live.
-5. **P7 `scheduler`** — proactive value, now cheap to run on local tiers.
-6. **P6 `a2a-server`** ∥ **P17 `mcp-server-exposure`** — the interop/composition surface.
-7. **P11 `harness-routing`** — auto-selection across harness + subscription tiers.
-8. **P22 `meta-harness-compat`** — compose under Omnigent; evaluate NemoClaw for the GX10 runtime.
-9. **P8 `obsidian-vault`** ∥ **P12 `delegation-context`** — knowledge + delegation depth.
-10. **P14 `google-extensions`**, **P15 `work-persona-config`**, **P16 `cli-harness-integrations`** — extension/persona breadth as machines and accounts allow.
-11. **P23 `deployment-topology`** — solidify the fleet once its components exist.
+2. **P24 `capability-protocols-v2`** — contracts before parallel execution: the stable interfaces `/autopilot-roadmap` work packages build against. Day-scale spec tasks, gates P13/P19/P22.
+3. **P19 `model-provider-routing`** ∥ **P21 `memory-retrieval-activation`** — the two highest-leverage gaps: multi-provider access and memory that is actually used. Independent of each other.
+4. **P27 `eval-simulation-loop`** — close the feedback loop early so every subsequent phase (and autopilot itself) is eval-gated; the mock/fixture assets and gen-eval adoption make this mostly integration work.
+5. **P10 `extension-lifecycle`** → **P13 `security-hardening`** — lifecycle + first real guardrails (budgets shared with P19, credential plane from P24).
+6. **P20 `local-inference-node`** — once the GX10 is racked; local/private routing tiers go live.
+7. **P7 `scheduler`** — proactive value, now cheap to run on local tiers.
+8. **P6 `a2a-server`** ∥ **P17 `mcp-server-exposure`** — the interop/composition surface.
+9. **P11 `harness-routing`** — auto-selection across harness + subscription tiers.
+10. **P22 `meta-harness-compat`** — compose under Omnigent; evaluate NemoClaw for the GX10 runtime; first real sandbox provider.
+11. **P25 `agent-iam`** → **P26 `knowledge-clean-room`** — the trust layer, once interop surfaces and real retrieval exist.
+12. **P8 `obsidian-vault`** ∥ **P12 `delegation-context`** — knowledge + delegation depth.
+13. **P28 `continual-learning`** — reflection + preference distillation, eval-gated by P27.
+14. **P29 `multimodal-io`** — voice/vision/generative UI; every earlier phase multiplies its value.
+15. **P14 `google-extensions`**, **P15 `work-persona-config`**, **P16 `cli-harness-integrations`** — extension/persona breadth as machines and accounts allow.
+16. **P23 `deployment-topology`** — solidify the fleet once its components exist.
 
 ## Phase-by-phase execution via autopilot
 
@@ -177,6 +205,9 @@ re-prefix with dates; the roadmap is the identity source.
 | **Security boundaries** (credential scoping, manifest validation, sandboxing — §4) | P13 establishes; P22 provides real sandbox; all config-loading phases comply |
 | **Proactive execution** (scheduler + A2A + Obsidian RAG — §2) | P6/P7/P8 — the differentiated Chief-of-Staff story |
 | **Composition & interop** (be composable, not a control plane) | P6 A2A, P17 MCP, P14a AG-UI (archived), P22 meta-harness compat |
+| **Identity & trust** (agent IAM, clean-room sharing — ecosystem pillar 3) | P25 establishes AgentIdentity; P26 declassification gateway; P13 credential scoping; P6/P17 carry authn |
+| **Feedback loop** (evals, simulation, learning — ecosystem pillars 2+5) | P4 traces (archived); P27 evals + simulation personas + trace→dataset; P28 learns (eval-gated); P7 schedules both |
+| **Multimodal I/O** (ecosystem pillar 6) | P29 establishes; P20 supplies local ASR/TTS; P14a (archived) is the transport |
 
 ## v3 change log (vs v2)
 
@@ -192,11 +223,21 @@ re-prefix with dates; the roadmap is the identity source.
   and **P16** (explicit `codex` registration + `gemini_cli` host harness).
 - Multi-model routing, previously in v2's "Out of scope" list, is now in
   scope (P19/P20).
+- **2026-07-16 amendment (ecosystem brief)**: added P24
+  `capability-protocols-v2` (contracts-only pre-phase for the five seam
+  gaps identified in the architecture review) and P25–P29 (`agent-iam`,
+  `knowledge-clean-room`, `eval-simulation-loop`, `continual-learning`,
+  `multimodal-io`) from
+  `docs/architecture-analysis/2026-07-16-ecosystem-pillars.md`. The
+  formerly out-of-scope "cross-persona bridge" and "role learning" items
+  re-enter as P26 and P28 respectively.
 
 ## Out of scope for roadmap v3
 
-Deferred items with no current phase: cross-persona bridge, role
-learning, persona config encryption, NotebookLM integration, in-repo
-session-sharing / multi-user control plane (delegated to meta-harnesses
-per P22's adopt-not-build posture). Each may re-enter a future v4
-roadmap if demand surfaces.
+Deferred items with no current phase: persona config encryption,
+NotebookLM integration, in-repo session-sharing / multi-user control
+plane (delegated to meta-harnesses per P22's adopt-not-build posture),
+and fully autonomous self-modification (P27/P28 deliberately stop at
+propose → eval → human-approved diff). Each may re-enter a future v4
+roadmap if demand surfaces. (Cross-persona bridge and role learning,
+deferred since v2, re-entered scope on 2026-07-16 as P26 and P28.)
