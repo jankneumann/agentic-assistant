@@ -202,3 +202,14 @@ service).
   `CredentialProvider`, `EnvCredentialProvider`, `SessionRegistry`.
   Implementations may adjust module placement, not shape or names,
   without a spec update.
+
+## Owner review verdicts (2026-07-16)
+
+All seven authoring judgment calls accepted. Amendments from review:
+- C2 (ToolSpec): legacy `as_*_tools()` shim removal pinned as a P17
+  `mcp-server-exposure` exit criterion (was: unscheduled).
+- C8 (added post-review): `MemoryPolicy.get_recent_snippets` becomes
+  async at the protocol level now, so P19+ consumers never build on
+  the sync bridge; sync callers bridge only at true sync edges (host
+  export). See specs/memory-policy delta; P21 implementation updated
+  in the same session.

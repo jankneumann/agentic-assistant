@@ -88,9 +88,11 @@ The system SHALL deprecate `Extension.as_langchain_tools()` and
 through the per-harness adapters. During migration the two legacy
 methods MAY remain on extensions as thin shims deriving from
 `tool_specs()`, but no new call site may consume them: harnesses and
-tool policies MUST consume `ToolSpec` via the adapters. The legacy
-methods are removed from the `Extension` protocol once the phases
-implementing this contract have migrated both SDK harnesses.
+tool policies MUST consume `ToolSpec` via the adapters. Removal of the
+legacy methods from the `Extension` protocol is an exit criterion of
+the `mcp-server-exposure` phase (P17): that phase SHALL NOT archive
+while either SDK harness still consumes a legacy method (owner review
+verdict, 2026-07-16).
 
 #### Scenario: New consumers use ToolSpec adapters
 
