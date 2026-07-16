@@ -59,21 +59,21 @@ items:
     depends_on: []
   - item_id: P27
     title: eval-simulation-loop
-    status: in_progress
+    status: completed
     priority: 5
     effort: L
     change_id: eval-simulation-loop
     depends_on: []
   - item_id: P10
     title: extension-lifecycle
-    status: in_progress
+    status: completed
     priority: 6
     effort: M
     change_id: extension-lifecycle
     depends_on: []
   - item_id: P13
     title: security-hardening
-    status: candidate
+    status: in_progress
     priority: 7
     effort: L
     change_id: security-hardening

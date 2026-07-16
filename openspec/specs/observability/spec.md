@@ -22,7 +22,7 @@ The system SHALL define an `ObservabilityProvider` Protocol at `src/assistant/te
 - `trace_tool_call(*, tool_name, tool_kind, persona, role, duration_ms, error=None, metadata=None)` recording any LangChain StructuredTool or HTTP-discovered tool invocation. The `tool_kind` parameter MUST be one of `"extension"`, `"http"`, or `"graph"`.
 - `trace_graph_call(*, extension_name, method, path, status_code, duration_ms, breaker_key, request_id=None, retry_attempt=0, bytes_streamed=None, error=None, metadata=None)` recording a single outbound HTTP request to a Microsoft Graph endpoint (or any `CloudGraphClient`-shaped backend in P14+). The `method` parameter MUST be one of `"GET"`, `"POST"`, `"PUT"`, `"PATCH"`, `"DELETE"`. The `path` parameter MUST be the request path with sensitive ID values redacted to placeholders (e.g., `/users/<user_id>/messages/<message_id>`). The `breaker_key` parameter is the P9 circuit breaker key (e.g., `"graph:ms_graph"`) and is included so spans can be correlated with breaker state events. The `request_id` parameter is the Microsoft Graph `request-id` response header value, included for correlation with Entra ID and Graph audit logs. The `retry_attempt` parameter is the zero-indexed retry count (0 = original attempt). The `bytes_streamed` parameter is non-None only for `get_bytes` invocations and carries the cumulative byte count read from the streamed body (used by ops dashboards to flag large-download patterns). On failure, `error` MUST be the exception class name (e.g., `"GraphAPIError"`).
 - `trace_extension_init(*, extension_name, persona, success, duration_ms, error=None)` recording extension construction.
-- `trace_memory_op(*, op, target, persona, duration_ms, metadata=None)` recording any `MemoryManager` method call. The `op` parameter MUST be one of `"context"`, `"snippets"`, `"fact_write"`, `"interaction_write"`, `"episode_write"`, `"search"`, or `"export"` — each corresponding to a `MemoryManager` method on `src/assistant/core/memory.py`.
+- `trace_memory_op(*, op, target, persona, duration_ms, metadata=None)` recording any `MemoryManager` method call. The `op` parameter MUST be one of `"context"`, `"snippets"`, `"fact_write"`, `"interaction_write"`, `"interaction_list"`, `"episode_write"`, `"search"`, or `"export"` — each corresponding to a `MemoryManager` method on `src/assistant/core/memory.py`.
 - `start_span(name, attributes=None)` returning a context manager for arbitrary named spans that do not fit any first-class method.
 - `set_metadata(*, key, value)` recording metadata on the current trace.
 - `flush()` triggering an immediate send of buffered events.
@@ -50,7 +50,7 @@ The Protocol SHALL be decorated with `@runtime_checkable` so `isinstance(obj, Ob
 
 #### Scenario: Rejects mis-typed op value
 
-- **WHEN** `trace_memory_op(op="CONTEXT", ...)` is invoked on any provider (any value outside the fixed set `{"context", "snippets", "fact_write", "interaction_write", "episode_write", "search", "export"}`, including wrong-case variants)
+- **WHEN** `trace_memory_op(op="CONTEXT", ...)` is invoked on any provider (any value outside the fixed set `{"context", "snippets", "fact_write", "interaction_write", "interaction_list", "episode_write", "search", "export"}`, including wrong-case variants)
 - **THEN** a `ValueError` MUST be raised identifying the invalid `op`
 - **AND** no span SHALL be emitted
 
@@ -167,6 +167,7 @@ Every public method on `MemoryManager` at `src/assistant/core/memory.py` SHALL i
 | `get_recent_snippets(persona, role, ...)` | `"snippets"` |
 | `store_fact(persona, key, value)` | `"fact_write"` |
 | `store_interaction(...)` | `"interaction_write"` |
+| `list_interactions(persona, ...)` | `"interaction_list"` |
 | `store_episode(...)` | `"episode_write"` |
 | `search(persona, query, ...)` | `"search"` |
 | `export_memory(persona)` | `"export"` |
@@ -183,17 +184,10 @@ The `target` argument MUST be the operation's key, query string, or persona iden
 - **WHEN** `MemoryManager.search("personal", query="recent decisions")` is awaited
 - **THEN** `provider.trace_memory_op` MUST be called once with `op="search"` and `target="recent decisions"`
 
-#### Scenario: store_episode emits trace_memory_op covering the graphiti call
+#### Scenario: list_interactions emits trace_memory_op with interaction_list
 
-- **WHEN** `MemoryManager.store_episode(...)` is awaited and internally invokes the graphiti client
-- **THEN** exactly one `provider.trace_memory_op` call MUST be emitted with `op="episode_write"`
-- **AND** no second call SHALL be emitted from inside the graphiti client
-
-#### Scenario: get_recent_snippets emits trace_memory_op with snippets
-
-- **WHEN** `MemoryManager.get_recent_snippets("personal", "researcher")` is awaited and internally invokes the graphiti client
-- **THEN** exactly one `provider.trace_memory_op` call MUST be emitted with `op="snippets"` and `persona="personal"`
-- **AND** no second call SHALL be emitted from inside the graphiti client
+- **WHEN** `MemoryManager.list_interactions("personal", limit=10)` is awaited
+- **THEN** `provider.trace_memory_op` MUST be called once with `op="interaction_list"` and a non-negative `duration_ms`
 
 ### Requirement: Secret Sanitization
 
