@@ -61,6 +61,85 @@ class MemoryManager:
 
         return "\n\n".join(sections) + "\n"
 
+    @trace_memory_op("snippets")
+    async def get_recent_snippets(
+        self, persona: str, role: str, limit: int = 10
+    ) -> list[str]:
+        """Return up to ``limit`` short memory snippets for prompt prepend.
+
+        Composition (memory-retrieval-activation):
+
+        - *Durable* snippets — recent facts (``memory`` table, most
+          recently updated first), high-confidence preferences, and
+          Graphiti semantic search results for ``role`` when the
+          knowledge graph is configured (degrading to Postgres-only
+          with a warning on connection errors, mirroring
+          ``get_context``).
+        - *Recent* snippets — the latest interaction summaries.
+
+        Budgeting: durable snippets get the ceiling half of ``limit``;
+        interaction summaries fill the remainder. If either bucket
+        under-fills, the other backfills so the total is min(available,
+        ``limit``). This guarantees both durable knowledge and recency
+        are represented when both exist.
+        """
+        if limit <= 0:
+            return []
+
+        async with self._session_factory() as session:
+            mem_result = await session.execute(
+                select(MemoryEntry)
+                .where(MemoryEntry.persona == persona)
+                .order_by(MemoryEntry.updated_at.desc())
+                .limit(limit)
+            )
+            entries = mem_result.scalars().all()
+
+            pref_result = await session.execute(
+                select(Preference)
+                .where(Preference.persona == persona)
+                .order_by(Preference.confidence.desc())
+                .limit(limit)
+            )
+            prefs = pref_result.scalars().all()
+
+            inter_result = await session.execute(
+                select(Interaction)
+                .where(Interaction.persona == persona)
+                .order_by(Interaction.created_at.desc())
+                .limit(limit)
+            )
+            interactions = inter_result.scalars().all()
+
+        durable: list[str] = [
+            f"**{e.key}**: {json.dumps(e.value)}" for e in entries
+        ]
+        durable.extend(
+            f"[{p.category}] **{p.key}**: {json.dumps(p.value)} "
+            f"(confidence: {p.confidence})"
+            for p in prefs
+        )
+        if self._graphiti is not None:
+            # Inline (rather than calling ``self.search``) so exactly one
+            # trace_memory_op span is emitted per req observability.6.
+            try:
+                results = await self._graphiti.search(role, num_results=limit)
+                durable.extend(_extract_content(r) for r in results)
+            except Exception:
+                logger.warning(
+                    "Graphiti search failed for persona '%s', "
+                    "degrading to Postgres-only snippets",
+                    persona,
+                )
+
+        recent: list[str] = [f"[{i.role}] {i.summary}" for i in interactions]
+
+        head = durable[: limit - (limit // 2)]
+        tail = recent[: limit - len(head)]
+        if len(head) + len(tail) < limit:
+            head = durable[: limit - len(tail)]
+        return head + tail
+
     @trace_memory_op("fact_write")
     async def store_fact(self, persona: str, key: str, value: Any) -> None:
         try:

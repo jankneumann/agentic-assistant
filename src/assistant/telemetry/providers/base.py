@@ -33,6 +33,7 @@ _VALID_GRAPH_METHODS: frozenset[str] = frozenset(
 _VALID_OPS: frozenset[str] = frozenset(
     {
         "context",
+        "snippets",
         "fact_write",
         "interaction_write",
         "episode_write",

@@ -51,6 +51,7 @@ def test_valid_ops_set() -> None:
     assert _VALID_OPS == frozenset(
         {
             "context",
+            "snippets",
             "fact_write",
             "interaction_write",
             "episode_write",

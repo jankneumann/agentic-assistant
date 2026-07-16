@@ -77,6 +77,107 @@ class TestGetContext:
         assert "## Semantic Context" not in ctx
 
 
+def _result_for(rows: list) -> MagicMock:
+    scalars = MagicMock()
+    scalars.all.return_value = rows
+    result = MagicMock()
+    result.scalars.return_value = scalars
+    return result
+
+
+class TestGetRecentSnippets:
+    @pytest.mark.asyncio
+    async def test_happy_path_mixes_durable_and_recent(self):
+        session = AsyncMock()
+        session.execute = AsyncMock(
+            side_effect=[
+                _result_for([_mock_entry("project", {"name": "newsletter"})]),
+                _result_for([_mock_pref("comm", "tone", "concise", 0.9)]),
+                _result_for(
+                    [_mock_interaction("researcher", "Found papers", "2026-07-01")]
+                ),
+            ]
+        )
+
+        factory = _make_session_factory(session)
+        mgr = MemoryManager(factory, graphiti_client=None)
+        snippets = await mgr.get_recent_snippets("test", "researcher", limit=10)
+
+        assert any("project" in s for s in snippets)
+        assert any("tone" in s for s in snippets)
+        assert any("Found papers" in s for s in snippets)
+        assert len(snippets) <= 10
+
+    @pytest.mark.asyncio
+    async def test_empty_db_returns_empty_list(self):
+        session = AsyncMock()
+        session.execute = AsyncMock(
+            side_effect=[_result_for([]), _result_for([]), _result_for([])]
+        )
+
+        factory = _make_session_factory(session)
+        mgr = MemoryManager(factory, graphiti_client=None)
+        snippets = await mgr.get_recent_snippets("test", "researcher")
+
+        assert snippets == []
+
+    @pytest.mark.asyncio
+    async def test_limit_budget_split_between_durable_and_recent(self):
+        entries = [_mock_entry(f"key{i}", {"v": i}) for i in range(10)]
+        interactions = [
+            _mock_interaction("researcher", f"turn {i}", "2026-07-01")
+            for i in range(10)
+        ]
+        session = AsyncMock()
+        session.execute = AsyncMock(
+            side_effect=[
+                _result_for(entries),
+                _result_for([]),
+                _result_for(interactions),
+            ]
+        )
+
+        factory = _make_session_factory(session)
+        mgr = MemoryManager(factory, graphiti_client=None)
+        snippets = await mgr.get_recent_snippets("test", "researcher", limit=4)
+
+        assert len(snippets) == 4
+        # Ceil half durable (facts), floor half recent (interactions).
+        assert sum("key" in s for s in snippets) == 2
+        assert sum("turn" in s for s in snippets) == 2
+
+    @pytest.mark.asyncio
+    async def test_recent_backfills_when_durable_scarce(self):
+        interactions = [
+            _mock_interaction("researcher", f"turn {i}", "2026-07-01")
+            for i in range(10)
+        ]
+        session = AsyncMock()
+        session.execute = AsyncMock(
+            side_effect=[
+                _result_for([]),
+                _result_for([]),
+                _result_for(interactions),
+            ]
+        )
+
+        factory = _make_session_factory(session)
+        mgr = MemoryManager(factory, graphiti_client=None)
+        snippets = await mgr.get_recent_snippets("test", "researcher", limit=4)
+
+        assert len(snippets) == 4
+        assert all("turn" in s for s in snippets)
+
+    @pytest.mark.asyncio
+    async def test_nonpositive_limit_returns_empty(self):
+        session = AsyncMock()
+        factory = _make_session_factory(session)
+        mgr = MemoryManager(factory, graphiti_client=None)
+
+        assert await mgr.get_recent_snippets("test", "researcher", limit=0) == []
+        session.execute.assert_not_called()
+
+
 class TestStoreFact:
     @pytest.mark.asyncio
     async def test_persists_to_postgres(self):
