@@ -33,6 +33,18 @@
       update DAG, recommended order, cross-cutting themes, change log,
       out-of-scope (P26/P28 re-enter scope)
 
+## 2b. Protocol-standards amendment (2026-07-16)
+
+- [x] 2b.1 Standards-first protocol matrix (adopt vs placeholder per
+      seam) + ecosystem decomposition lessons (AgentCore, LangGraph,
+      Codex, Claude Code, Pi, OpenClaw/Omnigent) — in
+      `docs/architecture-analysis/2026-07-16-protocol-standards.md`
+- [x] 2b.2 Roadmap: add guiding principle 7 (standards-first seams);
+      P24 gains contract 6 (approval interrupt/resume — the unconsumed
+      `require_confirmation` gap) + checkpointer/session-registry notes;
+      P19 catalog mirrors OpenRouter `/models` schema; P25 models
+      inbound vs outbound auth
+
 ## 3. Validation & handoff
 
 - [x] 3.1 `openspec validate roadmap-v3-heterogeneous-fleet --strict`

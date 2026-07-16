@@ -64,6 +64,14 @@ operating environment, documented in the 2026-07-07 architecture review
   `knowledge-clean-room`, `eval-simulation-loop`, `continual-learning`,
   `multimodal-io`). Cross-persona bridge and role learning re-enter
   scope as P26/P28.
+- **2026-07-16 amendment 2 (protocol standards)**: add
+  `docs/architecture-analysis/2026-07-16-protocol-standards.md` — the
+  standards-first adoption matrix (OpenAPI, MCP, A2A, AG-UI/MCP-UI,
+  model wire APIs, OTel GenAI, Agent Skills, OAuth 2.1/MCP-auth;
+  placeholders where no standard converged) and functional-decomposition
+  lessons from AgentCore/LangGraph/Codex/Claude Code/Pi/OpenClaw.
+  Roadmap gains guiding principle 7; P24 gains the approval
+  interrupt/resume contract; P19/P25 descriptions sharpened.
 
 ## What Does NOT Change
 
