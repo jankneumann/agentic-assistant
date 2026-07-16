@@ -173,17 +173,18 @@ See `openspec/roadmap.md` for the full sequence. Notable gaps:
   empty `## Recent context` sections; DeepAgents agents have full
   memory continuity. Documented asymmetry — see the
   `ms-agent-framework-harness` spec "Follow-up scope" note.
-- **`agent-framework` v1.0.1 packaging quirk**: PyPI ships the meta
-  package as a namespace-package; the installed
-  `agent_framework/__init__.py` ends up empty due to multiple
-  connector packages racing to claim the namespace. The MSAF
-  harness uses lazy imports inside method bodies so the stub-load
-  path is unaffected, but `from agent_framework import Agent` at
-  runtime will fail until the package's namespace declarations
-  are repaired upstream OR the install method is changed (e.g.,
-  pin to `agent-framework-core` directly rather than the meta
-  package). Tests bypass via `unittest.mock.patch(...,
-  create=True)`.
+- **`agent-framework` packaging — RESOLVED (X3 repo-hygiene,
+  2026-07-16)**: the repo now pins `agent-framework-core` +
+  `agent-framework-openai` (1.10.x) instead of the `agent-framework`
+  meta package. The 1.0.x meta line no longer resolves on a fresh
+  `uv lock` (its graph reaches a yanked pre-release), and 1.10 core
+  ships a real `agent_framework/__init__.py`, eliminating the old
+  empty-namespace quirk. One consequence: `agent_framework.azure_openai`
+  no longer exists — the MSAF harness's `chat_client: azure_openai`
+  branch degrades to its documented install error until an Azure
+  OpenAI connector package ships (MSAF follow-up scope). Tests still
+  mock with `unittest.mock.patch(..., create=True)` and are
+  unaffected.
 
 ### Known follow-ups from archived changes
 
