@@ -7,6 +7,14 @@ values; thin per-consumer bindings (``model_bindings.py``) adapt a
 mirrors the OpenRouter ``/models`` schema (pricing, context length,
 modalities) so cloud entries sync verbatim and local entries are
 hand-authored in the same shape.
+
+The persona ``models:`` registry is the ONLY model-selection
+mechanism (P19 owner review verdict #3 — registry-only, the legacy
+``harnesses.<name>.model`` strings are gone): ``entries:`` declare
+the callable models, ``bindings:`` map consumer names (harness names
+today; ``embeddings`` / ``memory`` later) to entries, and personas
+without a ``models:`` section get a registry synthesized from
+:data:`DEFAULT_HARNESS_MODELS` by :func:`default_model_registry`.
 """
 
 from __future__ import annotations
@@ -38,8 +46,19 @@ CAPABILITY_TAGS: frozenset[str] = frozenset(
     }
 )
 
-#: Valid ``ModelRequest.consumer`` values.
-CONSUMERS: frozenset[str] = frozenset({"chat", "embedding"})
+#: Binding key applied when a consumer has no explicit entry in the
+#: registry's ``bindings:`` map (and default of ``ModelRequest.consumer``).
+DEFAULT_BINDING: str = "default"
+
+#: Per-harness default model strings (LangChain ``provider:model``
+#: shape) used to synthesize a registry when the persona declares no
+#: ``models:`` section — see :func:`default_model_registry`. Harness
+#: classes reference this table for their span-default ``_DEFAULT_MODEL``
+#: so core never imports harness modules.
+DEFAULT_HARNESS_MODELS: dict[str, str] = {
+    "deep_agents": "anthropic:claude-sonnet-4-20250514",
+    "ms_agent_framework": "openai:gpt-4o",
+}
 
 #: Sentinel ``ModelRef.name`` returned by :class:`HostProvidedModelProvider`
 #: — identifies the model slot as owned by the host seat rather than
@@ -47,8 +66,8 @@ CONSUMERS: frozenset[str] = frozenset({"chat", "embedding"})
 HOST_PROVIDED_MODEL_NAME: str = "host-provided"
 
 #: LangChain ``init_chat_model`` provider-prefix → wire dialect, used
-#: by :class:`StaticModelProvider` to infer the dialect from the
-#: persona's existing ``provider:model`` config strings.
+#: by :func:`default_model_registry` to infer the dialect from the
+#: synthesized ``provider:model`` default strings.
 _PREFIX_TO_DIALECT: dict[str, str] = {
     "anthropic": "anthropic",
     "openai": "openai-compatible",
@@ -118,21 +137,17 @@ class ModelRequest:
 
     ``required_tags`` are hard constraints — every ``ModelRef`` in the
     resolved chain carries all of them. ``preferred_tags`` bias
-    ordering only. ``consumer`` selects the binding family (``"chat"``
-    or ``"embedding"``); it is carried and validated but not yet used
-    for registry filtering (the embedding consumers land in P20/P21).
+    ordering only (and only on the unbound tag-resolution path).
+    ``consumer`` is the registry ``bindings:`` lookup key — a harness
+    name (``"deep_agents"``, ``"ms_agent_framework"``) today, and
+    non-harness consumers (``"embeddings"``, ``"memory"``) as they
+    land. An open vocabulary: an unbound consumer falls back to the
+    ``default`` binding, then to tag-filtered resolution.
     """
 
     required_tags: list[str] = field(default_factory=list)
     preferred_tags: list[str] = field(default_factory=list)
-    consumer: str = "chat"
-
-    def __post_init__(self) -> None:
-        if self.consumer not in CONSUMERS:
-            raise ValueError(
-                f"ModelRequest: unknown consumer {self.consumer!r}. "
-                f"Allowed: {sorted(CONSUMERS)}."
-            )
+    consumer: str = DEFAULT_BINDING
 
 
 @runtime_checkable
@@ -148,11 +163,14 @@ class ModelRegistry:
     """Parsed persona ``models:`` section.
 
     ``entries`` preserves declaration order (dict insertion order);
-    ``fallbacks`` maps entry name → ordered fallback entry names.
+    ``fallbacks`` maps entry name → ordered fallback entry names;
+    ``bindings`` maps consumer name → entry name (the ``default``
+    binding key applies to any consumer without an explicit binding).
     """
 
     entries: dict[str, ModelRef] = field(default_factory=dict)
     fallbacks: dict[str, list[str]] = field(default_factory=dict)
+    bindings: dict[str, str] = field(default_factory=dict)
 
     def __bool__(self) -> bool:
         return bool(self.entries)
@@ -161,16 +179,41 @@ class ModelRegistry:
 def parse_model_registry(raw: dict[str, Any] | None) -> ModelRegistry:
     """Parse and validate a persona-level ``models:`` registry.
 
-    Entries with unknown dialects, out-of-vocabulary tags, or fallback
-    references to undeclared entries fail with a
-    :class:`ModelRegistryError` naming the offending entry — persona
-    load surfaces this as an actionable error.
+    Shape: ``models: {entries: {<name>: {...}}, bindings: {<consumer>:
+    <entry name>}}``. Entries with unknown dialects, out-of-vocabulary
+    tags, fallback references to undeclared entries, or bindings that
+    target undeclared entries fail with a :class:`ModelRegistryError`
+    naming the offender — persona load surfaces this as an actionable
+    error. Unknown top-level keys (including the pre-verdict-3 flat
+    entry map) are rejected with a pointer to the current shape.
     """
     raw = raw or {}
+    unknown_keys = sorted(set(raw) - {"entries", "bindings"})
+    if unknown_keys:
+        raise ModelRegistryError(
+            f"models: unknown top-level keys {unknown_keys}. Expected "
+            f"'entries:' (name -> model spec) and optional 'bindings:' "
+            f"(consumer -> entry name); model entries live under "
+            f"'entries:', not at the top level."
+        )
+
+    raw_entries = raw.get("entries") or {}
+    raw_bindings = raw.get("bindings") or {}
+    if not isinstance(raw_entries, dict):
+        raise ModelRegistryError(
+            f"models entries: expected a mapping, got "
+            f"{type(raw_entries).__name__}."
+        )
+    if not isinstance(raw_bindings, dict):
+        raise ModelRegistryError(
+            f"models bindings: expected a mapping, got "
+            f"{type(raw_bindings).__name__}."
+        )
+
     entries: dict[str, ModelRef] = {}
     fallbacks: dict[str, list[str]] = {}
 
-    for name, spec in raw.items():
+    for name, spec in raw_entries.items():
         if not isinstance(spec, dict):
             raise ModelRegistryError(
                 f"models entry {name!r}: expected a mapping, got "
@@ -201,18 +244,68 @@ def parse_model_registry(raw: dict[str, Any] | None) -> ModelRegistry:
                     f"{fallback_name!r} exists."
                 )
 
-    return ModelRegistry(entries=entries, fallbacks=fallbacks)
+    bindings: dict[str, str] = {}
+    for consumer, target in raw_bindings.items():
+        if not isinstance(target, str) or not target:
+            raise ModelRegistryError(
+                f"models binding {consumer!r}: expected an entry name "
+                f"string, got {target!r}."
+            )
+        if target not in entries:
+            raise ModelRegistryError(
+                f"models binding {consumer!r} targets {target!r}, but no "
+                f"entry named {target!r} exists. Declared entries: "
+                f"{list(entries)}."
+            )
+        bindings[consumer] = target
+
+    return ModelRegistry(entries=entries, fallbacks=fallbacks, bindings=bindings)
+
+
+def default_model_registry(
+    defaults: dict[str, str] | None = None,
+) -> ModelRegistry:
+    """Synthesize the registry used when a persona declares no ``models:``.
+
+    One entry per known harness default (:data:`DEFAULT_HARNESS_MODELS`),
+    with a binding mapping each harness name to its default entry. The
+    entry name and ``model_id`` both carry the full ``provider:model``
+    string — the LangChain binding consumes a ``model_id`` containing
+    ``:`` verbatim, so the synthesized defaults reproduce the exact
+    ``init_chat_model`` call each harness made before P19; the dialect
+    is inferred from the provider prefix (span labeling only).
+    """
+    if defaults is None:
+        defaults = DEFAULT_HARNESS_MODELS
+    entries: dict[str, ModelRef] = {}
+    bindings: dict[str, str] = {}
+    for consumer, model in defaults.items():
+        if model not in entries:
+            prefix, _, _ = model.partition(":")
+            dialect = _PREFIX_TO_DIALECT.get(prefix, "openai-compatible")
+            entries[model] = ModelRef(name=model, dialect=dialect, model_id=model)
+        bindings[consumer] = model
+    return ModelRegistry(
+        entries=entries,
+        fallbacks={name: [] for name in entries},
+        bindings=bindings,
+    )
 
 
 class RegistryModelProvider:
-    """Registry-backed provider — tag-filtered, ordered fallback chains.
+    """Registry-backed provider — bindings first, then tag resolution.
 
-    Resolution: entries carrying every ``required_tags`` tag are
-    candidates, ordered by preferred-tag match count (descending) then
-    declaration order; each candidate is followed by its declared
-    ``fallbacks`` (also filtered by ``required_tags`` — a fallback that
-    drops a required capability such as ``private-data-ok`` never
-    enters the chain). Duplicates keep their first position.
+    Resolution: the request's ``consumer`` is looked up in the
+    registry ``bindings:`` (falling back to the ``default`` binding).
+    A bound consumer resolves to the bound entry followed by its
+    declared ``fallbacks``, filtered by ``required_tags`` — a chain
+    member that drops a required capability such as ``private-data-ok``
+    never enters the chain; an all-filtered chain raises rather than
+    silently substituting an unbound entry. An unbound consumer falls
+    back to tag resolution: entries carrying every ``required_tags``
+    tag are candidates, ordered by preferred-tag match count
+    (descending) then declaration order, each followed by its filtered
+    ``fallbacks``. Duplicates keep their first position.
     """
 
     def __init__(self, registry: ModelRegistry) -> None:
@@ -221,7 +314,35 @@ class RegistryModelProvider:
     def list_models(self) -> list[ModelRef]:
         return list(self._registry.entries.values())
 
+    def _resolve_binding(
+        self, request: ModelRequest, bound_name: str
+    ) -> list[ModelRef]:
+        required = set(request.required_tags)
+        chain: list[ModelRef] = []
+        seen: set[str] = set()
+        for name in (bound_name, *self._registry.fallbacks.get(bound_name, [])):
+            if name in seen:
+                continue
+            seen.add(name)
+            ref = self._registry.entries[name]
+            if required.issubset(ref.tags):
+                chain.append(ref)
+        if not chain:
+            raise ModelResolutionError(
+                f"Consumer {request.consumer!r} is bound to {bound_name!r}, "
+                f"but neither it nor its declared fallbacks carry "
+                f"required_tags={sorted(required)}."
+            )
+        return chain
+
     def resolve(self, request: ModelRequest) -> list[ModelRef]:
+        bindings = self._registry.bindings
+        bound_name = bindings.get(request.consumer) or bindings.get(
+            DEFAULT_BINDING
+        )
+        if bound_name is not None:
+            return self._resolve_binding(request, bound_name)
+
         required = set(request.required_tags)
         preferred = set(request.preferred_tags)
         order = {name: i for i, name in enumerate(self._registry.entries)}
@@ -261,86 +382,6 @@ class RegistryModelProvider:
                 if required.issubset(fallback.tags):
                     _append(fallback)
         return chain
-
-
-class StaticModelProvider:
-    """Wraps the persona's per-harness ``model`` config string.
-
-    Default SDK provider when the persona declares no ``models:``
-    registry — keeps the capability slot total (model-provider spec
-    "Default Model Providers"). The single-entry chain preserves the
-    configured ``provider:model`` string verbatim in ``model_id`` so
-    the LangChain binding reconstructs today's exact
-    ``init_chat_model`` call; the dialect is inferred from the
-    provider prefix.
-    """
-
-    def __init__(
-        self,
-        persona: Any,
-        harness_name: str | None = None,
-        default_model: str | None = None,
-    ) -> None:
-        self._persona = persona
-        self._harness_name = harness_name
-        self._default_model = default_model
-
-    def for_harness(
-        self, harness_name: str, default_model: str | None = None
-    ) -> StaticModelProvider:
-        """Copy bound to one harness's config entry (and its default)."""
-        return StaticModelProvider(
-            self._persona,
-            harness_name=harness_name,
-            default_model=default_model or self._default_model,
-        )
-
-    def _configured_model(self) -> str:
-        harnesses = getattr(self._persona, "harnesses", None) or {}
-        if not isinstance(harnesses, dict):
-            harnesses = {}
-        if self._harness_name is not None:
-            cfg = harnesses.get(self._harness_name) or {}
-            model = cfg.get("model") if isinstance(cfg, dict) else None
-            if isinstance(model, str) and model:
-                return model
-        else:
-            for cfg in harnesses.values():
-                if isinstance(cfg, dict):
-                    model = cfg.get("model")
-                    if isinstance(model, str) and model:
-                        return model
-        return self._default_model or ""
-
-    def _ref(self) -> ModelRef | None:
-        model = self._configured_model()
-        if not model:
-            return None
-        prefix, _, _ = model.partition(":")
-        dialect = _PREFIX_TO_DIALECT.get(prefix, "openai-compatible")
-        return ModelRef(name=model, dialect=dialect, model_id=model)
-
-    def list_models(self) -> list[ModelRef]:
-        ref = self._ref()
-        return [ref] if ref is not None else []
-
-    def resolve(self, request: ModelRequest) -> list[ModelRef]:
-        if request.required_tags:
-            # A static config string carries no capability tags — a
-            # tagged request is unsatisfiable and must raise rather
-            # than silently return a non-matching model.
-            raise ModelResolutionError(
-                f"StaticModelProvider cannot satisfy required_tags="
-                f"{sorted(request.required_tags)}: the persona declares "
-                f"no models: registry (tags require registry entries)."
-            )
-        ref = self._ref()
-        if ref is None:
-            raise ModelResolutionError(
-                "StaticModelProvider: persona declares no harness "
-                "'model' string and no default was supplied."
-            )
-        return [ref]
 
 
 class HostProvidedModelProvider:

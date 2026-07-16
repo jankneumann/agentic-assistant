@@ -2,9 +2,11 @@
 
 Covers the model-provider spec: ModelRef validation (closed dialect +
 tag vocabularies, wire-identifier refinement), persona registry
-parsing/validation, tag-filtered resolution with ordered fallback
-chains, the StaticModelProvider / HostProvidedModelProvider defaults,
-resolver slot #6 wiring, and the CredentialProvider seam.
+parsing/validation (entries + consumer bindings), binding-first
+resolution with tag-filtered ordered fallback chains, the synthesized
+default registry (registry-only per owner review verdict #3) and
+HostProvidedModelProvider, resolver slot #6 wiring, and the
+CredentialProvider seam.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from assistant.core.capabilities.credentials import (
 )
 from assistant.core.capabilities.models import (
     CAPABILITY_TAGS,
+    DEFAULT_HARNESS_MODELS,
     HOST_PROVIDED_MODEL_NAME,
     HostProvidedModelProvider,
     ModelProvider,
@@ -29,8 +32,8 @@ from assistant.core.capabilities.models import (
     ModelRequest,
     ModelResolutionError,
     RegistryModelProvider,
-    StaticModelProvider,
     compute_cost,
+    default_model_registry,
     parse_model_registry,
 )
 
@@ -86,15 +89,17 @@ def test_modelref_model_id_defaults_to_name() -> None:
     assert ref.model_id == "sonnet"
 
 
-def test_modelrequest_rejects_unknown_consumer() -> None:
-    with pytest.raises(ValueError, match="consumer"):
-        ModelRequest(consumer="batch")
+def test_modelrequest_consumer_defaults_to_default_binding() -> None:
+    # Open consumer vocabulary (verdict #3): harness names today,
+    # embeddings/memory later — no closed-set validation.
+    assert ModelRequest().consumer == "default"
+    assert ModelRequest(consumer="embeddings").consumer == "embeddings"
 
 
 # ── Registry parsing + validation ────────────────────────────────────
 
 
-def _registry_raw() -> dict:
+def _entries_raw() -> dict:
     return {
         "sonnet": {
             "dialect": "anthropic",
@@ -114,6 +119,13 @@ def _registry_raw() -> dict:
     }
 
 
+def _registry_raw(bindings: dict | None = None) -> dict:
+    raw: dict = {"entries": _entries_raw()}
+    if bindings is not None:
+        raw["bindings"] = bindings
+    return raw
+
+
 def test_parse_registry_resolves_entries_to_modelrefs() -> None:
     registry = parse_model_registry(_registry_raw())
     ref = registry.entries["local-fast"]
@@ -125,22 +137,49 @@ def test_parse_registry_resolves_entries_to_modelrefs() -> None:
 
 
 def test_parse_registry_rejects_unknown_dialect() -> None:
-    raw = {"bad": {"dialect": "litellm"}}
+    raw = {"entries": {"bad": {"dialect": "litellm"}}}
     with pytest.raises(ModelRegistryError, match="litellm"):
         parse_model_registry(raw)
 
 
 def test_parse_registry_rejects_unknown_tag_naming_vocabulary() -> None:
-    raw = {"bad": {"dialect": "anthropic", "tags": ["fast", "sparkly"]}}
+    raw = {"entries": {"bad": {"dialect": "anthropic", "tags": ["fast", "sparkly"]}}}
     with pytest.raises(ModelRegistryError, match="sparkly"):
         parse_model_registry(raw)
 
 
 def test_parse_registry_dangling_fallback_names_both_entries() -> None:
-    raw = {"primary": {"dialect": "anthropic", "fallbacks": ["missing-entry"]}}
+    raw = {
+        "entries": {
+            "primary": {"dialect": "anthropic", "fallbacks": ["missing-entry"]}
+        }
+    }
     with pytest.raises(ModelRegistryError) as exc:
         parse_model_registry(raw)
     assert "primary" in str(exc.value)
+    assert "missing-entry" in str(exc.value)
+
+
+def test_parse_registry_rejects_pre_verdict3_flat_shape() -> None:
+    """Old flat entry maps must fail with a pointer to the new shape."""
+    with pytest.raises(ModelRegistryError, match="entries"):
+        parse_model_registry({"sonnet": {"dialect": "anthropic"}})
+
+
+def test_parse_registry_parses_bindings() -> None:
+    registry = parse_model_registry(
+        _registry_raw({"default": "sonnet", "ms_agent_framework": "local-fast"})
+    )
+    assert registry.bindings == {
+        "default": "sonnet",
+        "ms_agent_framework": "local-fast",
+    }
+
+
+def test_parse_registry_unknown_binding_target_fails_load() -> None:
+    with pytest.raises(ModelRegistryError) as exc:
+        parse_model_registry(_registry_raw({"deep_agents": "missing-entry"}))
+    assert "deep_agents" in str(exc.value)
     assert "missing-entry" in str(exc.value)
 
 
@@ -158,8 +197,9 @@ def test_persona_load_fails_on_invalid_registry(tmp_path: Path) -> None:
     (persona_dir / "persona.yaml").write_text(
         "name: fixture\n"
         "models:\n"
-        "  bad:\n"
-        "    dialect: litellm\n"
+        "  entries:\n"
+        "    bad:\n"
+        "      dialect: litellm\n"
     )
     registry = PersonaRegistry(tmp_path)
     with pytest.raises(ValueError, match="litellm"):
@@ -174,21 +214,25 @@ def test_persona_load_parses_valid_registry(tmp_path: Path) -> None:
     (persona_dir / "persona.yaml").write_text(
         "name: fixture\n"
         "models:\n"
-        "  local-fast:\n"
-        "    dialect: openai-compatible\n"
-        "    id: llama-3.1-8b-instruct\n"
-        "    endpoint: http://gx10.local:8000/v1\n"
-        "    tags: [fast, local-only]\n"
+        "  entries:\n"
+        "    local-fast:\n"
+        "      dialect: openai-compatible\n"
+        "      id: llama-3.1-8b-instruct\n"
+        "      endpoint: http://gx10.local:8000/v1\n"
+        "      tags: [fast, local-only]\n"
+        "  bindings:\n"
+        "    default: local-fast\n"
     )
     cfg = PersonaRegistry(tmp_path).load("fixture")
     assert cfg.models.entries["local-fast"].model_id == "llama-3.1-8b-instruct"
+    assert cfg.models.bindings == {"default": "local-fast"}
 
 
-# ── RegistryModelProvider ────────────────────────────────────────────
+# ── RegistryModelProvider — unbound tag resolution ───────────────────
 
 
-def _provider() -> RegistryModelProvider:
-    return RegistryModelProvider(parse_model_registry(_registry_raw()))
+def _provider(bindings: dict | None = None) -> RegistryModelProvider:
+    return RegistryModelProvider(parse_model_registry(_registry_raw(bindings)))
 
 
 def test_registry_provider_satisfies_protocol() -> None:
@@ -210,12 +254,14 @@ def test_resolution_returns_ordered_fallback_chain() -> None:
 
 def test_fallback_declared_entry_follows_primary() -> None:
     raw = {
-        "primary": {
-            "dialect": "anthropic",
-            "tags": ["coding"],
-            "fallbacks": ["secondary"],
-        },
-        "secondary": {"dialect": "openai-compatible", "tags": ["coding"]},
+        "entries": {
+            "primary": {
+                "dialect": "anthropic",
+                "tags": ["coding"],
+                "fallbacks": ["secondary"],
+            },
+            "secondary": {"dialect": "openai-compatible", "tags": ["coding"]},
+        }
     }
     chain = RegistryModelProvider(parse_model_registry(raw)).resolve(
         ModelRequest(required_tags=["coding"])
@@ -248,32 +294,57 @@ def test_list_models_returns_declared_entries() -> None:
     assert names == ["sonnet", "local-fast"]
 
 
-# ── StaticModelProvider ──────────────────────────────────────────────
+# ── RegistryModelProvider — consumer bindings ────────────────────────
 
 
-def _static_persona(model: str | None) -> MagicMock:
-    persona = MagicMock()
-    persona.harnesses = {
-        "deep_agents": {"enabled": True, **({"model": model} if model else {})}
-    }
-    return persona
-
-
-def test_static_provider_wraps_persona_config() -> None:
-    provider = StaticModelProvider(
-        _static_persona("anthropic:claude-sonnet-4-20250514"),
-        harness_name="deep_agents",
+def test_consumer_binding_selects_bound_entry() -> None:
+    provider = _provider(
+        {"default": "sonnet", "ms_agent_framework": "local-fast"}
     )
-    chain = provider.resolve(ModelRequest())
-    assert len(chain) == 1
-    assert chain[0].dialect == "anthropic"
-    assert chain[0].model_id == "anthropic:claude-sonnet-4-20250514"
+    chain = provider.resolve(ModelRequest(consumer="ms_agent_framework"))
+    assert [r.name for r in chain] == ["local-fast"]
 
 
-def test_static_provider_satisfies_protocol() -> None:
-    assert isinstance(
-        StaticModelProvider(_static_persona("openai:gpt-4o")), ModelProvider
+def test_unbound_consumer_falls_back_to_default_binding() -> None:
+    provider = _provider({"default": "sonnet"})
+    chain = provider.resolve(ModelRequest(consumer="deep_agents"))
+    # bound entry first, then its declared fallbacks
+    assert [r.name for r in chain] == ["sonnet", "local-fast"]
+
+
+def test_binding_chain_filtered_by_required_tags() -> None:
+    """Privacy scenario on the bound path: a fallback that drops a
+    required tag never enters the chain."""
+    provider = _provider({"default": "sonnet"})
+    chain = provider.resolve(
+        ModelRequest(consumer="deep_agents", required_tags=["coding"])
     )
+    # local-fast lacks `coding`, so only the bound entry survives
+    assert [r.name for r in chain] == ["sonnet"]
+
+
+def test_binding_unsatisfiable_required_tags_raise() -> None:
+    provider = _provider({"default": "local-fast"})
+    with pytest.raises(ModelResolutionError, match="coding"):
+        provider.resolve(
+            ModelRequest(consumer="deep_agents", required_tags=["coding"])
+        )
+
+
+def test_no_binding_falls_back_to_tag_resolution() -> None:
+    chain = _provider().resolve(ModelRequest(consumer="deep_agents"))
+    assert [r.name for r in chain] == ["sonnet", "local-fast"]
+
+
+# ── Synthesized default registry (verdict #3 — registry-only) ────────
+
+
+def test_default_registry_binds_every_known_harness() -> None:
+    registry = default_model_registry()
+    assert set(registry.bindings) == set(DEFAULT_HARNESS_MODELS)
+    for consumer, model in DEFAULT_HARNESS_MODELS.items():
+        assert registry.bindings[consumer] == model
+        assert registry.entries[model].model_id == model
 
 
 @pytest.mark.parametrize(
@@ -287,50 +358,33 @@ def test_static_provider_satisfies_protocol() -> None:
         ("ollama:llama3", "openai-compatible"),
     ],
 )
-def test_static_provider_infers_dialect_from_prefix(
+def test_default_registry_infers_dialect_from_prefix(
     model: str, dialect: str
 ) -> None:
-    provider = StaticModelProvider(
-        _static_persona(model), harness_name="deep_agents"
-    )
-    assert provider.resolve(ModelRequest())[0].dialect == dialect
+    registry = default_model_registry({"deep_agents": model})
+    assert registry.entries[model].dialect == dialect
 
 
-def test_static_provider_falls_back_to_default_model() -> None:
-    provider = StaticModelProvider(
-        _static_persona(None),
-        harness_name="deep_agents",
-        default_model="anthropic:claude-sonnet-4-20250514",
-    )
-    assert (
-        provider.resolve(ModelRequest())[0].model_id
-        == "anthropic:claude-sonnet-4-20250514"
-    )
+def test_default_registry_resolves_per_harness_consumer() -> None:
+    provider = RegistryModelProvider(default_model_registry())
+    assert isinstance(provider, ModelProvider)
+    deep = provider.resolve(ModelRequest(consumer="deep_agents"))
+    msaf = provider.resolve(ModelRequest(consumer="ms_agent_framework"))
+    assert [r.model_id for r in deep] == [DEFAULT_HARNESS_MODELS["deep_agents"]]
+    assert [r.model_id for r in msaf] == [
+        DEFAULT_HARNESS_MODELS["ms_agent_framework"]
+    ]
 
 
-def test_static_provider_raises_without_model_or_default() -> None:
-    with pytest.raises(ModelResolutionError):
-        StaticModelProvider(
-            _static_persona(None), harness_name="deep_agents"
-        ).resolve(ModelRequest())
-
-
-def test_static_provider_raises_for_required_tags() -> None:
-    provider = StaticModelProvider(
-        _static_persona("openai:gpt-4o"), harness_name="deep_agents"
-    )
+def test_default_registry_entries_carry_no_tags_so_tagged_requests_raise() -> None:
+    """A synthesized default carries no capability tags — a tagged
+    request must raise rather than silently return a non-matching
+    model."""
+    provider = RegistryModelProvider(default_model_registry())
     with pytest.raises(ModelResolutionError, match="coding"):
-        provider.resolve(ModelRequest(required_tags=["coding"]))
-
-
-def test_for_harness_rebinds_config_entry() -> None:
-    persona = MagicMock()
-    persona.harnesses = {
-        "deep_agents": {"model": "anthropic:sonnet"},
-        "ms_agent_framework": {"model": "openai:gpt-4o"},
-    }
-    provider = StaticModelProvider(persona).for_harness("ms_agent_framework")
-    assert provider.resolve(ModelRequest())[0].model_id == "openai:gpt-4o"
+        provider.resolve(
+            ModelRequest(consumer="deep_agents", required_tags=["coding"])
+        )
 
 
 # ── HostProvidedModelProvider ────────────────────────────────────────
@@ -360,20 +414,25 @@ def _resolver_persona(models: ModelRegistry | None = None) -> MagicMock:
     return persona
 
 
-def test_resolver_sdk_defaults_to_static_provider() -> None:
+def test_resolver_sdk_synthesizes_default_registry_without_models() -> None:
     from assistant.core.capabilities.resolver import CapabilityResolver
 
     cs = CapabilityResolver().resolve(_resolver_persona(), "sdk", MagicMock())
-    assert isinstance(cs.models, StaticModelProvider)
+    assert isinstance(cs.models, RegistryModelProvider)
     assert isinstance(cs.models, ModelProvider)
+    chain = cs.models.resolve(ModelRequest(consumer="deep_agents"))
+    assert [r.model_id for r in chain] == [
+        DEFAULT_HARNESS_MODELS["deep_agents"]
+    ]
 
 
-def test_resolver_sdk_uses_registry_provider_when_declared() -> None:
+def test_resolver_sdk_uses_declared_registry_when_present() -> None:
     from assistant.core.capabilities.resolver import CapabilityResolver
 
     persona = _resolver_persona(parse_model_registry(_registry_raw()))
     cs = CapabilityResolver().resolve(persona, "sdk", MagicMock())
     assert isinstance(cs.models, RegistryModelProvider)
+    assert [r.name for r in cs.models.list_models()] == ["sonnet", "local-fast"]
 
 
 def test_resolver_host_gets_host_provided_model_provider() -> None:

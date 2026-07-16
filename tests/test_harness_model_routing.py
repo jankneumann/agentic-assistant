@@ -1,9 +1,10 @@
 """Harness integration tests for model-provider-routing (P19).
 
 Both SDK harnesses consume ``CapabilitySet.models`` + a per-consumer
-binding instead of raw persona ``model`` strings. Persona-configured
-behavior is preserved through ``StaticModelProvider`` (covered by the
-pre-existing suites); these tests cover the registry-backed path,
+binding; the persona ``models:`` registry is the only model-selection
+mechanism (owner review verdict #3 — registry-only). These tests
+cover the registry-backed path (with and without consumer bindings),
+the synthesized default registry when ``models:`` is absent,
 fallback-chain binding, budget-hook denial, and cost attribution on
 the emitted spans.
 """
@@ -39,7 +40,7 @@ def _persona(models_raw: dict | None = None) -> PersonaConfig:
         auth_provider="custom",
         auth_config={},
         harnesses={
-            "deep_agents": {"enabled": True, "model": "anthropic:claude-sonnet-x"},
+            "deep_agents": {"enabled": True},
             "ms_agent_framework": {"enabled": True},
         },
         tool_sources={},
@@ -60,20 +61,22 @@ def _role() -> RoleConfig:
 
 
 _REGISTRY = {
-    "sonnet": {
-        "dialect": "anthropic",
-        "id": "claude-sonnet-4-20250514",
-        "credential_ref": "ANTHROPIC_API_KEY",
-        "tags": ["coding", "long-context"],
-        "pricing": {"prompt": "0.000003", "completion": "0.000015"},
-        "fallbacks": ["local-fast"],
-    },
-    "local-fast": {
-        "dialect": "openai-compatible",
-        "id": "llama-3.1-8b-instruct",
-        "endpoint": "http://gx10.local:8000/v1",
-        "tags": ["fast", "cheap"],
-    },
+    "entries": {
+        "sonnet": {
+            "dialect": "anthropic",
+            "id": "claude-sonnet-4-20250514",
+            "credential_ref": "ANTHROPIC_API_KEY",
+            "tags": ["coding", "long-context"],
+            "pricing": {"prompt": "0.000003", "completion": "0.000015"},
+            "fallbacks": ["local-fast"],
+        },
+        "local-fast": {
+            "dialect": "openai-compatible",
+            "id": "llama-3.1-8b-instruct",
+            "endpoint": "http://gx10.local:8000/v1",
+            "tags": ["fast", "cheap"],
+        },
+    }
 }
 
 
@@ -113,19 +116,47 @@ def test_deep_agents_registry_persona_binds_registry_model(
     assert h._active_model_ref.name == "sonnet"
 
 
-def test_deep_agents_static_persona_keeps_active_model_ref() -> None:
+def test_deep_agents_no_registry_uses_synthesized_default() -> None:
+    """Persona without ``models:``: the synthesized default registry
+    binds this harness to its default entry, preserving the exact
+    single-argument ``init_chat_model`` call."""
     with patch(
         "assistant.harnesses.sdk.deep_agents.init_chat_model",
         return_value=MagicMock(),
-    ), patch(
+    ) as init_mock, patch(
         "assistant.harnesses.sdk.deep_agents.create_deep_agent"
     ) as cda_mock:
         cda_mock.return_value = MagicMock()
         h = DeepAgentsHarness(_persona(), _role())
         asyncio.run(h.create_agent(tools=[], extensions=[]))
-    assert h._active_model == "anthropic:claude-sonnet-x"
+        init_mock.assert_called_once_with("anthropic:claude-sonnet-4-20250514")
+    assert h._active_model == "anthropic:claude-sonnet-4-20250514"
     assert h._active_model_ref is not None
     assert h._active_model_ref.dialect == "anthropic"
+
+
+def test_deep_agents_consumer_binding_selects_bound_entry() -> None:
+    """A ``bindings:`` map routes each harness to its own entry — the
+    DeepAgents consumer binding wins over declaration order."""
+    registry = {
+        "entries": dict(_REGISTRY["entries"]),
+        "bindings": {"deep_agents": "local-fast", "default": "sonnet"},
+    }
+    with patch(
+        "assistant.harnesses.sdk.deep_agents.init_chat_model",
+        return_value=MagicMock(),
+    ) as init_mock, patch(
+        "assistant.harnesses.sdk.deep_agents.create_deep_agent"
+    ) as cda_mock:
+        cda_mock.return_value = MagicMock()
+        h = DeepAgentsHarness(_persona(registry), _role())
+        asyncio.run(h.create_agent(tools=[], extensions=[]))
+        init_mock.assert_called_once_with(
+            "openai:llama-3.1-8b-instruct",
+            base_url="http://gx10.local:8000/v1",
+        )
+    assert h._active_model_ref is not None
+    assert h._active_model_ref.name == "local-fast"
 
 
 def test_deep_agents_falls_back_when_primary_binding_fails() -> None:
@@ -207,10 +238,12 @@ def test_msaf_registry_persona_binds_openai_compatible_ref() -> None:
             captured.update(kwargs)
 
     registry = {
-        "router": {
-            "dialect": "openai-compatible",
-            "id": "openai/gpt-4o",
-            "endpoint": "https://openrouter.ai/api/v1",
+        "entries": {
+            "router": {
+                "dialect": "openai-compatible",
+                "id": "openai/gpt-4o",
+                "endpoint": "https://openrouter.ai/api/v1",
+            }
         }
     }
     h = MSAgentFrameworkHarness(_persona(registry), _role())
@@ -247,6 +280,32 @@ def test_msaf_registry_skips_unbindable_dialect_to_fallback() -> None:
     assert h._active_model_ref.name == "local-fast"
 
 
+def test_msaf_consumer_binding_selects_bound_entry() -> None:
+    """The MSAF consumer binding routes to its own entry independently
+    of the DeepAgents binding."""
+    captured: dict[str, Any] = {}
+
+    class _FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    registry = {
+        "entries": dict(_REGISTRY["entries"]),
+        "bindings": {"ms_agent_framework": "local-fast", "default": "sonnet"},
+    }
+    h = MSAgentFrameworkHarness(_persona(registry), _role())
+    with patch(
+        "agent_framework.openai.OpenAIChatClient", new=_FakeClient, create=True
+    ):
+        h._build_chat_client()
+    assert captured == {
+        "model_id": "llama-3.1-8b-instruct",
+        "base_url": "http://gx10.local:8000/v1",
+    }
+    assert h._active_model_ref is not None
+    assert h._active_model_ref.name == "local-fast"
+
+
 def test_msaf_guardrail_denial_propagates() -> None:
     h = MSAgentFrameworkHarness(
         _persona(_REGISTRY), _role(), guardrail_provider=_DenyGuardrails()
@@ -255,9 +314,9 @@ def test_msaf_guardrail_denial_propagates() -> None:
         h._build_chat_client()
 
 
-def test_msaf_static_default_uses_gpt4o_model_id() -> None:
-    """No registry: the StaticModelProvider default ('openai:gpt-4o')
-    flows through the binding with the provider prefix stripped."""
+def test_msaf_synthesized_default_uses_gpt4o_model_id() -> None:
+    """No registry: the synthesized default ('openai:gpt-4o') flows
+    through the binding with the provider prefix stripped."""
     captured: dict[str, Any] = {}
 
     class _FakeClient:

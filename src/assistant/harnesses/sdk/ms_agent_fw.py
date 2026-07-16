@@ -33,10 +33,10 @@ from assistant.core.capabilities.model_bindings import (
     bind_msaf_chat_client,
 )
 from assistant.core.capabilities.models import (
+    DEFAULT_HARNESS_MODELS,
     ModelRef,
     ModelRequest,
     ModelResolutionError,
-    StaticModelProvider,
 )
 from assistant.core.persona import PersonaConfig
 from assistant.core.role import RoleConfig
@@ -83,9 +83,10 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
     OAuth + LLM round-trips.
     """
 
-    #: Default chat-client model id surfaced in observability spans
-    #: when the persona omits a harness-level ``model`` override.
-    _DEFAULT_MODEL: str = "openai:gpt-4o"
+    #: Span-default chat-client model id, sourced from the shared
+    #: harness-default table that also seeds the synthesized registry
+    #: (P19 verdict #3 — registry-only).
+    _DEFAULT_MODEL: str = DEFAULT_HARNESS_MODELS["ms_agent_framework"]
 
     def __init__(
         self,
@@ -184,10 +185,11 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
     def _resolve_model_provider(self) -> ModelProvider:
         """Return the injected ModelProvider or resolve slot #6.
 
-        Mirrors ``DeepAgentsHarness._resolve_model_provider``; the
-        resolver's default :class:`StaticModelProvider` is re-bound to
-        this harness's own ``model`` config entry so the pre-P19
-        per-harness behavior is preserved.
+        Mirrors ``DeepAgentsHarness._resolve_model_provider``:
+        registry-only (P19 verdict #3) — the resolver hands back a
+        :class:`RegistryModelProvider` (persona-declared or
+        synthesized-default) and this harness selects its model via
+        the ``ModelRequest.consumer`` binding lookup.
         """
         if self._model_provider is not None:
             return self._model_provider
@@ -195,10 +197,6 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
 
         resolver = CapabilityResolver()
         provider = resolver.resolve(self.persona, "sdk", self.role).models
-        if isinstance(provider, StaticModelProvider):
-            return provider.for_harness(
-                "ms_agent_framework", default_model=self._DEFAULT_MODEL
-            )
         assert provider is not None  # resolver always fills slot #6
         return provider
 
@@ -231,8 +229,9 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
             # Unchanged by model-provider-routing: no Azure OpenAI
             # connector package ships for agent-framework 1.10.x, so
             # this branch degrades to its documented install error
-            # (CLAUDE.md "What's Not Yet Wired").
-            self._active_model = cfg.get("model", self._DEFAULT_MODEL)
+            # (CLAUDE.md "What's Not Yet Wired"). ``_active_model``
+            # keeps its span default — the legacy per-harness ``model``
+            # key is gone (P19 verdict #3, registry-only).
             try:
                 from agent_framework.azure_openai import (  # type: ignore[import-not-found, unused-ignore]
                     AzureOpenAIChatClient,
@@ -245,13 +244,13 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
             return AzureOpenAIChatClient()
 
         # Default (openai) branch flows through the ModelProvider seam
-        # (model-provider-routing): registry-backed resolution when the
-        # persona declares ``models:``, StaticModelProvider passthrough
-        # of ``cfg["model"]`` otherwise. A guardrail denial is a policy
-        # stop and propagates; a binding failure tries the next ref in
-        # the resolved fallback chain.
+        # (model-provider-routing, registry-only per P19 verdict #3):
+        # the consumer binding selects a registry entry — persona
+        # ``models:`` when declared, synthesized defaults otherwise. A
+        # guardrail denial is a policy stop and propagates; a binding
+        # failure tries the next ref in the resolved fallback chain.
         provider = self._resolve_model_provider()
-        refs = provider.resolve(ModelRequest(consumer="chat"))
+        refs = provider.resolve(ModelRequest(consumer=self.name()))
         credentials = self._resolve_credential_provider()
         guardrails = self._resolve_guardrail_provider()
 

@@ -129,43 +129,19 @@ def _resolve_persona_role(self_obj: Any) -> tuple[str | None, str | None]:
 
 
 def _resolve_model(self_obj: Any) -> str:
-    """Pull the harness-configured model id from ``self.persona.harnesses``.
+    """Return the harness's active model id for span labeling.
 
-    Mirrors the lookup in :class:`DeepAgentsHarness.create_agent`.
-    Resolution order:
-    1. ``self._active_model`` — the harness's own active model id, set by
-       concrete adapters at ``create_agent`` time so spans report the
-       real default even when the persona omits a model override
-       (Iter-2 round-2 fix gemini #5).
-    2. ``self.persona.harnesses[<harness_name>].model`` — explicit
-       per-persona override.
-    3. ``"unknown"`` — final fallback so span emission never raises.
+    ``self._active_model`` is initialized to the harness's default and
+    overwritten with the resolved ref's id at ``create_agent`` time
+    (Iter-2 round-2 fix gemini #5). The legacy fallback that scanned
+    ``persona.harnesses[...].model`` config strings was removed with
+    the registry-only cleanup (P19 owner review verdict #3); harness
+    objects without an ``_active_model`` label as ``"unknown"`` so
+    span emission never raises.
     """
     active = getattr(self_obj, "_active_model", None)
     if isinstance(active, str) and active:
         return active
-    persona = getattr(self_obj, "persona", None)
-    if persona is None:
-        return "unknown"
-    harnesses = getattr(persona, "harnesses", None) or {}
-    if not isinstance(harnesses, dict):
-        return "unknown"
-    # Prefer the harness's own ``name()`` if available, else first
-    # configured entry.
-    harness_name_fn = getattr(self_obj, "name", None)
-    candidates: list[str] = []
-    if callable(harness_name_fn):
-        try:
-            candidates.append(harness_name_fn())
-        except Exception:
-            pass
-    candidates.extend(harnesses.keys())
-    for key in candidates:
-        cfg = harnesses.get(key) or {}
-        if isinstance(cfg, dict):
-            model = cfg.get("model")
-            if isinstance(model, str) and model:
-                return model
     return "unknown"
 
 

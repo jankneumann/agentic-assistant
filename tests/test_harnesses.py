@@ -25,7 +25,6 @@ from assistant.harnesses.sdk.ms_agent_fw import MSAgentFrameworkHarness
 def _persona(
     deep_enabled: bool = True,
     ms_enabled: bool = False,
-    model: str = "anthropic:claude-sonnet-4-20250514",
 ) -> PersonaConfig:
     return PersonaConfig(
         name="p",
@@ -35,7 +34,7 @@ def _persona(
         auth_provider="custom",
         auth_config={},
         harnesses={
-            "deep_agents": {"enabled": deep_enabled, "model": model},
+            "deep_agents": {"enabled": deep_enabled},
             "ms_agent_framework": {"enabled": ms_enabled},
         },
         tool_sources={},
@@ -91,7 +90,10 @@ def test_harness_name_is_deep_agents() -> None:
     assert DeepAgentsHarness(_persona(), _role()).name() == "deep_agents"
 
 
-def test_create_agent_uses_persona_configured_model() -> None:
+def test_create_agent_resolves_model_through_registry_binding() -> None:
+    """Registry-only (P19 verdict #3): create_agent resolves the model
+    via the consumer binding — synthesized default here, since the
+    persona declares no ``models:`` registry."""
     sentinel_model = MagicMock(name="model-handle")
     with patch(
         "assistant.harnesses.sdk.deep_agents.init_chat_model",
@@ -100,9 +102,9 @@ def test_create_agent_uses_persona_configured_model() -> None:
         "assistant.harnesses.sdk.deep_agents.create_deep_agent"
     ) as cda_mock:
         cda_mock.return_value = MagicMock(name="agent")
-        h = DeepAgentsHarness(_persona(model="anthropic:claude-sonnet-x"), _role())
+        h = DeepAgentsHarness(_persona(), _role())
         asyncio.run(h.create_agent(tools=[], extensions=[]))
-        init_mock.assert_called_once_with("anthropic:claude-sonnet-x")
+        init_mock.assert_called_once_with("anthropic:claude-sonnet-4-20250514")
         kwargs = cda_mock.call_args.kwargs
         assert kwargs["model"] is sentinel_model
 

@@ -44,10 +44,12 @@ class _FakeHarness:
     """Minimal harness shim exposing ``persona`` + ``role`` like the real one."""
 
     def __init__(self, persona_name: str, role_name: str, model: str) -> None:
-        # Mimic the attribute shape of ``HarnessAdapter.persona``/``role``.
+        # Mimic the attribute shape of ``HarnessAdapter.persona``/``role``
+        # plus the ``_active_model`` span label (registry-only P19: the
+        # decorator no longer scans persona config strings).
         self.persona = type("P", (), {"name": persona_name})()
         self.role = type("R", (), {"name": role_name})()
-        self.persona.harnesses = {"deep_agents": {"model": model}}
+        self._active_model = model
 
 
 @pytest.mark.asyncio

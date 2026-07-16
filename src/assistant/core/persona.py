@@ -52,8 +52,10 @@ class PersonaConfig:
     prompt_augmentation: str = ""
     memory_content: str = ""
     # Parsed + validated ``models:`` registry (model-provider spec /
-    # P19 model-provider-routing). Empty when the persona declares no
-    # registry — SDK harnesses then fall back to StaticModelProvider.
+    # P19 model-provider-routing) — the only model-selection mechanism.
+    # Empty when the persona declares no registry; the resolver then
+    # synthesizes one from the known harness defaults
+    # (``default_model_registry``).
     models: ModelRegistry = field(default_factory=ModelRegistry)
     raw: dict[str, Any] = field(default_factory=dict)
 

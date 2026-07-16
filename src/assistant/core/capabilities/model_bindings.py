@@ -107,11 +107,11 @@ def langchain_model_string(ref: ModelRef) -> str:
     """Derive the ``init_chat_model`` model string for a ModelRef.
 
     A ``model_id`` that already carries a ``provider:`` prefix (the
-    :class:`StaticModelProvider` passthrough of the persona's existing
-    config string) is used verbatim — this preserves today's exact
-    ``init_chat_model`` call. Registry ``id`` values are bare wire
-    identifiers (OpenRouter uses ``/``, never ``:``), so they get the
-    dialect-mapped prefix prepended.
+    synthesized default-registry entries store full ``provider:model``
+    strings) is used verbatim — this preserves the exact pre-P19
+    ``init_chat_model`` call for the defaults. Registry ``id`` values
+    are bare wire identifiers (OpenRouter uses ``/``, never ``:``), so
+    they get the dialect-mapped prefix prepended.
     """
     if ":" in ref.model_id:
         return ref.model_id
@@ -131,10 +131,10 @@ def bind_langchain(
     """Adapt a ModelRef via LangChain's ``init_chat_model``.
 
     ``base_url`` and ``api_key`` kwargs are passed only when the ref
-    declares an endpoint / a resolving credential ref, so refs derived
-    from the persona's plain ``provider:model`` strings produce the
-    exact single-argument ``init_chat_model(model)`` call the harness
-    made before P19. ``init_fn`` lets the harness inject its own
+    declares an endpoint / a resolving credential ref, so the
+    synthesized default-registry refs produce the exact
+    single-argument ``init_chat_model(model)`` call the harness made
+    before P19. ``init_fn`` lets the harness inject its own
     module-level ``init_chat_model`` import (keeps the established
     patch point for tests); the default imports from ``langchain``.
     """
@@ -159,8 +159,8 @@ def bind_langchain(
 def _bare_model_id(ref: ModelRef) -> str:
     """Strip a LangChain-style ``provider:`` prefix off ``model_id``.
 
-    Static refs carry the persona's full ``openai:gpt-4o`` string; wire
-    clients want the bare ``gpt-4o``.
+    Synthesized default-registry refs carry a full ``openai:gpt-4o``
+    string; wire clients want the bare ``gpt-4o``.
     """
     _, sep, rest = ref.model_id.partition(":")
     return rest if sep else ref.model_id

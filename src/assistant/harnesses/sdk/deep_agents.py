@@ -18,10 +18,10 @@ from assistant.core.capabilities.model_bindings import (
     bind_langchain,
 )
 from assistant.core.capabilities.models import (
+    DEFAULT_HARNESS_MODELS,
     ModelRef,
     ModelRequest,
     ModelResolutionError,
-    StaticModelProvider,
 )
 from assistant.core.composition import compose_system_prompt
 from assistant.core.persona import PersonaConfig
@@ -56,13 +56,12 @@ _MEMORY_SECTION_HEADING: str = "## Recent context"
 
 
 class DeepAgentsHarness(SdkHarnessAdapter):
-    # Class-level default surfaces through ``_resolve_model`` so spans
-    # report the real model id even when the persona omits a harness
-    # ``model`` override (Iter-2 round-2 fix gemini #5). Concrete
-    # ``create_agent`` overrides ``self._active_model`` with the value
-    # that actually drove ``init_chat_model`` so the resolution order
-    # is: instance attr (most specific) → persona config → "unknown".
-    _DEFAULT_MODEL = "anthropic:claude-sonnet-4-20250514"
+    # Span-default model id, sourced from the shared harness-default
+    # table that also seeds the synthesized registry (P19 verdict #3 —
+    # registry-only). ``create_agent`` overrides ``self._active_model``
+    # with the resolved ref's id so spans report what actually drove
+    # ``init_chat_model``.
+    _DEFAULT_MODEL = DEFAULT_HARNESS_MODELS["deep_agents"]
 
     def __init__(
         self,
@@ -119,10 +118,11 @@ class DeepAgentsHarness(SdkHarnessAdapter):
     def _resolve_model_provider(self) -> ModelProvider:
         """Return the injected ModelProvider or resolve slot #6.
 
-        The resolver's default :class:`StaticModelProvider` scans
-        ``persona.harnesses`` in declaration order; re-bind it to this
-        harness's own config entry (and P1 default model) so the
-        pre-P19 per-harness ``model`` behavior is preserved exactly.
+        Registry-only (P19 verdict #3): the resolver hands back a
+        :class:`RegistryModelProvider` — persona-declared or
+        synthesized-default — and the harness selects its model via
+        the ``ModelRequest.consumer`` binding lookup; no per-harness
+        re-binding step exists.
         """
         if self._model_provider is not None:
             return self._model_provider
@@ -130,10 +130,6 @@ class DeepAgentsHarness(SdkHarnessAdapter):
 
         resolver = CapabilityResolver()
         provider = resolver.resolve(self.persona, "sdk", self.role).models
-        if isinstance(provider, StaticModelProvider):
-            return provider.for_harness(
-                "deep_agents", default_model=self._DEFAULT_MODEL
-            )
         assert provider is not None  # resolver always fills slot #6
         return provider
 
@@ -163,7 +159,7 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         the established test patch point keeps working.
         """
         provider = self._resolve_model_provider()
-        refs = provider.resolve(ModelRequest(consumer="chat"))
+        refs = provider.resolve(ModelRequest(consumer=self.name()))
         credentials = self._resolve_credential_provider()
         guardrails = self._resolve_guardrail_provider()
 
@@ -226,11 +222,12 @@ class DeepAgentsHarness(SdkHarnessAdapter):
     ) -> Any:
         cfg = self.persona.harnesses.get("deep_agents", {}) or {}
         # Model construction flows through the ModelProvider seam
-        # (model-provider-routing): registry-backed resolution when the
-        # persona declares ``models:``, StaticModelProvider passthrough
-        # of ``cfg["model"]`` otherwise. ``_build_model`` stashes
-        # ``_active_model`` / ``_active_model_ref`` so spans report the
-        # real id + pricing metadata.
+        # (model-provider-routing, registry-only per P19 verdict #3):
+        # the consumer binding selects a registry entry — persona
+        # ``models:`` when declared, synthesized defaults otherwise.
+        # ``_build_model`` stashes ``_active_model`` /
+        # ``_active_model_ref`` so spans report the real id + pricing
+        # metadata.
         model = self._build_model()
 
         ext_tools: list[Any] = []

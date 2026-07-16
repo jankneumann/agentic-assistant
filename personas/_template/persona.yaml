@@ -21,14 +21,12 @@ auth:
 harnesses:
   deep_agents:
     enabled: true
-    model: "anthropic:claude-sonnet-4-20250514"
     memory_files:
       - "./AGENTS.md"
     skills_dir: "./src/assistant/skills"
 
   ms_agent_framework:
     enabled: false
-    model: "anthropic:claude-sonnet-4-20250514"
     foundry_endpoint_env: ""
     extensions: []
 
@@ -39,9 +37,13 @@ harnesses:
     enabled: true
 
 # ── Model registry (P19 — model-provider-routing) ──
-# Optional. When declared, SDK harnesses resolve models through the
-# registry (capability tags + ordered fallback chains) instead of the
-# per-harness `model` strings above. Each entry becomes a ModelRef:
+# The ONLY model-selection mechanism. Optional: when omitted, SDK
+# harnesses resolve against a registry synthesized from the built-in
+# harness defaults. Shape: `entries:` declares the callable models;
+# `bindings:` maps consumer names (harness names such as deep_agents /
+# ms_agent_framework today; embeddings / memory later) to entry names,
+# with the `default` key covering any consumer without an explicit
+# binding. Each entry becomes a ModelRef:
 #   dialect         one of: openai-compatible | anthropic | gemini |
 #                   bedrock | vertex  (closed wire-protocol vocabulary)
 #   id              wire model identifier (OpenRouter `/models` `id`;
@@ -63,20 +65,25 @@ harnesses:
 #                   one fails (each must still satisfy required tags)
 #
 # models:
-#   sonnet:
-#     dialect: anthropic
-#     id: claude-sonnet-4-20250514
-#     credential_ref: ANTHROPIC_API_KEY
-#     tags: [coding, long-context]
-#     pricing: {prompt: "0.000003", completion: "0.000015"}
-#     context_length: 200000
-#     modalities: {input: [text, image], output: [text]}
-#     fallbacks: [local-fast]
-#   local-fast:
-#     dialect: openai-compatible
-#     id: llama-3.1-8b-instruct
-#     endpoint: "http://gx10.local:8000/v1"
-#     tags: [fast, cheap, local-only, private-data-ok]
+#   entries:
+#     sonnet:
+#       dialect: anthropic
+#       id: claude-sonnet-4-20250514
+#       credential_ref: ANTHROPIC_API_KEY
+#       tags: [coding, long-context]
+#       pricing: {prompt: "0.000003", completion: "0.000015"}
+#       context_length: 200000
+#       modalities: {input: [text, image], output: [text]}
+#       fallbacks: [local-fast]
+#     local-fast:
+#       dialect: openai-compatible
+#       id: llama-3.1-8b-instruct
+#       endpoint: "http://gx10.local:8000/v1"
+#       tags: [fast, cheap, local-only, private-data-ok]
+#   bindings:
+#     default: sonnet
+#     deep_agents: sonnet
+#     ms_agent_framework: local-fast
 
 # ── Default role ──
 default_role: chief_of_staff

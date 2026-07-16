@@ -19,7 +19,7 @@ from assistant.core.capabilities.models import (
     ModelProvider,
     ModelRegistry,
     RegistryModelProvider,
-    StaticModelProvider,
+    default_model_registry,
 )
 from assistant.core.capabilities.sandbox import PassthroughSandbox, SandboxProvider
 from assistant.core.capabilities.tools import DefaultToolPolicy, ToolPolicy
@@ -65,11 +65,12 @@ class CapabilityResolver:
         """Slot #6 — capability-resolver spec + P19 model-provider-routing.
 
         Host harnesses get :class:`HostProvidedModelProvider` (the host
-        seat owns model selection). SDK harnesses get the
-        registry-backed :class:`RegistryModelProvider` when the persona
-        declares a ``models:`` registry, else the
-        :class:`StaticModelProvider` default wrapping the per-harness
-        ``model`` config string.
+        seat owns model selection). SDK harnesses always get a
+        :class:`RegistryModelProvider` — backed by the persona's
+        ``models:`` registry when declared, else by the registry
+        synthesized from the known harness defaults
+        (:func:`default_model_registry`; P19 owner review verdict #3,
+        registry-only).
         """
         if self._model_factory:
             return self._model_factory()
@@ -78,7 +79,7 @@ class CapabilityResolver:
         registry = getattr(persona, "models", None)
         if isinstance(registry, ModelRegistry) and registry.entries:
             return RegistryModelProvider(registry)
-        return StaticModelProvider(persona)
+        return RegistryModelProvider(default_model_registry())
 
     def resolve(
         self, persona: Any, harness_type: str, role: Any

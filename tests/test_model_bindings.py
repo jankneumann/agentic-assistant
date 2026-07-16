@@ -104,7 +104,7 @@ def test_check_model_call_confirmation_denies_until_interrupt_flow() -> None:
         ("bedrock", "claude-3", "bedrock_converse:claude-3"),
         ("vertex", "gemini-2.0-pro", "google_vertexai:gemini-2.0-pro"),
         ("openai-compatible", "openai/gpt-4o", "openai:openai/gpt-4o"),
-        # StaticModelProvider passthrough: already-prefixed → verbatim
+        # Synthesized-default passthrough: already-prefixed → verbatim
         ("anthropic", "anthropic:claude-sonnet-x", "anthropic:claude-sonnet-x"),
     ],
 )
@@ -116,7 +116,7 @@ def test_langchain_model_string_dialect_mapping(
 
 
 def test_bind_langchain_plain_ref_calls_init_with_single_argument() -> None:
-    """Static passthrough: no endpoint/credential → the exact pre-P19 call."""
+    """Default passthrough: no endpoint/credential → the exact pre-P19 call."""
     init_fn = MagicMock(return_value="model-handle")
     ref = ModelRef(
         name="anthropic:claude-sonnet-x",

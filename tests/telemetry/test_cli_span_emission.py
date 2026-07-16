@@ -87,7 +87,7 @@ class _FakeHarness:
     def __init__(self, persona_name: str, role_name: str, model: str) -> None:
         self.persona = type("P", (), {})()
         self.persona.name = persona_name
-        self.persona.harnesses = {"deep_agents": {"model": model}}
+        self._active_model = model
         self.role = type("R", (), {})()
         self.role.name = role_name
 
