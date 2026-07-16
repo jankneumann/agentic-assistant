@@ -13,10 +13,15 @@ from assistant.core.resilience import (
     HealthStatus,
     default_health_status_for_unimplemented,
 )
+from assistant.extensions.base import ExtensionBase
 
 
-class StubExtension:
-    """Minimal Extension that satisfies the Protocol."""
+class StubExtension(ExtensionBase):
+    """Minimal Extension that satisfies the Protocol.
+
+    Inherits no-op ``initialize``/``shutdown``/``refresh_credentials``
+    lifecycle defaults from ``ExtensionBase`` (P10 extension-lifecycle).
+    """
 
     name: str = "stub"
 

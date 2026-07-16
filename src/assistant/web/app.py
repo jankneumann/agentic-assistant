@@ -75,7 +75,10 @@ async def _default_agent_factory(
     from assistant.http_tools import HttpToolRegistry
     from assistant.http_tools.discovery import discover_tools
 
-    extensions = persona_reg.load_extensions(pc)
+    # Async variant: the lifespan runs inside the event loop, and the
+    # extensions' initialize() hooks must be awaited (P10
+    # extension-lifecycle). Shutdown is owned by the lifespan finally.
+    extensions = await persona_reg.load_extensions_async(pc)
 
     tool_sources = getattr(pc, "tool_sources", None) or {}
     if tool_sources:
@@ -169,6 +172,11 @@ def make_app(
             app.state.http_client = http_client
             yield
         finally:
+            # P10 extension-lifecycle: run extension shutdown() hooks
+            # on server teardown. Idempotent + safe when the injected
+            # _agent_factory never loaded extensions (empty active
+            # list → no-op).
+            await persona_reg.shutdown_extensions()
             if http_client is not None:
                 await http_client.aclose()
 

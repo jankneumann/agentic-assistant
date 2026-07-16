@@ -478,18 +478,24 @@ async def _run_repl(
     click.echo(f"Role:     {rc.display_name}")
     click.echo(f"Harness:  {harness_name}")
 
-    if _has_configured_tool_sources(pc):
-        async with _make_discovery_client() as client:
-            registry = await discover_tools(pc.tool_sources, client=client)
+    try:
+        if _has_configured_tool_sources(pc):
+            async with _make_discovery_client() as client:
+                registry = await discover_tools(pc.tool_sources, client=client)
+                await _run_repl_with_registry(
+                    persona_reg, role_reg, pc, rc, harness_name, adapter,
+                    registry, method,
+                )
+        else:
             await _run_repl_with_registry(
                 persona_reg, role_reg, pc, rc, harness_name, adapter,
-                registry, method,
+                HttpToolRegistry(), method,
             )
-    else:
-        await _run_repl_with_registry(
-            persona_reg, role_reg, pc, rc, harness_name, adapter,
-            HttpToolRegistry(), method,
-        )
+    finally:
+        # P10 extension-lifecycle: run extension shutdown() hooks on
+        # REPL exit (including sys.exit / Ctrl-C paths). Idempotent —
+        # the atexit handler that also covers this is then a no-op.
+        await persona_reg.shutdown_extensions()
 
 
 async def _run_repl_with_registry(
@@ -506,7 +512,10 @@ async def _run_repl_with_registry(
 
     click.echo(f"  HTTP tools: {len(registry)}")
 
-    extensions = persona_reg.load_extensions(pc)
+    # Async variant: the REPL runs inside the event loop, and the
+    # extensions' initialize() hooks must be awaited (P10
+    # extension-lifecycle). Shutdown is owned by _run_repl's finally.
+    extensions = await persona_reg.load_extensions_async(pc)
     ext_names = [getattr(e, "name", "?") for e in extensions]
     click.echo(
         f"  Extensions: {len(extensions)}"

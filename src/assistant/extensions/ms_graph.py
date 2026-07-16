@@ -45,6 +45,7 @@ from assistant.core.resilience import (
     get_circuit_breaker_registry,
     health_status_from_breaker,
 )
+from assistant.extensions.base import ExtensionBase
 
 if TYPE_CHECKING:
     from assistant.core.persona import PersonaConfig
@@ -269,7 +270,7 @@ class _SearchMessagesArgs(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class MsGraphExtension:
+class MsGraphExtension(ExtensionBase):
     """Generic Microsoft Graph tools (people search, profile, message search).
 
     Spec ms-extensions / "ms_graph Extension Real Implementation".
@@ -298,6 +299,31 @@ class MsGraphExtension:
         return health_status_from_breaker(
             self._breaker, key=f"extension:{self.name}"
         )
+
+    # ----- Lifecycle (P10 extension-lifecycle) -----
+    # ``initialize()`` stays the inherited no-op: eager token
+    # acquisition would trigger an interactive MSAL prompt at persona
+    # load for the delegated flow (design D7).
+
+    async def shutdown(self) -> None:
+        """Close the injected client's connection pool.
+
+        ``CloudGraphClient.aclose()`` is idempotent by contract, so a
+        double shutdown (explicit + atexit) is safe.
+        """
+        await self._client.aclose()
+
+    async def refresh_credentials(self) -> None:
+        """Proactively refresh MSAL credentials via the client.
+
+        Delegates to the injected client's ``refresh_credentials()``
+        when it exposes one (the real ``GraphClient`` does); mock or
+        third-party ``CloudGraphClient`` implementations without the
+        method degrade to a no-op (design D6).
+        """
+        refresh = getattr(self._client, "refresh_credentials", None)
+        if callable(refresh):
+            await refresh()
 
     # ----- Tool surfaces -----
 
