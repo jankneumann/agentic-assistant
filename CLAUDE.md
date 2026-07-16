@@ -160,6 +160,21 @@ See `openspec/roadmap.md` for the full sequence. Notable gaps:
 - **`work-persona-config` phase**: submodule + role overrides come
   when the work machine is available. Until then no persona enables
   the four MS extensions.
+- **Model routing is live through the ModelProvider seam** (P19
+  `model-provider-routing`): both SDK harnesses resolve their chat
+  model via `CapabilitySet.models` (slot #6) and per-consumer bindings
+  (`core/capabilities/model_bindings.py`) instead of raw
+  `harnesses.<name>.model` strings — `RegistryModelProvider` when the
+  persona declares a `models:` registry (tag-filtered, ordered
+  fallback chains, OpenRouter-mirrored catalog metadata),
+  `StaticModelProvider` passthrough otherwise, so existing persona
+  configs behave identically. Every binding is budget-gated via
+  `GuardrailProvider.check_action(action_type="model_call")` (allow-all
+  today) and API keys resolve through the `CredentialProvider` seam
+  (env backend today). Still deferred: OpenRouter catalog **sync**
+  and health-checked local GX10 entries (P20), non-allow-all budget
+  guardrails (P13), and the MSAF binding covers `openai-compatible`
+  refs only (no connector packages for the other dialects).
 - **Memory retrieval + capture are live but prepend-only** (P21
   `memory-retrieval-activation`): both SDK harnesses (DeepAgents and
   MSAF) consume `MemoryPolicy.get_recent_snippets(persona, role,
