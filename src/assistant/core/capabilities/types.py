@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from assistant.core.capabilities.context import ContextProvider
     from assistant.core.capabilities.guardrails import GuardrailProvider
     from assistant.core.capabilities.memory import MemoryPolicy
+    from assistant.core.capabilities.models import ModelProvider
     from assistant.core.capabilities.sandbox import SandboxProvider
     from assistant.core.capabilities.tools import ToolPolicy
 
@@ -76,3 +77,7 @@ class CapabilitySet:
     memory: MemoryPolicy
     tools: ToolPolicy
     context: ContextProvider | None = None
+    # Capability slot #6 (capability-resolver spec / P19
+    # model-provider-routing). ``None`` only when a CapabilitySet is
+    # hand-assembled outside the resolver; the resolver always fills it.
+    models: ModelProvider | None = None

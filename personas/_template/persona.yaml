@@ -38,6 +38,46 @@ harnesses:
   codex:
     enabled: true
 
+# ── Model registry (P19 — model-provider-routing) ──
+# Optional. When declared, SDK harnesses resolve models through the
+# registry (capability tags + ordered fallback chains) instead of the
+# per-harness `model` strings above. Each entry becomes a ModelRef:
+#   dialect         one of: openai-compatible | anthropic | gemini |
+#                   bedrock | vertex  (closed wire-protocol vocabulary)
+#   id              wire model identifier (OpenRouter `/models` `id`;
+#                   for local backends, the served model name)
+#   endpoint        base URL — required for local/OpenRouter
+#                   openai-compatible backends, empty for hosted defaults
+#   credential_ref  CredentialProvider lookup key (env-var name today;
+#                   vault path when the OpenBao backend lands) — never
+#                   the secret value itself
+#   tags            capability tags from the shared vocabulary:
+#                   fast | cheap | long-context | coding | vision |
+#                   local-only | private-data-ok
+#   pricing         OpenRouter-mirrored per-token USD rates (verbatim
+#                   key names; omit for local endpoints — cost is then
+#                   omitted from telemetry, never guessed)
+#   context_length  OpenRouter-mirrored context window size
+#   modalities      OpenRouter-mirrored input/output modalities
+#   fallbacks       ordered list of other entry names tried after this
+#                   one fails (each must still satisfy required tags)
+#
+# models:
+#   sonnet:
+#     dialect: anthropic
+#     id: claude-sonnet-4-20250514
+#     credential_ref: ANTHROPIC_API_KEY
+#     tags: [coding, long-context]
+#     pricing: {prompt: "0.000003", completion: "0.000015"}
+#     context_length: 200000
+#     modalities: {input: [text, image], output: [text]}
+#     fallbacks: [local-fast]
+#   local-fast:
+#     dialect: openai-compatible
+#     id: llama-3.1-8b-instruct
+#     endpoint: "http://gx10.local:8000/v1"
+#     tags: [fast, cheap, local-only, private-data-ok]
+
 # ── Default role ──
 default_role: chief_of_staff
 

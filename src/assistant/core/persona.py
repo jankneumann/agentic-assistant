@@ -14,6 +14,12 @@ from typing import Any
 
 import yaml
 
+from assistant.core.capabilities.models import (
+    ModelRegistry,
+    ModelRegistryError,
+    parse_model_registry,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -45,6 +51,10 @@ class PersonaConfig:
     disabled_roles: list[str] = field(default_factory=list)
     prompt_augmentation: str = ""
     memory_content: str = ""
+    # Parsed + validated ``models:`` registry (model-provider spec /
+    # P19 model-provider-routing). Empty when the persona declares no
+    # registry — SDK harnesses then fall back to StaticModelProvider.
+    models: ModelRegistry = field(default_factory=ModelRegistry)
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -107,6 +117,14 @@ class PersonaRegistry:
         auth_cfg_raw = (raw.get("auth") or {}).get("config") or {}
         tool_sources_raw = raw.get("tool_sources") or {}
 
+        try:
+            models = parse_model_registry(raw.get("models") or {})
+        except ModelRegistryError as exc:
+            raise ValueError(
+                f"Persona '{raw['name']}' ({config_path}): invalid "
+                f"models: registry — {exc}"
+            ) from exc
+
         config = PersonaConfig(
             name=raw["name"],
             display_name=raw.get("display_name", raw["name"]),
@@ -129,6 +147,7 @@ class PersonaRegistry:
             ),
             default_role=raw.get("default_role", "chief_of_staff"),
             disabled_roles=raw.get("disabled_roles", []) or [],
+            models=models,
             raw=raw,
         )
 

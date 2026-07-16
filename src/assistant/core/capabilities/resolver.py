@@ -14,6 +14,13 @@ from assistant.core.capabilities.memory import (
     MemoryPolicy,
     PostgresGraphitiMemoryPolicy,
 )
+from assistant.core.capabilities.models import (
+    HostProvidedModelProvider,
+    ModelProvider,
+    ModelRegistry,
+    RegistryModelProvider,
+    StaticModelProvider,
+)
 from assistant.core.capabilities.sandbox import PassthroughSandbox, SandboxProvider
 from assistant.core.capabilities.tools import DefaultToolPolicy, ToolPolicy
 from assistant.core.capabilities.types import (
@@ -43,6 +50,7 @@ class CapabilityResolver:
         memory_factory: Callable[[], MemoryPolicy] | None = None,
         tool_factory: Callable[[], ToolPolicy] | None = None,
         context_factory: Callable[[], ContextProvider] | None = None,
+        model_factory: Callable[[], ModelProvider] | None = None,
         http_tool_registry: HttpToolRegistry | None = None,
     ) -> None:
         self._guardrail_factory = guardrail_factory
@@ -50,7 +58,27 @@ class CapabilityResolver:
         self._memory_factory = memory_factory
         self._tool_factory = tool_factory
         self._context_factory = context_factory
+        self._model_factory = model_factory
         self._http_tool_registry = http_tool_registry
+
+    def _resolve_models(self, persona: Any, harness_type: str) -> ModelProvider:
+        """Slot #6 — capability-resolver spec + P19 model-provider-routing.
+
+        Host harnesses get :class:`HostProvidedModelProvider` (the host
+        seat owns model selection). SDK harnesses get the
+        registry-backed :class:`RegistryModelProvider` when the persona
+        declares a ``models:`` registry, else the
+        :class:`StaticModelProvider` default wrapping the per-harness
+        ``model`` config string.
+        """
+        if self._model_factory:
+            return self._model_factory()
+        if harness_type == "host":
+            return HostProvidedModelProvider()
+        registry = getattr(persona, "models", None)
+        if isinstance(registry, ModelRegistry) and registry.entries:
+            return RegistryModelProvider(registry)
+        return StaticModelProvider(persona)
 
     def resolve(
         self, persona: Any, harness_type: str, role: Any
@@ -86,6 +114,7 @@ class CapabilityResolver:
                     )
                 ),
                 context=context,
+                models=self._resolve_models(persona, harness_type),
             )
 
         if self._memory_factory:
@@ -115,4 +144,5 @@ class CapabilityResolver:
                 )
             ),
             context=context,
+            models=self._resolve_models(persona, harness_type),
         )
