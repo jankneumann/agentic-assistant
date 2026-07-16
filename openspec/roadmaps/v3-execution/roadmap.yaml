@@ -10,7 +10,7 @@ policy:
 items:
   - item_id: X3
     title: repo-hygiene
-    status: in_progress
+    status: completed
     priority: 1
     effort: M
     change_id: repo-hygiene

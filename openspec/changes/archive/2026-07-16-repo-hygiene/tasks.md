@@ -17,4 +17,4 @@
 
 ## 3. Wrap-up
 
-- [ ] 3.1 Update roadmap row X3 + workspace checkpoint; archive change
+- [x] 3.1 Update roadmap row X3 + workspace checkpoint; archive change
