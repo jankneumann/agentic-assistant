@@ -67,7 +67,14 @@ openspec show <change-id>
 - `src/assistant/extensions/` — extension implementations (P1 ships empty-tool
   stubs for `ms_graph`, `teams`, `sharepoint`, `outlook`, `gmail`, `gcal`,
   `gdrive`; real impls land in `ms-graph-extension` and `google-extensions`
-  phases)
+  phases). Since P10 `extension-lifecycle`, extensions may implement
+  optional async hooks `initialize()` / `shutdown()` /
+  `refresh_credentials()` — NOT required Protocol members (private
+  structural extensions stay compatible); subclass `ExtensionBase`
+  for no-op defaults. `PersonaRegistry.load_extensions()` (sync; or
+  `load_extensions_async()` inside an event loop) runs `initialize()`
+  post-load (a failure disables just that extension) and registers
+  shutdown handling (`shutdown_extensions()` + atexit)
 - `src/assistant/delegation/` — sub-agent spawning
 - `src/assistant/cli.py` — `assistant` CLI entry point
 
