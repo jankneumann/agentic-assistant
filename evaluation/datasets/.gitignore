@@ -1,0 +1,4 @@
+# Exported eval-dataset stubs may contain private interaction summaries
+# from a persona DB. Never commit raw exports; complete + sanitize a stub
+# and promote it into a scenario suite instead (see simulation/README.md).
+exported/

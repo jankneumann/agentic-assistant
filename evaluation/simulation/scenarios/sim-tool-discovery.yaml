@@ -1,0 +1,32 @@
+# Simulation floor: the sim persona discovers every simulated source.
+#
+# `assistant run -p sim --list-tools` performs real HTTP tool discovery
+# against the running simulator (each source's /openapi.json) and exits
+# 0 only when EVERY configured source yielded at least one tool — so
+# this single step verifies simulator startup, per-source OpenAPI
+# generation, and the http_tools discovery path end-to-end without any
+# LLM credentials.
+#
+# Requires (run-gate.sh sets these):
+#   ASSISTANT_PERSONAS_DIR=evaluation/simulation/personas
+#   SIM_CONTENT_ANALYZER_URL / SIM_CODING_TOOLS_URL / SIM_MS_GRAPH_URL
+#   pointing at a running `assistant simulate` instance.
+id: sim-tool-discovery
+name: "Simulation persona discovers tools from all simulated sources"
+description: >-
+  Run HTTP tool discovery for the sim persona against the fixture-backed
+  simulator. Exit code 0 proves every simulated source (content_analyzer,
+  coding_tools, ms_graph) served a parseable OpenAPI 3.x document and
+  produced at least one registered tool.
+category: plumbing
+priority: 1
+interfaces: ["cli:run"]
+tags: [simulation, plumbing, tools]
+
+steps:
+  - id: list_tools
+    transport: cli
+    args: ["run", "-p", "sim", "--list-tools"]
+    expect:
+      exit_code: 0
+      not_empty: true

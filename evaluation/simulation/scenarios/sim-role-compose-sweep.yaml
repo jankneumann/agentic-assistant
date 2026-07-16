@@ -1,0 +1,66 @@
+# Per-role composition suite (P27): every public role composes cleanly
+# on the simulation persona.
+#
+# `assistant export -p sim -r <role> -H claude_code` runs the full
+# persona × role prompt-composition pipeline (three-layer prompt,
+# role registry, capability resolution for the host seat) and prints
+# the composed system prompt — deterministic, credential-free, and
+# per-role. This is the CI-runnable floor of the per-role gen-eval
+# suites; deeper behavioral scenarios (LLM-driven tool selection per
+# role) layer on top when model credentials are present.
+#
+# Requires: ASSISTANT_PERSONAS_DIR=evaluation/simulation/personas
+# (no simulator needed — export does not perform tool discovery).
+id: sim-role-compose-sweep
+name: "All public roles compose on the simulation persona"
+description: >-
+  Sweep every public role in roles/ through prompt composition on the
+  sim persona. Catches role.yaml regressions, prompt-layer breakage,
+  and persona/role registry wiring errors, per role.
+category: plumbing
+priority: 1
+interfaces: ["cli:export"]
+tags: [simulation, plumbing, roles]
+
+steps:
+  - id: compose_chief_of_staff
+    transport: cli
+    args: ["export", "-p", "sim", "-r", "chief_of_staff", "-H", "claude_code"]
+    expect:
+      exit_code: 0
+      not_empty: true
+
+  - id: compose_coder
+    transport: cli
+    args: ["export", "-p", "sim", "-r", "coder", "-H", "claude_code"]
+    expect:
+      exit_code: 0
+      not_empty: true
+
+  - id: compose_planner
+    transport: cli
+    args: ["export", "-p", "sim", "-r", "planner", "-H", "claude_code"]
+    expect:
+      exit_code: 0
+      not_empty: true
+
+  - id: compose_researcher
+    transport: cli
+    args: ["export", "-p", "sim", "-r", "researcher", "-H", "claude_code"]
+    expect:
+      exit_code: 0
+      not_empty: true
+
+  - id: compose_teacher
+    transport: cli
+    args: ["export", "-p", "sim", "-r", "teacher", "-H", "claude_code"]
+    expect:
+      exit_code: 0
+      not_empty: true
+
+  - id: compose_writer
+    transport: cli
+    args: ["export", "-p", "sim", "-r", "writer", "-H", "claude_code"]
+    expect:
+      exit_code: 0
+      not_empty: true
