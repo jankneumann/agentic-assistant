@@ -72,6 +72,7 @@
 ## 3. Validation & handoff
 
 - [x] 3.1 `openspec validate roadmap-v3-heterogeneous-fleet --strict`
-- [ ] 3.2 Owner review of the v3 sequencing (especially P19/P21 priority
-      and the P22 adopt-not-build posture), then archive this change via
-      `/openspec-archive-change roadmap-v3-heterogeneous-fleet`
+- [x] 3.2 Owner review of the v3 sequencing (especially P19/P21 priority
+      and the P22 adopt-not-build posture) — approved 2026-07-16
+      ("Reviewed road map, it looks good"); archived via
+      `openspec archive roadmap-v3-heterogeneous-fleet`
