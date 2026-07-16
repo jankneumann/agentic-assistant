@@ -13,7 +13,7 @@
 ## 2. Documentation debt
 
 - [x] 2.1 Backfill `## Purpose` in all capability specs (24 on disk)
-- [ ] 2.2 Seed `docs/decisions/` with six retroactive ADRs
+- [x] 2.2 Seed `docs/decisions/` with six retroactive ADRs
 
 ## 3. Wrap-up
 
