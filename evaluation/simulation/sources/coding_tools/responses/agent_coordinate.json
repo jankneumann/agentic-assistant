@@ -1,0 +1,6 @@
+// FIXTURE_SIM_RESPONSE_v1
+{
+  "task_id": "task-synthetic-0001",
+  "status": "acknowledged",
+  "assigned_to": "synthetic-agent"
+}

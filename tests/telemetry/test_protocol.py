@@ -54,6 +54,9 @@ def test_valid_ops_set() -> None:
             "snippets",
             "fact_write",
             "interaction_write",
+            # eval-simulation-loop (P27): MemoryManager.list_interactions
+            # feeds `assistant export-eval-dataset`.
+            "interaction_list",
             "episode_write",
             "search",
             "export",

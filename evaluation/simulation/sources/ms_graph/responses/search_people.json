@@ -1,0 +1,29 @@
+// FIXTURE_GRAPH_RESPONSE_v1
+{
+  "value": [
+    {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "displayName": "Synthetic User One",
+      "scoredEmailAddresses": [
+        {
+          "address": "user1@synthetic.example",
+          "relevanceScore": 1.0
+        }
+      ],
+      "jobTitle": "Synthetic Analyst",
+      "companyName": "Synthetic Corp"
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000002",
+      "displayName": "Synthetic User Two",
+      "scoredEmailAddresses": [
+        {
+          "address": "user2@synthetic.example",
+          "relevanceScore": 0.9
+        }
+      ],
+      "jobTitle": "Synthetic Engineer",
+      "companyName": "Synthetic Corp"
+    }
+  ]
+}

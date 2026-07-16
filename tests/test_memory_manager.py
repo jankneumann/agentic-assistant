@@ -255,3 +255,62 @@ class TestExportMemory:
         assert "Found papers" in output
         assert "## Knowledge Graph Summary" not in output
         assert output.endswith("\n")
+
+
+class TestListInteractions:
+    @pytest.mark.asyncio
+    async def test_returns_json_safe_dicts_newest_first(self):
+        from datetime import UTC, datetime
+
+        session = AsyncMock()
+        inter = _mock_interaction("researcher", "Found papers", "unused")
+        inter.created_at = datetime(2026, 7, 16, tzinfo=UTC)
+        inter.id = 7
+        inter.metadata_ = {"harness": "deep_agents"}
+        scalars = MagicMock()
+        scalars.all.return_value = [inter]
+        result = MagicMock()
+        result.scalars.return_value = scalars
+        session.execute = AsyncMock(return_value=result)
+
+        factory = _make_session_factory(session)
+        mgr = MemoryManager(factory, graphiti_client=None)
+        records = await mgr.list_interactions("test", limit=10)
+
+        assert records == [
+            {
+                "id": 7,
+                "role": "researcher",
+                "summary": "Found papers",
+                "created_at": "2026-07-16T00:00:00+00:00",
+                "metadata": {"harness": "deep_agents"},
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_non_datetime_created_at_stringified(self):
+        session = AsyncMock()
+        inter = _mock_interaction("coder", "Fixed bug", "2026-04-21")
+        inter.id = 1
+        inter.metadata_ = None
+        scalars = MagicMock()
+        scalars.all.return_value = [inter]
+        result = MagicMock()
+        result.scalars.return_value = scalars
+        session.execute = AsyncMock(return_value=result)
+
+        factory = _make_session_factory(session)
+        mgr = MemoryManager(factory, graphiti_client=None)
+        records = await mgr.list_interactions("test")
+
+        assert records[0]["created_at"] == "2026-04-21"
+        assert records[0]["metadata"] == {}
+
+    @pytest.mark.asyncio
+    async def test_nonpositive_limit_short_circuits(self):
+        session = AsyncMock()
+        factory = _make_session_factory(session)
+        mgr = MemoryManager(factory, graphiti_client=None)
+
+        assert await mgr.list_interactions("test", limit=0) == []
+        session.execute.assert_not_called()
