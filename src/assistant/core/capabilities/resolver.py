@@ -7,7 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from assistant.core.capabilities.context import ContextProvider, DefaultContextProvider
-from assistant.core.capabilities.guardrails import AllowAllGuardrails, GuardrailProvider
+from assistant.core.capabilities.guardrails import (
+    AllowAllGuardrails,
+    GuardrailConfig,
+    GuardrailProvider,
+    PolicyGuardrails,
+)
 from assistant.core.capabilities.memory import (
     FileMemoryPolicy,
     HostProvidedMemoryPolicy,
@@ -81,6 +86,24 @@ class CapabilityResolver:
             return RegistryModelProvider(registry)
         return RegistryModelProvider(default_model_registry())
 
+    def _resolve_guardrails(self, persona: Any) -> GuardrailProvider:
+        """Guardrail slot — P13 security-hardening.
+
+        Factory override wins (unchanged). Otherwise, a persona that
+        declares a non-empty ``guardrails:`` section gets
+        :class:`PolicyGuardrails` (both host and sdk branches); every
+        other persona keeps :class:`AllowAllGuardrails`, preserving
+        pre-P13 behavior.
+        """
+        if self._guardrail_factory:
+            return self._guardrail_factory()
+        config = getattr(persona, "guardrails", None)
+        if isinstance(config, GuardrailConfig) and config:
+            return PolicyGuardrails(
+                config, persona=getattr(persona, "name", "")
+            )
+        return AllowAllGuardrails()
+
     def resolve(
         self, persona: Any, harness_type: str, role: Any
     ) -> CapabilitySet:
@@ -92,11 +115,7 @@ class CapabilityResolver:
 
         if harness_type == "host":
             return CapabilitySet(
-                guardrails=(
-                    self._guardrail_factory()
-                    if self._guardrail_factory
-                    else AllowAllGuardrails()
-                ),
+                guardrails=self._resolve_guardrails(persona),
                 sandbox=(
                     self._sandbox_factory()
                     if self._sandbox_factory
@@ -126,11 +145,7 @@ class CapabilityResolver:
             memory = FileMemoryPolicy()
 
         return CapabilitySet(
-            guardrails=(
-                self._guardrail_factory()
-                if self._guardrail_factory
-                else AllowAllGuardrails()
-            ),
+            guardrails=self._resolve_guardrails(persona),
             sandbox=(
                 self._sandbox_factory()
                 if self._sandbox_factory

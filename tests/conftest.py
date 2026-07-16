@@ -181,6 +181,17 @@ def _clear_memory_caches():
         pass
 
 
+@pytest.fixture(autouse=True)
+def _clear_guardrail_ledgers():
+    """Drop process-wide budget-ledger state between tests (P13)."""
+    yield
+    try:
+        from assistant.core.capabilities.guardrails import _clear_budget_ledgers
+        _clear_budget_ledgers()
+    except ImportError:
+        pass
+
+
 @pytest.fixture
 def mock_async_session():
     session = AsyncMock()
