@@ -229,7 +229,9 @@ class _RecordingMemoryPolicy:
     def export_memory_context(self, persona) -> str:
         return ""
 
-    def get_recent_snippets(self, persona, role, *, limit: int = 10) -> list:
+    async def get_recent_snippets(
+        self, persona, role, *, limit: int = 10
+    ) -> list:
         return list(self._snippets[:limit])
 
     async def record_interaction(

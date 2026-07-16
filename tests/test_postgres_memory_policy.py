@@ -51,9 +51,15 @@ class TestPostgresGraphitiMemoryPolicy:
 
 
 class TestGetRecentSnippets:
-    """memory-retrieval-activation: live retrieval via MemoryManager."""
+    """memory-retrieval-activation: live retrieval via MemoryManager.
 
-    def test_returns_manager_snippets_outside_event_loop(self, mock_persona):
+    Async at the protocol level (capability-protocols-v2 owner review
+    verdict C8, 2026-07-16) — the policy awaits the manager directly on
+    the caller's event loop; the former running-loop bridge test is
+    gone with the bridge (see memory-retrieval-activation design.md D1).
+    """
+
+    async def test_returns_manager_snippets(self, mock_persona):
         policy = _make_policy(mock_persona)
         role = MagicMock()
         role.name = "researcher"
@@ -62,30 +68,16 @@ class TestGetRecentSnippets:
             return_value=["snippet-a", "snippet-b"]
         )
 
-        snippets = policy.get_recent_snippets(mock_persona, role, limit=5)
+        snippets = await policy.get_recent_snippets(mock_persona, role, limit=5)
 
         assert snippets == ["snippet-a", "snippet-b"]
         policy._manager.get_recent_snippets.assert_awaited_once_with(
             "test", "researcher", limit=5
         )
 
-    def test_bridges_from_inside_running_event_loop(self, mock_persona):
-        """The sync facade must work when called from an async context —
-        the create_agent-time call path (design D1 thread bridge)."""
-        policy = _make_policy(mock_persona)
-        role = MagicMock()
-        role.name = "researcher"
-        policy._manager = MagicMock()
-        policy._manager.get_recent_snippets = AsyncMock(
-            return_value=["from-thread"]
-        )
-
-        async def _call_from_loop() -> list[str]:
-            return policy.get_recent_snippets(mock_persona, role, limit=3)
-
-        assert asyncio.run(_call_from_loop()) == ["from-thread"]
-
-    def test_degrades_to_empty_on_backend_failure(self, mock_persona, caplog):
+    async def test_degrades_to_empty_on_backend_failure(
+        self, mock_persona, caplog
+    ):
         policy = _make_policy(mock_persona)
         role = MagicMock()
         role.name = "researcher"
@@ -95,11 +87,41 @@ class TestGetRecentSnippets:
         )
 
         with caplog.at_level(logging.WARNING):
-            snippets = policy.get_recent_snippets(mock_persona, role)
+            snippets = await policy.get_recent_snippets(mock_persona, role)
 
         assert snippets == []
         assert "snippet retrieval failed" in caplog.text.lower()
         assert "test" in caplog.text
+
+
+class TestExportMemoryContext:
+    """The remaining sync edge — export bridges via ``_run_blocking``.
+
+    ``export_memory_context`` stays sync for its true sync callers
+    (host-harness ``export_context`` / CLI ``export``); the bridge
+    tests moved here from ``get_recent_snippets`` when retrieval went
+    async at the protocol level (capability-protocols-v2 owner review
+    verdict C8, 2026-07-16)."""
+
+    def test_bridges_outside_event_loop(self, mock_persona):
+        policy = _make_policy(mock_persona)
+        policy._manager = MagicMock()
+        policy._manager.export_memory = AsyncMock(return_value="exported")
+
+        assert policy.export_memory_context(mock_persona) == "exported"
+        policy._manager.export_memory.assert_awaited_once_with("test")
+
+    def test_bridges_from_inside_running_event_loop(self, mock_persona):
+        """A sync edge invoked from async code must not deadlock —
+        ``_run_blocking`` dispatches to a worker thread (design D1)."""
+        policy = _make_policy(mock_persona)
+        policy._manager = MagicMock()
+        policy._manager.export_memory = AsyncMock(return_value="from-thread")
+
+        async def _call_from_loop() -> str:
+            return policy.export_memory_context(mock_persona)
+
+        assert asyncio.run(_call_from_loop()) == "from-thread"
 
 
 class TestRecordInteraction:

@@ -117,7 +117,7 @@ class _FakeMemoryPolicy:
     def export_memory_context(self, persona: Any) -> str:
         return ""
 
-    def get_recent_snippets(
+    async def get_recent_snippets(
         self, persona: Any, role: Any, *, limit: int = 10
     ) -> list[str]:
         return list(self._snippets[:limit])

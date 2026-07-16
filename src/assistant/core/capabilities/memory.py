@@ -24,22 +24,22 @@ _CAPTURE_EXCERPT_CHARS: int = 240
 def _run_blocking[T](coro: Coroutine[Any, Any, T]) -> T:
     """Run ``coro`` to completion from synchronous code.
 
-    The ``MemoryPolicy`` protocol is synchronous while ``MemoryManager``
-    is async. Bridge (documented in memory-retrieval-activation
-    design.md D1):
+    Sync-edge bridge only (memory-retrieval-activation design.md D1, as
+    amended by the capability-protocols-v2 owner review verdict C8,
+    2026-07-16): snippet retrieval is async at the protocol level and is
+    awaited directly on the hot ``create_agent`` path, so this helper
+    serves only true sync edges — today the sync
+    ``export_memory_context`` consumed by host-harness
+    ``export_context`` / CLI ``export``.
 
-    - **No running loop** (CLI startup, sync tests): ``asyncio.run``.
-    - **Inside a running loop** (the common case — ``get_recent_snippets``
-      is called from the sync ``_compose_*`` helpers on the async
-      ``create_agent`` path): dispatch ``asyncio.run`` to a fresh worker
-      thread and block on its result. Calling ``loop.run_until_complete``
-      here would deadlock; the worker thread runs the coroutine on its
-      own private event loop instead.
-
-    Note the worker-thread path runs on a *new* event loop each call, so
-    loop-bound resources (e.g. asyncpg pooled connections) cannot be
-    reused across calls. Callers treat any resulting error as a
-    degraded-memory condition, never a fatal one.
+    - **No running loop** (CLI export, sync tests): ``asyncio.run``.
+    - **Inside a running loop** (defensive — a sync edge invoked from
+      async code): dispatch ``asyncio.run`` to a fresh worker thread and
+      block on its result. Calling ``loop.run_until_complete`` here
+      would deadlock; the worker thread runs the coroutine on its own
+      private event loop instead. Note this path runs a *new* event
+      loop each call, so loop-bound resources (e.g. asyncpg pooled
+      connections) cannot be reused across calls.
     """
     try:
         asyncio.get_running_loop()
@@ -85,17 +85,19 @@ def _summarize_turn(user_message: str, response: str) -> str:
 class MemoryPolicy(Protocol):
     def resolve(self, persona: Any, harness_name: str) -> MemoryConfig: ...
     def export_memory_context(self, persona: Any) -> str: ...
-    def get_recent_snippets(
+    async def get_recent_snippets(
         self, persona: Any, role: Any, *, limit: int = 10
     ) -> list[str]:
         """Return up to ``limit`` recent memory snippets for prepend.
 
         Added in ms-graph-extension D27; activated for real retrieval
-        in memory-retrieval-activation. SDK harnesses prepend the
-        result under a ``## Recent context`` heading at
-        ``create_agent`` time. Implementations MUST degrade to ``[]``
-        on backend failure — snippet retrieval must never break agent
-        construction.
+        in memory-retrieval-activation; async at the protocol level per
+        the capability-protocols-v2 owner review verdict C8
+        (2026-07-16). SDK harnesses await the result and prepend it
+        under a ``## Recent context`` heading at ``create_agent`` time;
+        sync callers bridge at their own edge. Implementations MUST
+        degrade to ``[]`` on backend failure — snippet retrieval must
+        never break agent construction.
         """
         ...
 
@@ -126,7 +128,7 @@ class FileMemoryPolicy:
     def export_memory_context(self, persona: Any) -> str:
         return persona.memory_content or ""
 
-    def get_recent_snippets(
+    async def get_recent_snippets(
         self, persona: Any, role: Any, *, limit: int = 10
     ) -> list[str]:
         """Bounded excerpts from the persona's ``memory.md``.
@@ -187,22 +189,22 @@ class PostgresGraphitiMemoryPolicy:
     def export_memory_context(self, persona: Any) -> str:
         return _run_blocking(self._manager.export_memory(persona.name))
 
-    def get_recent_snippets(
+    async def get_recent_snippets(
         self, persona: Any, role: Any, *, limit: int = 10
     ) -> list[str]:
         """Live snippet retrieval via ``MemoryManager.get_recent_snippets``.
 
-        Sync facade over the async manager (see ``_run_blocking``).
-        Degrades to ``[]`` with a warning on any backend failure —
-        a down database must never break ``create_agent``.
+        Awaits the async manager directly on the caller's event loop
+        (no worker-thread bridge — capability-protocols-v2 owner review
+        verdict C8, 2026-07-16). Degrades to ``[]`` with a warning on
+        any backend failure — a down database must never break
+        ``create_agent``.
         """
         persona_name = getattr(persona, "name", None) or self._persona_name
         role_name = getattr(role, "name", str(role))
         try:
-            return _run_blocking(
-                self._manager.get_recent_snippets(
-                    persona_name, role_name, limit=limit
-                )
+            return await self._manager.get_recent_snippets(
+                persona_name, role_name, limit=limit
             )
         except Exception:
             logger.warning(
@@ -244,7 +246,7 @@ class HostProvidedMemoryPolicy:
     def export_memory_context(self, persona: Any) -> str:
         return persona.memory_content or ""
 
-    def get_recent_snippets(
+    async def get_recent_snippets(
         self, persona: Any, role: Any, *, limit: int = 10
     ) -> list[str]:
         # Host-provided memory leaves snippet retrieval to the host —

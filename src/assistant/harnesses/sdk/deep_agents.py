@@ -91,16 +91,18 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         resolver = CapabilityResolver()
         return resolver.resolve(self.persona, "sdk", self.role).memory
 
-    def _compose_system_prompt(self) -> str:
+    async def _compose_system_prompt(self) -> str:
         """Compose system prompt + optional memory snippet block.
 
         Parity with the MSAF harness's D27 prepend: snippets from
-        ``MemoryPolicy.get_recent_snippets`` are prepended under
-        ``## Recent context``; an empty snippet list leaves the prompt
-        unchanged (no heading injected).
+        ``MemoryPolicy.get_recent_snippets`` are awaited directly on
+        the ``create_agent`` event loop (capability-protocols-v2 owner
+        review verdict C8, 2026-07-16 — no sync bridge on the hot
+        path) and prepended under ``## Recent context``; an empty
+        snippet list leaves the prompt unchanged (no heading injected).
         """
         base = compose_system_prompt(self.persona, self.role)
-        snippets = self._resolve_memory_policy().get_recent_snippets(
+        snippets = await self._resolve_memory_policy().get_recent_snippets(
             self.persona, self.role, limit=self._memory_snippet_limit
         )
         if not snippets:
@@ -139,10 +141,12 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         if self.role.skills_dir:
             skills_dirs.append(self.role.skills_dir)
 
+        system_prompt = await self._compose_system_prompt()
+
         return create_deep_agent(
             model=init_chat_model(model_id),
             tools=[*tools, *ext_tools],
-            system_prompt=self._compose_system_prompt(),
+            system_prompt=system_prompt,
             memory=cfg.get("memory_files") or ["./AGENTS.md"],
             skills=skills_dirs,
             checkpointer=InMemorySaver(),

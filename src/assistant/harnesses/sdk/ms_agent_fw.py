@@ -206,13 +206,16 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
 
     # ── Instruction composition (D27) ─────────────────────────────
 
-    def _compose_instructions(self) -> str:
+    async def _compose_instructions(self) -> str:
         """Compose system prompt + optional memory snippet block.
 
         Per D27: the memory snippets are *prepended* under
         ``## Recent context`` so the agent reads them before the
         composed system-prompt body. An empty snippet list MUST leave
-        the prompt unchanged (no heading injected).
+        the prompt unchanged (no heading injected). Snippet retrieval
+        is awaited directly on the ``create_agent`` event loop
+        (capability-protocols-v2 owner review verdict C8, 2026-07-16 —
+        no sync bridge on the hot path).
 
         The base system prompt is sourced from the persona+role's
         ``ContextProvider`` (resolved via ``CapabilityResolver`` per
@@ -225,7 +228,7 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         )
 
         memory_policy = self._resolve_memory_policy()
-        snippets = memory_policy.get_recent_snippets(
+        snippets = await memory_policy.get_recent_snippets(
             self.persona, self.role, limit=self._memory_snippet_limit
         )
         if not snippets:
@@ -265,7 +268,7 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         for ext in authorized:
             ext_tools.extend(ext.as_ms_agent_tools())
 
-        instructions = self._compose_instructions()
+        instructions = await self._compose_instructions()
         chat_client = self._build_chat_client()
 
         try:
