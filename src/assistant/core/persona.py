@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from importlib import import_module
 from pathlib import Path
@@ -17,10 +18,24 @@ from typing import Any
 
 import yaml
 
+from assistant.core.capabilities.credentials import (
+    CredentialProvider,
+    EnvCredentialProvider,
+    persona_credential_provider,
+)
+from assistant.core.capabilities.guardrails import (
+    GuardrailConfig,
+    GuardrailConfigError,
+    parse_guardrail_config,
+)
 from assistant.core.capabilities.models import (
     ModelRegistry,
     ModelRegistryError,
     parse_model_registry,
+)
+from assistant.core.extension_integrity import (
+    IntegrityVerdict,
+    check_extension_integrity,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,6 +75,16 @@ class PersonaConfig:
     # synthesizes one from the known harness defaults
     # (``default_model_registry``).
     models: ModelRegistry = field(default_factory=ModelRegistry)
+    # Parsed + validated ``guardrails:`` section (guardrail-provider
+    # spec / P13 security-hardening). Falsy when the persona declares
+    # no guardrails — the resolver then selects AllowAllGuardrails.
+    guardrails: GuardrailConfig = field(default_factory=GuardrailConfig)
+    # Persona-scoped credential provider (credential-provider spec /
+    # P13): persona ``.env`` values first, process env fallback.
+    # ``repr=False`` — the scoped namespace holds secret values.
+    credentials: CredentialProvider = field(
+        default_factory=EnvCredentialProvider, repr=False
+    )
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -76,11 +101,24 @@ class PersonaRegistry:
     callers — see docs/gotchas.md G6 for the privacy-boundary rationale.
     """
 
-    def __init__(self, personas_dir: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        personas_dir: Path | str | None = None,
+        *,
+        credential_provider_factory: (
+            Callable[[str, Path], CredentialProvider] | None
+        ) = None,
+    ) -> None:
         if personas_dir is None:
             env = os.environ.get("ASSISTANT_PERSONAS_DIR")
             personas_dir = Path(env) if env else _DEFAULT_PERSONAS_DIR
         self.personas_dir = Path(personas_dir)
+        # P13 security-hardening: injection point for a custom
+        # CredentialProvider backend (e.g. OpenBao in P25). The factory
+        # receives ``(persona_name, persona_dir)``; the default builds
+        # the persona-scoped env provider (persona ``.env`` first,
+        # process env fallback).
+        self._credential_provider_factory = credential_provider_factory
         self._cache: dict[str, PersonaConfig] = {}
         # P10 extension-lifecycle: extensions that completed
         # ``initialize()`` and are awaiting ``shutdown()``, in
@@ -135,17 +173,40 @@ class PersonaRegistry:
                 f"models: registry — {exc}"
             ) from exc
 
+        try:
+            guardrails = parse_guardrail_config(
+                raw.get("guardrails") or {}, persona_dir=persona_dir
+            )
+        except GuardrailConfigError as exc:
+            raise ValueError(
+                f"Persona '{raw['name']}' ({config_path}): invalid "
+                f"guardrails: section — {exc}"
+            ) from exc
+
+        # P13 security-hardening: every persona-config secret read goes
+        # through the persona-scoped CredentialProvider (persona .env
+        # values first, process env fallback) — never through a direct
+        # os.environ read.
+        credentials = (
+            self._credential_provider_factory(raw["name"], persona_dir)
+            if self._credential_provider_factory is not None
+            else persona_credential_provider(persona_dir)
+        )
+
+        def _cred(ref: Any) -> str:
+            return credentials.get_credential(str(ref)) if ref else ""
+
         config = PersonaConfig(
             name=raw["name"],
             display_name=raw.get("display_name", raw["name"]),
-            database_url=_env((raw.get("database") or {}).get("url_env", "")),
-            graphiti_url=_env((raw.get("graphiti") or {}).get("url_env", "")),
+            database_url=_cred((raw.get("database") or {}).get("url_env", "")),
+            graphiti_url=_cred((raw.get("graphiti") or {}).get("url_env", "")),
             auth_provider=(raw.get("auth") or {}).get("provider", "custom"),
-            auth_config={k: _env(v) for k, v in auth_cfg_raw.items()},
+            auth_config={k: _cred(v) for k, v in auth_cfg_raw.items()},
             harnesses=raw.get("harnesses", {}) or {},
             tool_sources={
                 src_name: {
-                    "base_url": _env(src.get("base_url_env", "")),
+                    "base_url": _cred(src.get("base_url_env", "")),
                     "auth_header": _normalize_auth_header(src),
                     "allowed_tools": src.get("allowed_tools", []) or [],
                 }
@@ -158,6 +219,8 @@ class PersonaRegistry:
             default_role=raw.get("default_role", "chief_of_staff"),
             disabled_roles=raw.get("disabled_roles", []) or [],
             models=models,
+            guardrails=guardrails,
+            credentials=credentials,
             raw=raw,
         )
 
@@ -291,6 +354,36 @@ class PersonaRegistry:
 
             private_path = config.extensions_dir / f"{module_name}.py"
             if private_path.exists():
+                # P13 security-hardening: verify the private file against
+                # the optional extensions-dir manifest BEFORE any code in
+                # it executes. A blocked file is disabled entirely — no
+                # fallback to a same-named public module, so tampering
+                # can never silently swap implementations.
+                integrity = check_extension_integrity(
+                    config.extensions_dir, private_path
+                )
+                if integrity.blocked:
+                    logger.error(
+                        "Extension %r: integrity verification failed "
+                        "(%s); NOT executing %s — extension disabled. "
+                        "If this change is intentional, regenerate the "
+                        "manifest with `assistant persona hash-extensions "
+                        "-p %s`.",
+                        module_name,
+                        integrity.detail,
+                        private_path,
+                        config.name,
+                    )
+                    continue
+                if integrity.verdict is IntegrityVerdict.UNVERIFIED:
+                    logger.warning(
+                        "Extension %r: %s — loading UNVERIFIED private "
+                        "extension. Generate a manifest with `assistant "
+                        "persona hash-extensions -p %s`.",
+                        module_name,
+                        integrity.detail,
+                        config.name,
+                    )
                 ext = _load_private_extension(
                     config.name,
                     module_name,
@@ -465,12 +558,6 @@ async def _call_optional_hook(ext: Any, hook_name: str) -> None:
     result = hook()
     if inspect.isawaitable(result):
         await result
-
-
-def _env(var_name: str | None) -> str:
-    if not var_name:
-        return ""
-    return os.environ.get(var_name, "")
 
 
 def _normalize_auth_header(src: dict[str, Any]) -> dict[str, Any] | None:

@@ -203,6 +203,12 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
     def _resolve_credential_provider(self) -> CredentialProvider:
         if self._credential_provider is not None:
             return self._credential_provider
+        # P13 security-hardening: prefer the persona-scoped provider
+        # built at persona load (persona .env first, process env
+        # fallback) so model credential_refs resolve per-persona.
+        persona_credentials = getattr(self.persona, "credentials", None)
+        if persona_credentials is not None:
+            return persona_credentials
         from assistant.core.capabilities.credentials import EnvCredentialProvider
 
         return EnvCredentialProvider()

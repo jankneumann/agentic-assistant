@@ -87,7 +87,11 @@ async def _default_agent_factory(
                 "http_client is required when persona declares tool_sources "
                 "(discovered tools close over the caller-owned AsyncClient)"
             )
-        registry = await discover_tools(tool_sources, client=http_client)
+        registry = await discover_tools(
+            tool_sources,
+            client=http_client,
+            credentials=getattr(pc, "credentials", None),
+        )
     else:
         registry = HttpToolRegistry()
 

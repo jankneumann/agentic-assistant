@@ -3,21 +3,16 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 from graphiti_core import Graphiti
 from graphiti_core.driver.falkordb_driver import FalkorDriver
 
+from assistant.core.capabilities.credentials import EnvCredentialProvider
+
 logger = logging.getLogger(__name__)
 
 _graphiti_cache: dict[str, Any] = {}
-
-
-def _env(var_name: str | None) -> str:
-    if not var_name:
-        return ""
-    return os.environ.get(var_name, "")
 
 
 def create_graphiti_client(persona: Any) -> Any | None:
@@ -31,10 +26,18 @@ def create_graphiti_client(persona: Any) -> Any | None:
 
     graphiti_cfg = persona.raw.get("graphiti", {})
 
-    host = _env(graphiti_cfg.get("host_env")) or "localhost"
-    port_str = _env(graphiti_cfg.get("port_env")) or "6379"
+    # P13 security-hardening: graphiti connection secrets resolve
+    # through the persona-scoped CredentialProvider (persona .env
+    # first, process env fallback), matching persona load.
+    credentials = getattr(persona, "credentials", None) or EnvCredentialProvider()
+
+    def _cred(ref: Any) -> str:
+        return credentials.get_credential(str(ref)) if ref else ""
+
+    host = _cred(graphiti_cfg.get("host_env")) or "localhost"
+    port_str = _cred(graphiti_cfg.get("port_env")) or "6379"
     port = int(port_str)
-    password = _env(graphiti_cfg.get("password_env")) or ""
+    password = _cred(graphiti_cfg.get("password_env")) or ""
     database = graphiti_cfg.get("database", f"{persona.name}_graph")
 
     driver = FalkorDriver(

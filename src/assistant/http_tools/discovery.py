@@ -14,6 +14,7 @@ from typing import Any
 
 import httpx
 
+from assistant.core.capabilities.credentials import CredentialProvider
 from assistant.core.resilience import (
     CircuitBreakerOpenError,
     resilient_http,
@@ -179,6 +180,7 @@ async def discover_tools(
     tool_sources: dict[str, dict[str, Any]],
     *,
     client: httpx.AsyncClient,
+    credentials: CredentialProvider | None = None,
 ) -> HttpToolRegistry:
     """Discover tools from every configured source into a single registry.
 
@@ -190,6 +192,10 @@ async def discover_tools(
     ``RuntimeError`` if invoked after the client is closed, so the
     client must live at least as long as the registry is in use.
     Design decision D2.
+
+    ``credentials`` is the persona-scoped ``CredentialProvider`` (P13)
+    used to resolve each source's auth-header ref; ``None`` falls back
+    to the process environment.
     """
     registry = HttpToolRegistry()
     if not tool_sources:
@@ -201,6 +207,7 @@ async def discover_tools(
             source_name=source_name,
             source_cfg=source_cfg,
             client=client,
+            credentials=credentials,
         )
 
     return registry
@@ -212,6 +219,7 @@ async def _discover_one(
     source_name: str,
     source_cfg: dict[str, Any],
     client: httpx.AsyncClient,
+    credentials: CredentialProvider | None = None,
 ) -> None:
     """Discover tools for a single source; all failures → warning + return."""
     base_url = source_cfg.get("base_url")
@@ -220,7 +228,9 @@ async def _discover_one(
         return
 
     try:
-        auth_headers = resolve_auth_header(source_cfg.get("auth_header"))
+        auth_headers = resolve_auth_header(
+            source_cfg.get("auth_header"), credentials
+        )
     except KeyError as exc:
         logger.warning(
             "skipping source %r: missing auth env var %s",

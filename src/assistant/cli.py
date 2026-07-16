@@ -431,7 +431,11 @@ async def _print_tool_catalog(pc) -> int:
     discovery_logger.addHandler(handler)
     try:
         async with _make_discovery_client() as client:
-            registry = await discover_tools(pc.tool_sources, client=client)
+            registry = await discover_tools(
+                pc.tool_sources,
+                client=client,
+                credentials=getattr(pc, "credentials", None),
+            )
     finally:
         discovery_logger.removeHandler(handler)
 
@@ -481,7 +485,11 @@ async def _run_repl(
     try:
         if _has_configured_tool_sources(pc):
             async with _make_discovery_client() as client:
-                registry = await discover_tools(pc.tool_sources, client=client)
+                registry = await discover_tools(
+                    pc.tool_sources,
+                    client=client,
+                    credentials=getattr(pc, "credentials", None),
+                )
                 await _run_repl_with_registry(
                     persona_reg, role_reg, pc, rc, harness_name, adapter,
                     registry, method,
@@ -697,6 +705,50 @@ async def _run_repl_with_registry(
         else:
             prefix = rc.display_name
         click.echo(f"\n[{prefix}]> {response}\n")
+
+
+@main.group(name="persona")
+def persona_group() -> None:
+    """Persona maintenance commands."""
+
+
+@persona_group.command("hash-extensions")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+def hash_extensions(persona: str) -> None:
+    """Generate/update the extension integrity manifest for a persona.
+
+    Hashes every ``*.py`` file in the persona's extensions directory
+    (SHA-256) and writes ``manifest.yaml`` next to them. The persona
+    registry verifies private extensions against this manifest before
+    executing them (P13 security-hardening); rerun this command after
+    every intentional extension edit.
+    """
+    from assistant.core.extension_integrity import (
+        MANIFEST_FILENAME,
+        generate_manifest,
+    )
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+
+    extensions_dir = pc.extensions_dir
+    if not extensions_dir.is_dir():
+        click.echo(
+            f"Error: extensions directory does not exist: {extensions_dir}",
+            err=True,
+        )
+        sys.exit(1)
+
+    hashes = generate_manifest(extensions_dir)
+    if not hashes:
+        click.echo(
+            f"No *.py extension files found in {extensions_dir}; wrote an "
+            f"empty {MANIFEST_FILENAME}."
+        )
+        return
+    click.echo(f"Wrote {extensions_dir / MANIFEST_FILENAME}:")
+    for filename, digest in sorted(hashes.items()):
+        click.echo(f"  {filename}  {digest}")
 
 
 @main.group()

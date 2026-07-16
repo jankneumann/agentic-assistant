@@ -3,12 +3,23 @@
 Accepts the structured form ``{type, env, header?}`` (the canonical
 P3 shape) and the legacy flat-string shortcut (treated as a bearer
 token value) for robustness — see design decision D11.
+
+P13 security-hardening: the credential named by ``env`` resolves
+through the ``CredentialProvider`` seam (persona-scoped ``.env``
+first, process environment fallback) rather than a direct
+``os.environ`` read. Callers pass the persona's provider; omitting it
+falls back to the process-env default so standalone use keeps
+working.
 """
 
 from __future__ import annotations
 
-import os
 from typing import Literal, NotRequired, TypedDict
+
+from assistant.core.capabilities.credentials import (
+    CredentialProvider,
+    EnvCredentialProvider,
+)
 
 
 class AuthHeaderConfig(TypedDict):
@@ -22,20 +33,25 @@ class AuthHeaderConfig(TypedDict):
 AuthHeaderInput = AuthHeaderConfig | str | None
 
 
-def resolve_auth_header(config: AuthHeaderInput) -> dict[str, str]:
+def resolve_auth_header(
+    config: AuthHeaderInput,
+    credentials: CredentialProvider | None = None,
+) -> dict[str, str]:
     """Return HTTP headers to attach to requests to a source.
 
     - ``None`` → empty dict (no auth).
     - ``str`` (legacy flat form) → ``{"Authorization": f"Bearer {value}"}``.
-      The string is treated as the *token value*, not an env var name.
-    - ``AuthHeaderConfig`` dict → reads the env var named by ``env`` and
+      The string is treated as the *token value*, not a credential ref.
+    - ``AuthHeaderConfig`` dict → resolves the ref named by ``env``
+      through ``credentials`` (default: process environment) and
       builds a ``{"Authorization": "Bearer ..."}`` or
       ``{"X-API-Key": ...}`` (or custom header) dict.
 
     Raises:
-        KeyError: if ``config['env']`` names an env var that is not set.
-            The exception message includes the variable name so callers
-            can surface it.
+        KeyError: if ``config['env']`` names a ref that resolves to an
+            empty value (unset variable, or absent from the persona
+            ``.env`` and the process environment). The exception
+            message includes the ref name so callers can surface it.
         ValueError: if the structured ``type`` is not ``"bearer"`` or
             ``"api-key"``.
     """
@@ -44,10 +60,11 @@ def resolve_auth_header(config: AuthHeaderInput) -> dict[str, str]:
     if isinstance(config, str):
         return {"Authorization": f"Bearer {config}"}
 
+    provider = credentials or EnvCredentialProvider()
     env_name = config["env"]
-    if env_name not in os.environ:
+    value = provider.get_credential(env_name)
+    if not value:
         raise KeyError(env_name)
-    value = os.environ[env_name]
 
     auth_type = config["type"]
     if auth_type == "bearer":

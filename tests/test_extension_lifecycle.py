@@ -117,6 +117,11 @@ def _make_persona(
                 _EXT_TEMPLATE.format(name=mod_name, extra_methods=extra)
             )
         )
+    # P13 security-hardening: write an integrity manifest so lifecycle
+    # tests exercise the verified-load path without UNVERIFIED warnings.
+    from assistant.core.extension_integrity import generate_manifest
+
+    generate_manifest(extensions_dir)
     return PersonaConfig(
         name=persona_name,
         display_name=persona_name,

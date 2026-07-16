@@ -613,10 +613,19 @@ def create_msal_strategy(persona: PersonaConfig) -> MSALStrategy:
             f"Add `auth.ms.flow:` to {persona.name}/persona.yaml."
         )
 
+    # P13 security-hardening: MS credentials resolve through the
+    # persona-scoped CredentialProvider (persona .env first, process
+    # env fallback), never a direct os.environ read.
+    credentials = getattr(persona, "credentials", None)
+    if credentials is None:
+        from assistant.core.capabilities.credentials import EnvCredentialProvider
+
+        credentials = EnvCredentialProvider()
+
     tenant_id_env = auth_ms.get("tenant_id_env") or ""
     client_id_env = auth_ms.get("client_id_env") or ""
-    tenant_id = os.environ.get(tenant_id_env, "") if tenant_id_env else ""
-    client_id = os.environ.get(client_id_env, "") if client_id_env else ""
+    tenant_id = credentials.get_credential(tenant_id_env) if tenant_id_env else ""
+    client_id = credentials.get_credential(client_id_env) if client_id_env else ""
 
     if not tenant_id_env or not tenant_id:
         raise MSALAuthenticationError(
@@ -642,7 +651,9 @@ def create_msal_strategy(persona: PersonaConfig) -> MSALStrategy:
 
     # client_credentials path — secret env required.
     client_secret_env = auth_ms.get("client_secret_env") or ""
-    client_secret = os.environ.get(client_secret_env, "") if client_secret_env else ""
+    client_secret = (
+        credentials.get_credential(client_secret_env) if client_secret_env else ""
+    )
     if not client_secret_env or not client_secret:
         raise MSALAuthenticationError(
             f"persona {persona.name!r}: auth.ms.client_secret_env "

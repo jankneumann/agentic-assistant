@@ -322,7 +322,7 @@ def test_list_tools_with_no_sources_prints_message(
 
     from assistant.http_tools import HttpToolRegistry
 
-    async def _spy(tool_sources, *, client=None):
+    async def _spy(tool_sources, *, client=None, credentials=None):
         return HttpToolRegistry()
 
     monkeypatch.setattr(cli_mod, "discover_tools", _spy)
@@ -365,7 +365,7 @@ def test_list_tools_with_successful_sources(
         ),
     )
 
-    async def _fake_discover(tool_sources, *, client=None):
+    async def _fake_discover(tool_sources, *, client=None, credentials=None):
         return registry
 
     monkeypatch.setattr(cli_mod, "discover_tools", _fake_discover)
@@ -412,7 +412,7 @@ def test_list_tools_exits_zero_when_warning_but_tools_registered(
         ),
     )
 
-    async def _fake_discover(tool_sources, *, client=None):
+    async def _fake_discover(tool_sources, *, client=None, credentials=None):
         # Emit a warning like discovery would when /openapi.json 500s —
         # but still succeed via the fallback.
         logging.getLogger("assistant.http_tools.discovery").warning(
@@ -437,7 +437,7 @@ def test_list_tools_with_failing_source_exits_nonzero(
     monkeypatch.setenv("CONTENT_ANALYZER_URL", "http://127.0.0.1:1/ignored")
     from assistant.http_tools import HttpToolRegistry
 
-    async def _fake_discover(tool_sources, *, client=None):
+    async def _fake_discover(tool_sources, *, client=None, credentials=None):
         logging.getLogger("assistant.http_tools.discovery").warning(
             "skipping source %r: simulated failure", "content_analyzer",
         )
@@ -464,7 +464,7 @@ def test_startup_calls_discover_tools_when_base_url_set(
     called = {"count": 0}
     registry = _canned_registry()
 
-    async def _spy(tool_sources, *, client=None):
+    async def _spy(tool_sources, *, client=None, credentials=None):
         called["count"] += 1
         return registry
 
@@ -487,7 +487,7 @@ def test_startup_skips_discovery_when_no_sources(
 
     called = {"count": 0}
 
-    async def _spy(tool_sources, *, client=None):
+    async def _spy(tool_sources, *, client=None, credentials=None):
         called["count"] += 1
         from assistant.http_tools import HttpToolRegistry
         return HttpToolRegistry()
