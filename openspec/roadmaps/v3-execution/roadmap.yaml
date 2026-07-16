@@ -42,7 +42,7 @@ items:
       - No implementation code; contracts referenced by P19/P13/P22 scopes
   - item_id: P19
     title: model-provider-routing
-    status: approved
+    status: completed
     priority: 3
     effort: L
     change_id: model-provider-routing
