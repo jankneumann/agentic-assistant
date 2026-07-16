@@ -160,19 +160,22 @@ See `openspec/roadmap.md` for the full sequence. Notable gaps:
 - **`work-persona-config` phase**: submodule + role overrides come
   when the work machine is available. Until then no persona enables
   the four MS extensions.
-- **MSAF MemoryPolicy is minimal-prepend only**: per
-  `ms-graph-extension` D27, the MS Agent Framework harness consumes
-  `MemoryPolicy.get_recent_snippets(persona, role, limit=10)` at
-  `create_agent` time and prepends the result under a
-  `## Recent context` heading. The four built-in policies
-  (`File`, `PostgresGraphiti`, `HostProvided`, `Noop`) all currently
-  return `[]`; live retrieval against `MemoryManager` is a P5b
-  candidate when (a) the `agent-framework` SDK exposes a memory
-  injection point with a stable contract, OR (b) usage data shows
-  the prepend approach is insufficient. Until then MSAF agents have
-  empty `## Recent context` sections; DeepAgents agents have full
-  memory continuity. Documented asymmetry — see the
-  `ms-agent-framework-harness` spec "Follow-up scope" note.
+- **Memory retrieval + capture are live but prepend-only** (P21
+  `memory-retrieval-activation`): both SDK harnesses (DeepAgents and
+  MSAF) consume `MemoryPolicy.get_recent_snippets(persona, role,
+  limit=10)` at `create_agent` time and prepend the result under a
+  `## Recent context` heading. `PostgresGraphitiMemoryPolicy` returns
+  live snippets from `MemoryManager` (facts / preferences /
+  interaction summaries + Graphiti semantic search, degrading to
+  Postgres-only); `FileMemoryPolicy` returns bounded `memory.md`
+  excerpts; `HostProvided` stays `[]` (host owns memory). After a
+  successful turn, harnesses store a one-line interaction summary via
+  `record_interaction` (error-swallowed — memory never breaks a
+  conversation). Still deferred: mid-turn retrieval / structured
+  memory items in MSAF (blocked on an `agent-framework` SDK injection
+  point — see the `ms-agent-framework-harness` spec "Follow-up scope"
+  note), Graphiti episode write-back on capture, and durable session
+  persistence (owned by `capability-protocols-v2`).
 - **`agent-framework` packaging — RESOLVED (X3 repo-hygiene,
   2026-07-16)**: the repo now pins `agent-framework-core` +
   `agent-framework-openai` (1.10.x) instead of the `agent-framework`
