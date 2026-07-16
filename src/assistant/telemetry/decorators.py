@@ -47,6 +47,7 @@ from typing import Any
 from langchain_core.callbacks.usage import UsageMetadataCallbackHandler
 from langchain_core.tracers.context import register_configure_hook
 
+from assistant.core.capabilities.models import ModelRef, compute_cost
 from assistant.telemetry.context import assistant_ctx, get_assistant_ctx
 from assistant.telemetry.factory import get_observability_provider
 
@@ -168,6 +169,44 @@ def _resolve_model(self_obj: Any) -> str:
     return "unknown"
 
 
+def _model_cost_metadata(
+    self_obj: Any, in_tok: int, out_tok: int
+) -> dict[str, Any] | None:
+    """Cost-attribution metadata from the harness's active ModelRef.
+
+    Follows the ``_active_model`` pattern (model-provider-routing):
+    concrete harnesses stash the resolved ``ModelRef`` on
+    ``self._active_model_ref`` at ``create_agent`` time. When present,
+    the span metadata carries the ref's name and dialect, plus a
+    ``cost_usd`` computed from the OpenRouter-shaped pricing fields and
+    the reported token counts. Missing pricing (e.g. a local endpoint)
+    omits the cost — never guessed. Returns ``None`` when no ref is
+    active so pre-P19 span shapes are unchanged.
+    """
+    ref = getattr(self_obj, "_active_model_ref", None)
+    if not isinstance(ref, ModelRef):
+        return None
+    meta: dict[str, Any] = {"model_ref": ref.name, "model_dialect": ref.dialect}
+    cost = compute_cost(ref.pricing, in_tok, out_tok)
+    if cost is not None:
+        meta["cost_usd"] = cost
+    return meta
+
+
+def _merge_metadata(
+    base: dict[str, Any] | None, extra: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Merge span metadata dicts; ``None`` when both are ``None``."""
+    if base is None and extra is None:
+        return None
+    merged: dict[str, Any] = {}
+    if extra:
+        merged.update(extra)
+    if base:
+        merged.update(base)
+    return merged
+
+
 def _sum_usage_metadata(usage_metadata: dict[str, Any]) -> tuple[int, int]:
     """Aggregate input/output tokens across every model entry in ``cb.usage_metadata``.
 
@@ -269,7 +308,10 @@ def traced_harness(
                     input_tokens=in_tok,
                     output_tokens=out_tok,
                     duration_ms=duration_ms,
-                    metadata={"streaming": True, "cancelled": True},
+                    metadata=_merge_metadata(
+                        {"streaming": True, "cancelled": True},
+                        _model_cost_metadata(self_obj, in_tok, out_tok),
+                    ),
                 )
                 raise
             except BaseException as exc:
@@ -282,7 +324,10 @@ def traced_harness(
                     input_tokens=in_tok,
                     output_tokens=out_tok,
                     duration_ms=duration_ms,
-                    metadata={"streaming": True, "error": type(exc).__name__},
+                    metadata=_merge_metadata(
+                        {"streaming": True, "error": type(exc).__name__},
+                        _model_cost_metadata(self_obj, in_tok, out_tok),
+                    ),
                 )
                 raise
             duration_ms = (time.perf_counter() - start) * 1000.0
@@ -294,7 +339,10 @@ def traced_harness(
                 input_tokens=in_tok,
                 output_tokens=out_tok,
                 duration_ms=duration_ms,
-                metadata={"streaming": True},
+                metadata=_merge_metadata(
+                    {"streaming": True},
+                    _model_cost_metadata(self_obj, in_tok, out_tok),
+                ),
             )
 
         return async_gen_wrapper
@@ -329,7 +377,10 @@ def traced_harness(
                 input_tokens=in_tok,
                 output_tokens=out_tok,
                 duration_ms=duration_ms,
-                metadata={"error": type(exc).__name__},
+                metadata=_merge_metadata(
+                    {"error": type(exc).__name__},
+                    _model_cost_metadata(self_obj, in_tok, out_tok),
+                ),
             )
             raise
         duration_ms = (time.perf_counter() - start) * 1000.0
@@ -341,7 +392,9 @@ def traced_harness(
             input_tokens=in_tok,
             output_tokens=out_tok,
             duration_ms=duration_ms,
-            metadata=None,
+            metadata=_merge_metadata(
+                None, _model_cost_metadata(self_obj, in_tok, out_tok)
+            ),
         )
         return result
 

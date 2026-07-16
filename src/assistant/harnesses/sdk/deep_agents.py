@@ -13,6 +13,16 @@ from deepagents import create_deep_agent
 from langchain.chat_models import init_chat_model
 from langgraph.checkpoint.memory import InMemorySaver
 
+from assistant.core.capabilities.model_bindings import (
+    ModelCallDeniedError,
+    bind_langchain,
+)
+from assistant.core.capabilities.models import (
+    ModelRef,
+    ModelRequest,
+    ModelResolutionError,
+    StaticModelProvider,
+)
 from assistant.core.composition import compose_system_prompt
 from assistant.core.persona import PersonaConfig
 from assistant.core.role import RoleConfig
@@ -30,7 +40,10 @@ from assistant.telemetry.decorators import traced_harness
 from assistant.telemetry.tool_wrap import wrap_extension_tools
 
 if TYPE_CHECKING:
+    from assistant.core.capabilities.credentials import CredentialProvider
+    from assistant.core.capabilities.guardrails import GuardrailProvider
     from assistant.core.capabilities.memory import MemoryPolicy
+    from assistant.core.capabilities.models import ModelProvider
 
 #: Memory snippet limit — mirrors the MSAF harness's D27 default of 10.
 #: Tests can override via the ``memory_snippet_limit`` constructor kwarg.
@@ -58,11 +71,21 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         *,
         memory_policy: MemoryPolicy | None = None,
         memory_snippet_limit: int = DEFAULT_MEMORY_SNIPPET_LIMIT,
+        model_provider: ModelProvider | None = None,
+        credential_provider: CredentialProvider | None = None,
+        guardrail_provider: GuardrailProvider | None = None,
     ) -> None:
         super().__init__(persona, role)
         self._memory_policy = memory_policy
         self._memory_snippet_limit = memory_snippet_limit
+        self._model_provider = model_provider
+        self._credential_provider = credential_provider
+        self._guardrail_provider = guardrail_provider
         self._active_model: str = self._DEFAULT_MODEL
+        # Resolved ModelRef backing ``_active_model`` — read by
+        # ``@traced_harness`` for cost attribution (P19: pricing
+        # metadata rides the existing span labels).
+        self._active_model_ref: ModelRef | None = None
         # Synthesize a UUID at construction so ``thread_id`` is non-empty
         # and STABLE for the lifetime of this adapter instance (spec:
         # "thread_id must persist for the lifetime of the adapter instance
@@ -90,6 +113,83 @@ class DeepAgentsHarness(SdkHarnessAdapter):
 
         resolver = CapabilityResolver()
         return resolver.resolve(self.persona, "sdk", self.role).memory
+
+    # ── Model resolution (model-provider-routing) ─────────────────────
+
+    def _resolve_model_provider(self) -> ModelProvider:
+        """Return the injected ModelProvider or resolve slot #6.
+
+        The resolver's default :class:`StaticModelProvider` scans
+        ``persona.harnesses`` in declaration order; re-bind it to this
+        harness's own config entry (and P1 default model) so the
+        pre-P19 per-harness ``model`` behavior is preserved exactly.
+        """
+        if self._model_provider is not None:
+            return self._model_provider
+        from assistant.core.capabilities.resolver import CapabilityResolver
+
+        resolver = CapabilityResolver()
+        provider = resolver.resolve(self.persona, "sdk", self.role).models
+        if isinstance(provider, StaticModelProvider):
+            return provider.for_harness(
+                "deep_agents", default_model=self._DEFAULT_MODEL
+            )
+        assert provider is not None  # resolver always fills slot #6
+        return provider
+
+    def _resolve_credential_provider(self) -> CredentialProvider:
+        if self._credential_provider is not None:
+            return self._credential_provider
+        from assistant.core.capabilities.credentials import EnvCredentialProvider
+
+        return EnvCredentialProvider()
+
+    def _resolve_guardrail_provider(self) -> GuardrailProvider:
+        if self._guardrail_provider is not None:
+            return self._guardrail_provider
+        from assistant.core.capabilities.resolver import CapabilityResolver
+
+        resolver = CapabilityResolver()
+        return resolver.resolve(self.persona, "sdk", self.role).guardrails
+
+    def _build_model(self) -> Any:
+        """Resolve + bind the chat model through the ModelProvider seam.
+
+        Walks the ordered fallback chain: the first ``ModelRef`` whose
+        LangChain binding constructs successfully wins; a guardrail
+        denial (:class:`ModelCallDeniedError`) is a policy stop, not a
+        provider failure, and propagates without trying fallbacks. The
+        module-level ``init_chat_model`` import is passed through so
+        the established test patch point keeps working.
+        """
+        provider = self._resolve_model_provider()
+        refs = provider.resolve(ModelRequest(consumer="chat"))
+        credentials = self._resolve_credential_provider()
+        guardrails = self._resolve_guardrail_provider()
+
+        last_exc: Exception | None = None
+        for ref in refs:
+            try:
+                model = bind_langchain(
+                    ref,
+                    credentials=credentials,
+                    guardrails=guardrails,
+                    persona=self.persona.name,
+                    role=self.role.name,
+                    init_fn=init_chat_model,
+                )
+            except ModelCallDeniedError:
+                raise
+            except Exception as exc:
+                last_exc = exc
+                continue
+            self._active_model = ref.model_id or ref.name
+            self._active_model_ref = ref
+            return model
+        raise ModelResolutionError(
+            f"Every ModelRef in the resolved chain failed to bind: "
+            f"{[r.name for r in refs]}."
+        ) from last_exc
 
     async def _compose_system_prompt(self) -> str:
         """Compose system prompt + optional memory snippet block.
@@ -125,10 +225,13 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         self, tools: list[Any], extensions: list[Any]
     ) -> Any:
         cfg = self.persona.harnesses.get("deep_agents", {}) or {}
-        model_id = cfg.get("model", self._DEFAULT_MODEL)
-        # Stash so ``_resolve_model`` reports the real id regardless of
-        # whether the persona supplied a ``model`` override.
-        self._active_model = model_id
+        # Model construction flows through the ModelProvider seam
+        # (model-provider-routing): registry-backed resolution when the
+        # persona declares ``models:``, StaticModelProvider passthrough
+        # of ``cfg["model"]`` otherwise. ``_build_model`` stashes
+        # ``_active_model`` / ``_active_model_ref`` so spans report the
+        # real id + pricing metadata.
+        model = self._build_model()
 
         ext_tools: list[Any] = []
         for ext in extensions:
@@ -144,7 +247,7 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         system_prompt = await self._compose_system_prompt()
 
         return create_deep_agent(
-            model=init_chat_model(model_id),
+            model=model,
             tools=[*tools, *ext_tools],
             system_prompt=system_prompt,
             memory=cfg.get("memory_files") or ["./AGENTS.md"],
@@ -336,6 +439,9 @@ class DeepAgentsHarness(SdkHarnessAdapter):
             role,
             memory_policy=self._memory_policy,
             memory_snippet_limit=self._memory_snippet_limit,
+            model_provider=self._model_provider,
+            credential_provider=self._credential_provider,
+            guardrail_provider=self._guardrail_provider,
         )
         agent = await sub.create_agent(tools, extensions)
         return await sub.invoke(agent, task)

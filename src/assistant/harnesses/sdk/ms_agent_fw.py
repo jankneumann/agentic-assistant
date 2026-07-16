@@ -28,6 +28,16 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from assistant.core.capabilities.model_bindings import (
+    ModelCallDeniedError,
+    bind_msaf_chat_client,
+)
+from assistant.core.capabilities.models import (
+    ModelRef,
+    ModelRequest,
+    ModelResolutionError,
+    StaticModelProvider,
+)
 from assistant.core.persona import PersonaConfig
 from assistant.core.role import RoleConfig
 from assistant.harnesses.base import SdkHarnessAdapter
@@ -46,8 +56,10 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from assistant.core.capabilities.context import ContextProvider
+    from assistant.core.capabilities.credentials import CredentialProvider
     from assistant.core.capabilities.guardrails import GuardrailProvider
     from assistant.core.capabilities.memory import MemoryPolicy
+    from assistant.core.capabilities.models import ModelProvider
     from assistant.core.capabilities.tools import ToolPolicy
 
 #: Memory snippet limit — D27 sets this at 10. Tests can override via
@@ -86,6 +98,8 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         context_provider: ContextProvider | None = None,
         chat_client_factory: Callable[[], Any] | None = None,
         memory_snippet_limit: int = DEFAULT_MEMORY_SNIPPET_LIMIT,
+        model_provider: ModelProvider | None = None,
+        credential_provider: CredentialProvider | None = None,
     ) -> None:
         super().__init__(persona, role)
         self._tool_policy = tool_policy
@@ -94,7 +108,12 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         self._context_provider = context_provider
         self._chat_client_factory = chat_client_factory
         self._memory_snippet_limit = memory_snippet_limit
+        self._model_provider = model_provider
+        self._credential_provider = credential_provider
         self._active_model: str = self._DEFAULT_MODEL
+        # Resolved ModelRef backing ``_active_model`` — read by
+        # ``@traced_harness`` for cost attribution (P19).
+        self._active_model_ref: ModelRef | None = None
         # Stable conversation-thread identifier for transport binding (D4).
         # UUID4 synthesized once at construction; persists for the lifetime of
         # this adapter instance across invoke / astream_invoke calls.
@@ -162,6 +181,34 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
             return resolved.context
         return DefaultContextProvider()
 
+    def _resolve_model_provider(self) -> ModelProvider:
+        """Return the injected ModelProvider or resolve slot #6.
+
+        Mirrors ``DeepAgentsHarness._resolve_model_provider``; the
+        resolver's default :class:`StaticModelProvider` is re-bound to
+        this harness's own ``model`` config entry so the pre-P19
+        per-harness behavior is preserved.
+        """
+        if self._model_provider is not None:
+            return self._model_provider
+        from assistant.core.capabilities.resolver import CapabilityResolver
+
+        resolver = CapabilityResolver()
+        provider = resolver.resolve(self.persona, "sdk", self.role).models
+        if isinstance(provider, StaticModelProvider):
+            return provider.for_harness(
+                "ms_agent_framework", default_model=self._DEFAULT_MODEL
+            )
+        assert provider is not None  # resolver always fills slot #6
+        return provider
+
+    def _resolve_credential_provider(self) -> CredentialProvider:
+        if self._credential_provider is not None:
+            return self._credential_provider
+        from assistant.core.capabilities.credentials import EnvCredentialProvider
+
+        return EnvCredentialProvider()
+
     # ── Chat client construction ──────────────────────────────────
 
     def _build_chat_client(self) -> Any:
@@ -179,10 +226,13 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
 
         cfg = self.persona.harnesses.get("ms_agent_framework", {}) or {}
         chat_client_kind = cfg.get("chat_client", "openai")
-        model = cfg.get("model", self._DEFAULT_MODEL)
-        self._active_model = model
 
         if chat_client_kind == "azure_openai":
+            # Unchanged by model-provider-routing: no Azure OpenAI
+            # connector package ships for agent-framework 1.10.x, so
+            # this branch degrades to its documented install error
+            # (CLAUDE.md "What's Not Yet Wired").
+            self._active_model = cfg.get("model", self._DEFAULT_MODEL)
             try:
                 from agent_framework.azure_openai import (  # type: ignore[import-not-found, unused-ignore]
                     AzureOpenAIChatClient,
@@ -193,16 +243,40 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
                 ) from exc
 
             return AzureOpenAIChatClient()
-        try:
-            from agent_framework.openai import (  # type: ignore[import-not-found, unused-ignore]
-                OpenAIChatClient,
-            )
-        except ImportError as exc:
-            raise _agent_framework_install_error(
-                "agent_framework.openai.OpenAIChatClient"
-            ) from exc
 
-        return OpenAIChatClient()
+        # Default (openai) branch flows through the ModelProvider seam
+        # (model-provider-routing): registry-backed resolution when the
+        # persona declares ``models:``, StaticModelProvider passthrough
+        # of ``cfg["model"]`` otherwise. A guardrail denial is a policy
+        # stop and propagates; a binding failure tries the next ref in
+        # the resolved fallback chain.
+        provider = self._resolve_model_provider()
+        refs = provider.resolve(ModelRequest(consumer="chat"))
+        credentials = self._resolve_credential_provider()
+        guardrails = self._resolve_guardrail_provider()
+
+        last_exc: Exception | None = None
+        for ref in refs:
+            try:
+                client = bind_msaf_chat_client(
+                    ref,
+                    credentials=credentials,
+                    guardrails=guardrails,
+                    persona=self.persona.name,
+                    role=self.role.name,
+                )
+            except ModelCallDeniedError:
+                raise
+            except Exception as exc:
+                last_exc = exc
+                continue
+            self._active_model = ref.model_id or ref.name
+            self._active_model_ref = ref
+            return client
+        raise ModelResolutionError(
+            f"Every ModelRef in the resolved chain failed to bind: "
+            f"{[r.name for r in refs]}."
+        ) from last_exc
 
     # ── Instruction composition (D27) ─────────────────────────────
 
@@ -515,6 +589,8 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
             context_provider=self._context_provider,
             chat_client_factory=self._chat_client_factory,
             memory_snippet_limit=self._memory_snippet_limit,
+            model_provider=self._model_provider,
+            credential_provider=self._credential_provider,
         )
         agent = await sub.create_agent(tools, extensions)
         return await sub.invoke(agent, task)
