@@ -1368,6 +1368,22 @@ class GraphClient:
         """Map the per-extension breaker state to a ``HealthStatus``."""
         return health_status_from_breaker(self._breaker, key=self._breaker_key)
 
+    async def refresh_credentials(self) -> None:
+        """Proactively force-refresh the MSAL token (P10 extension-lifecycle).
+
+        Acquires a fresh token via ``strategy.acquire_token(...,
+        force_refresh=True)`` and discards it — the useful side
+        effects are the strategy's cache update (and, for the
+        delegated strategy, its on-disk persist). This is the
+        transport-level target of the extension lifecycle
+        ``refresh_credentials()`` hook.
+
+        The *reactive* 401 ``invalid_token`` single-retry path inside
+        ``_send_with_auth_retry`` (D9) is independent and does NOT
+        route through this method.
+        """
+        await self._bearer_token(force_refresh=True)
+
 
 # ---------------------------------------------------------------------------
 # Convenience helpers — used by extension factories.

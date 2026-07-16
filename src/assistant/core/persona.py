@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import atexit
 import importlib.util
+import inspect
 import logging
 import os
 import re
@@ -79,6 +82,11 @@ class PersonaRegistry:
             personas_dir = Path(env) if env else _DEFAULT_PERSONAS_DIR
         self.personas_dir = Path(personas_dir)
         self._cache: dict[str, PersonaConfig] = {}
+        # P10 extension-lifecycle: extensions that completed
+        # ``initialize()`` and are awaiting ``shutdown()``, in
+        # activation order. Drained by ``shutdown_extensions()``.
+        self._active_extensions: list[Any] = []
+        self._atexit_registered = False
 
     def discover(self) -> list[str]:
         if not self.personas_dir.exists():
@@ -165,6 +173,117 @@ class PersonaRegistry:
         return config
 
     def load_extensions(self, config: PersonaConfig) -> list[Any]:
+        """Load, initialize, and register the persona's extensions (sync).
+
+        Thin wrapper over :meth:`load_extensions_async` for callers
+        outside an event loop (scripts, sync tests). Callers already
+        running inside a loop MUST use the async variant — a sync call
+        cannot await the extensions' ``initialize()`` hooks, and
+        running them on a throwaway worker-thread loop would bind
+        extension resources (e.g. httpx pools) to a dead loop
+        (extension-lifecycle design D4).
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.load_extensions_async(config))
+        raise RuntimeError(
+            "PersonaRegistry.load_extensions() cannot be called while an "
+            "event loop is running; use "
+            "`await registry.load_extensions_async(config)` instead."
+        )
+
+    async def load_extensions_async(self, config: PersonaConfig) -> list[Any]:
+        """Load extensions, run ``initialize()`` hooks, register shutdown.
+
+        Per the persona-registry requirement "Extension Initialization
+        and Shutdown Lifecycle": each loaded extension's optional
+        ``initialize()`` hook runs in declaration order immediately
+        post-load; a failing hook disables that extension (WARNING +
+        best-effort ``shutdown()``) without failing persona load.
+        Extensions that survive are tracked for
+        :meth:`shutdown_extensions` and a once-per-registry ``atexit``
+        handler.
+        """
+        extensions: list[Any] = []
+        for ext in self._load_extension_instances(config):
+            if not await self._initialize_extension(ext):
+                continue
+            extensions.append(ext)
+        if extensions:
+            self._active_extensions.extend(extensions)
+            self._register_atexit_handler()
+        return extensions
+
+    async def shutdown_extensions(self) -> None:
+        """Run ``shutdown()`` hooks on all active extensions.
+
+        Reverse activation order; per-extension errors are swallowed
+        with a WARNING. Idempotent — the active list is drained first,
+        so a second call (e.g. explicit daemon teardown followed by
+        the ``atexit`` handler) is a no-op.
+        """
+        extensions, self._active_extensions = self._active_extensions, []
+        for ext in reversed(extensions):
+            try:
+                await _call_optional_hook(ext, "shutdown")
+            except Exception as exc:
+                logger.warning(
+                    "Extension %r: shutdown() failed (continuing): %s",
+                    getattr(ext, "name", "<unknown>"),
+                    exc,
+                )
+
+    def _register_atexit_handler(self) -> None:
+        if self._atexit_registered:
+            return
+        self._atexit_registered = True
+        atexit.register(self._atexit_shutdown)
+
+    def _atexit_shutdown(self) -> None:
+        """Best-effort interpreter-exit bridge to ``shutdown_extensions``.
+
+        No event loop runs at ``atexit`` time, so ``asyncio.run`` is
+        safe. All errors are swallowed — the interpreter is exiting
+        and there is nothing actionable left to do.
+        """
+        if not self._active_extensions:
+            return
+        try:
+            asyncio.run(self.shutdown_extensions())
+        except Exception:  # pragma: no cover — interpreter teardown
+            logger.debug("atexit extension shutdown failed", exc_info=True)
+
+    async def _initialize_extension(self, ext: Any) -> bool:
+        """Run an extension's optional ``initialize()`` hook.
+
+        Returns ``True`` when the extension is usable (hook absent or
+        succeeded). On failure: WARNING, best-effort ``shutdown()`` of
+        the partially-initialized instance, and ``False`` so the
+        caller disables exactly this extension (design D3).
+        """
+        try:
+            await _call_optional_hook(ext, "initialize")
+        except Exception as exc:
+            logger.warning(
+                "Extension %r: initialize() failed; disabling this "
+                "extension (its tools will not be exposed): %s",
+                getattr(ext, "name", "<unknown>"),
+                exc,
+            )
+            try:
+                await _call_optional_hook(ext, "shutdown")
+            except Exception:
+                logger.debug(
+                    "Extension %r: best-effort shutdown after failed "
+                    "initialize also failed",
+                    getattr(ext, "name", "<unknown>"),
+                    exc_info=True,
+                )
+            return False
+        return True
+
+    def _load_extension_instances(self, config: PersonaConfig) -> list[Any]:
         extensions: list[Any] = []
         for ext_def in config.extensions:
             module_name = ext_def["module"]
@@ -327,6 +446,25 @@ def _install_health_check_conformance_guard(ext: Any) -> None:
             "could not install health_check guard on extension %r",
             getattr(ext, "name", "<unknown>"),
         )
+
+
+async def _call_optional_hook(ext: Any, hook_name: str) -> None:
+    """Invoke an optional lifecycle hook on ``ext``, tolerantly.
+
+    Per extension-lifecycle design D1/D2: hooks are documented-optional
+    (a ``typing.Protocol`` cannot carry defaults, and requiring them
+    would break ``isinstance`` for structural private-submodule
+    extensions), so absence is a no-op. A present hook is called and
+    its result awaited only when awaitable — a synchronous hook on an
+    out-of-tree extension is accepted. Exceptions propagate to the
+    caller, which owns the failure policy.
+    """
+    hook = getattr(ext, hook_name, None)
+    if not callable(hook):
+        return
+    result = hook()
+    if inspect.isawaitable(result):
+        await result
 
 
 def _env(var_name: str | None) -> str:
