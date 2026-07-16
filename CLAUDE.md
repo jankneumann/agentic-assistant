@@ -161,14 +161,16 @@ See `openspec/roadmap.md` for the full sequence. Notable gaps:
   when the work machine is available. Until then no persona enables
   the four MS extensions.
 - **Model routing is live through the ModelProvider seam** (P19
-  `model-provider-routing`): both SDK harnesses resolve their chat
-  model via `CapabilitySet.models` (slot #6) and per-consumer bindings
-  (`core/capabilities/model_bindings.py`) instead of raw
-  `harnesses.<name>.model` strings — `RegistryModelProvider` when the
-  persona declares a `models:` registry (tag-filtered, ordered
-  fallback chains, OpenRouter-mirrored catalog metadata),
-  `StaticModelProvider` passthrough otherwise, so existing persona
-  configs behave identically. Every binding is budget-gated via
+  `model-provider-routing`, registry-only per owner review verdict
+  #3): both SDK harnesses resolve their chat model via
+  `CapabilitySet.models` (slot #6) and per-consumer bindings
+  (`core/capabilities/model_bindings.py`). The persona `models:`
+  registry (`entries:` + consumer `bindings:`; tag-filtered, ordered
+  fallback chains, OpenRouter-mirrored catalog metadata) is the ONLY
+  model-selection mechanism — the legacy `harnesses.<name>.model`
+  strings are gone; personas without a `models:` section resolve
+  against a registry synthesized from the built-in harness defaults
+  (`default_model_registry`). Every binding is budget-gated via
   `GuardrailProvider.check_action(action_type="model_call")` (allow-all
   today) and API keys resolve through the `CredentialProvider` seam
   (env backend today). Still deferred: OpenRouter catalog **sync**

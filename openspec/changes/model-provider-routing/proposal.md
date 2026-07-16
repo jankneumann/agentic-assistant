@@ -25,10 +25,11 @@ This change implements them.
   `src/assistant/core/capabilities/models.py`: `ModelRef` (5-dialect
   closed vocabulary, credential ref, capability tags,
   OpenRouter-mirrored pricing/context/modalities), `ModelRequest`,
-  runtime-checkable `ModelProvider` protocol, `StaticModelProvider`
-  (persona per-harness `model` string → single-entry chain),
+  runtime-checkable `ModelProvider` protocol,
   `HostProvidedModelProvider`, and `RegistryModelProvider` (persona
-  `models:` registry with tag filtering + ordered fallback chains).
+  `models:` registry — `entries:` + consumer `bindings:` — with
+  binding-first resolution, tag filtering, and ordered fallback
+  chains).
 - **Implement the `credential-provider` capability** in
   `src/assistant/core/capabilities/credentials.py`:
   `CredentialProvider` protocol + `EnvCredentialProvider` preserving
@@ -43,23 +44,36 @@ This change implements them.
   `GuardrailProvider.check_action(action_type="model_call")`.
 - **Resolver slot #6 wiring**: `CapabilitySet.models`,
   `model_factory` override, host → `HostProvidedModelProvider`,
-  sdk → `RegistryModelProvider` when the persona declares `models:`,
-  else `StaticModelProvider`.
-- **Persona registry validation**: `models:` parsed + validated at
-  persona load (unknown dialect / out-of-vocabulary tag / dangling
-  fallback fail with an actionable error); commented example in
+  sdk → `RegistryModelProvider` always — backed by the persona's
+  `models:` registry when declared, else by a default registry
+  synthesized from the known harness defaults.
+- **Registry-only model selection (owner review verdict #3,
+  2026-07-16)**: the `models:` registry is the ONLY model-selection
+  mechanism. The legacy `harnesses.<name>.model` config strings and
+  the `StaticModelProvider` backward-compat path are deleted — a
+  breaking config change accepted because no working personas exist
+  yet (Churn Rule: pay the migration cost now, while it is zero).
+- **Persona registry validation**: `models:` (`entries:` +
+  `bindings:`) parsed + validated at persona load (unknown dialect /
+  out-of-vocabulary tag / dangling fallback / binding to an
+  undeclared entry fail with an actionable error; the old flat shape
+  is rejected with a pointer to the new one); commented example in
   `personas/_template/persona.yaml`.
 - **Harness integration**: both SDK harnesses consume
-  `capabilities.models` + binding instead of raw config strings;
-  persona-configured behavior is preserved via `StaticModelProvider`.
+  `capabilities.models` + binding instead of raw config strings,
+  resolving via `ModelRequest(consumer=<harness name>)` against the
+  registry's consumer bindings.
 - **Cost attribution**: `@traced_harness` spans carry the resolved
   ref's name, dialect, and a `cost_usd` computed from
   OpenRouter-shaped pricing × reported token counts (omitted, never
   guessed, when pricing is absent).
 - **Spec deltas (this change)**: a `model_id` wire-identifier
   refinement on `ModelRef`, deny-safe handling of
-  `require_confirmation` until the approval interrupt flow lands, and
-  the capability-resolver registry-selection refinement replacing the
+  `require_confirmation` until the approval interrupt flow lands,
+  registry-only selection (MODIFIED "Persona Model Registry" +
+  "ModelProvider Protocol", REMOVED "Default Model Providers", ADDED
+  "Registry-Only Model Selection" + "Host-Provided Model Provider"),
+  and the capability-resolver refinement replacing the
   "StaticModelProvider until P19" placeholder scenario.
 
 ## Out of Scope
@@ -77,8 +91,13 @@ This change implements them.
 
 ## Impact
 
-- Affected specs: `model-provider` (ADDED refinements),
+- Affected specs: `model-provider` (ADDED refinements + MODIFIED
+  registry/protocol requirements + REMOVED "Default Model Providers"),
   `capability-resolver` (MODIFIED requirement).
+- **Breaking (accepted)**: personas configuring
+  `harnesses.<name>.model` or the flat `models:` entry map must move
+  to `models: {entries:, bindings:}` — no working personas exist yet,
+  so the migration set is empty.
 - Affected code: `src/assistant/core/capabilities/{models,credentials,
   model_bindings,types,resolver}.py`, `src/assistant/core/persona.py`,
   `src/assistant/harnesses/sdk/{deep_agents,ms_agent_fw}.py`,

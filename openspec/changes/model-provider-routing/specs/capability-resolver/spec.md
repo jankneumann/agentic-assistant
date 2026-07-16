@@ -8,22 +8,26 @@ The system SHALL provide a `CapabilityResolver` with a
 `resolve(persona: PersonaConfig, harness_type: str, role: RoleConfig)
 → CapabilitySet` method that assembles capability implementations —
 including the slot #6 `ModelProvider` — based on harness type. For
-SDK harnesses the resolver SHALL select the models slot from the
-persona configuration: a `RegistryModelProvider` when the persona
-declares a non-empty `models:` registry, and the `StaticModelProvider`
-default (wrapping the per-harness `model` config string) otherwise.
+SDK harnesses the resolver SHALL always select a
+`RegistryModelProvider` for the models slot: backed by the persona's
+validated `models:` registry when it declares at least one entry, and
+by the default registry synthesized from the known per-harness
+default models otherwise (registry-only — no per-harness `model`
+config string is consulted).
 
 #### Scenario: SDK harness resolves concrete providers
 
-- **WHEN** `resolve(persona, "sdk", role)` is called
+- **WHEN** `resolve(persona, "sdk", role)` is called for a persona
+  that declares no `models:` registry
 - **THEN** the returned `CapabilitySet.guardrails` MUST be an
   `AllowAllGuardrails` instance (stub)
 - **AND** `CapabilitySet.sandbox` MUST be a `PassthroughSandbox`
   instance (stub)
 - **AND** `CapabilitySet.memory` MUST be a `FileMemoryPolicy` instance
 - **AND** `CapabilitySet.tools` MUST be a `DefaultToolPolicy` instance
-- **AND** `CapabilitySet.models` MUST be a `StaticModelProvider`
-  instance when the persona declares no `models:` registry
+- **AND** `CapabilitySet.models` MUST be a `RegistryModelProvider`
+  backed by the synthesized default registry, whose bindings map each
+  known harness name to that harness's default entry
 
 #### Scenario: SDK harness with a models registry gets the registry provider
 
