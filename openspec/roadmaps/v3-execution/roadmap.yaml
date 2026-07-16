@@ -27,7 +27,7 @@ items:
       - Quality gates green (pytest, ruff, mypy src tests)
   - item_id: P24
     title: capability-protocols-v2
-    status: approved
+    status: in_progress
     priority: 2
     effort: M
     change_id: capability-protocols-v2
