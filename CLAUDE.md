@@ -48,6 +48,12 @@ uv run assistant serve -p personal -r coder        # AG-UI SSE server (loopback 
 uv run pytest tests/
 scripts/verify-public-tests-standalone.sh          # verifies privacy boundary
 
+# Simulation + eval loop (P27)
+uv run assistant simulate                          # fixture-backed tool simulator (127.0.0.1:8901);
+                                                   # prints the SIM_*_URL / ASSISTANT_PERSONAS_DIR exports
+evaluation/run-gate.sh                             # eval gate: gen-eval suites vs the sim persona
+                                                   # (SKIPs cleanly without the tools-repo checkout)
+
 # OpenSpec workflow
 openspec list                                      # in-progress changes
 openspec list --specs                              # current specs
@@ -84,6 +90,31 @@ openspec show <change-id>
 2. Edit `roles/newrole/role.yaml` and `prompt.md`
 3. Optional: add persona-specific overrides in private repos at
    `personas/<persona>/roles/newrole.yaml`
+
+## Simulation & Eval Loop (P27)
+
+The eval feedback loop lives in two places:
+
+- `src/assistant/simulation/` — fixture-backed simulator
+  (`assistant simulate`) serving per-source `/openapi.json` mock tool
+  endpoints from `routes.yaml` manifests, consumed by the EXISTING
+  http_tools discovery (simulation = persona config + env vars, zero
+  new agent code paths); plus the offline interaction→scenario-stub
+  export behind `assistant export-eval-dataset`.
+- `evaluation/simulation/` — the public **sim persona**
+  (`ASSISTANT_PERSONAS_DIR=evaluation/simulation/personas`), the seed
+  corpus (`sources/`, operation ids in lockstep with
+  `roles/*/role.yaml` preferred_tools — a public test enforces this),
+  and the gen-eval scenario suites (`scenarios/`).
+
+`evaluation/run-gate.sh` is the eval gate consumed by P28 and by
+prompt/routing config changes: it shells out to the external gen-eval
+project (ADR 0006 — never a dependency), exits nonzero on scenario
+failure, and SKIPs with exit 0 when the `agentic-coding-tools`
+checkout is absent (`EVAL_GATE_REQUIRE=1` makes that fatal). Exported
+dataset stubs land git-ignored in `evaluation/datasets/exported/` and
+need human completion before promotion into a suite — self-improvement
+is propose → eval → human-approved diff, never self-merge.
 
 ## OpenSpec Workflow
 
