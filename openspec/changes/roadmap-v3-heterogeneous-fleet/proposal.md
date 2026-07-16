@@ -72,6 +72,14 @@ operating environment, documented in the 2026-07-07 architecture review
   lessons from AgentCore/LangGraph/Codex/Claude Code/Pi/OpenClaw.
   Roadmap gains guiding principle 7; P24 gains the approval
   interrupt/resume contract; P19/P25 descriptions sharpened.
+- **2026-07-16 amendment 3 (human-seam channels + reuse policy)**: the
+  approval contract is channel-agnostic (MCP-elicitation-shaped
+  `ApprovalRequest`; AG-UI, then email/messaging via existing
+  extensions; A2A `input-required` on served surfaces), and the
+  protocol-standards doc gains Part C — the cross-repo reuse policy
+  (share contracts/data/stateful services, duplicate stateless
+  mechanism; ACA consumed as tools, P19 shares catalog schema with
+  agentic-coding-tools' cost-aware routing).
 
 ## What Does NOT Change
 

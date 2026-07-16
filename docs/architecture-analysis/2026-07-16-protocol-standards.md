@@ -29,6 +29,7 @@ mapping, not a rewrite.** Placeholders are marked ⧗.
 | Memory | ⧗ none converged | Own `MemoryPolicy` (P2/P21) | Keep ours. Expose read paths as MCP resources (free interop); watch AgentCore Memory / Letta-style APIs as candidate shapes |
 | Sandbox config | ⧗ none converged (OCI is the packaging substrate) | Own `SandboxConfig` (P24 planes) | Adopt **Codex's policy vocabulary** as the FS plane's named levels (`read-only` / `workspace-write` / `full-access`) + explicit network on/off — proven, human-legible; compiles to Docker/OpenShell/E2B backends |
 | Evals | ⧗ none converged | gen-eval (adopted 2026-05-21) | Keep gen-eval scenario YAML as the placeholder format (P27) |
+| Human seam (approvals, feedback, input) | **MCP elicitation** (when consumed as MCP server), **A2A `input-required` task state** (A2A surface), **AG-UI** events (own UI) | P24 contract 6 | One internal `ApprovalRequest`/decision shape mirroring MCP's elicitation schema; **channels are transports** that render it and capture the decision — AG-UI first, then email via existing extensions (Outlook code-complete, Gmail in P14; decision returns as reply or signed link), messaging later (P29 Channel binding). Checkpointed suspend makes hours-long email round-trips safe. Nothing new is invented except the internal shape and per-channel rendering |
 
 ## B. Lessons from ecosystem decompositions
 
@@ -117,7 +118,42 @@ the slot architecture is right. Specific takeaways:
   session registry (create/lookup/expire by `thread_id`) or the P7
   daemon and P6 A2A server cannot multiplex users/tasks.
 
-## C. Consequences folded into the roadmap
+## C. Cross-repo reuse policy (assistant ↔ agentic-coding-tools ↔ agentic-content-analyzer)
+
+Code generation has made *writing* code nearly free; it has not made
+*divergence* free. Policy (candidate ADR under X3):
+
+**Share contracts, data, and stateful services. Freely duplicate
+stateless mechanism.**
+
+- **Always share (drift here is a bug):**
+  - *Stateful services* — `agentic-content-analyzer` owns its
+    index/database and stays one service. It is consumed as tools:
+    today via OpenAPI `http_tools` discovery (already wired — teacher
+    role, P8 vault endpoints), via MCP whenever ACA grows an MCP
+    surface. The P24 ToolSpec compiler makes OpenAPI-vs-MCP a
+    non-decision — both compile to the same internal shape, so no
+    migration pressure exists.
+  - *Schemas & vocabularies* — the model-catalog format (OpenRouter
+    `/models` mirror), capability-tag vocabulary, pricing data, eval
+    finding schemas. One source (or duplicated files + a conformance
+    test), consumed by both this repo's P19 router and
+    `agentic-coding-tools`' cost-aware routing.
+  - *Security-critical logic* — sanitization/redaction rules (P26
+    reuses `telemetry/sanitize.py`; if ACT needs the same, share the
+    ruleset as data, not a library).
+- **Freely duplicate (regenerate targeted at the problem):** routers,
+  retry wrappers, adapters, glue. ACT's cost-aware router solves
+  vendor/tool routing for coding tasks; P19 solves per-persona
+  chat/embedding model routing. Port the *design decisions*, write the
+  code fresh. Two divergent implementations are fine when two divergent
+  *answers* are fine.
+- **Avoid cross-repo library imports** — the `gen-eval` path dependency
+  (`[tool.uv.sources]`, finding H3) already demonstrates the cost:
+  broken standalone clones. Libraries are the worst of both worlds here
+  (coupling without a service boundary); prefer a service or a schema.
+
+## D. Consequences folded into the roadmap
 
 1. New roadmap guiding principle: **standards-first seams** (matrix
    above; placeholders must be migration-shaped).
@@ -130,3 +166,12 @@ the slot architecture is right. Specific takeaways:
    semantic conventions.
 5. P25 models inbound vs outbound auth explicitly (AgentCore lesson).
 6. Sandbox FS plane adopts Codex's named policy levels.
+7. P24 contract 6 is **channel-agnostic**: `ApprovalRequest` mirrors MCP
+   elicitation; AG-UI renders it first; email (Outlook/Gmail
+   extensions) and messaging channels follow; A2A `input-required` and
+   MCP elicitation represent it on the served surfaces.
+8. Cross-repo reuse policy (Part C) becomes an ADR under X3; P19 shares
+   the catalog schema + pricing data with `agentic-coding-tools`'
+   cost-aware routing but not its code; ACA remains a service consumed
+   as tools (OpenAPI today, MCP when available — same ToolSpec either
+   way).

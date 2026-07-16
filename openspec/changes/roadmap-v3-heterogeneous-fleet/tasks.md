@@ -45,6 +45,18 @@
       P19 catalog mirrors OpenRouter `/models` schema; P25 models
       inbound vs outbound auth
 
+## 2c. Human-seam channels + cross-repo reuse (2026-07-16)
+
+- [x] 2c.1 Human seam made channel-agnostic: `ApprovalRequest` mirrors
+      MCP elicitation; AG-UI → email (Outlook/Gmail extensions) →
+      messaging transports; A2A `input-required` / MCP elicitation on
+      served surfaces (protocol-standards matrix row + P24/P29 rows)
+- [x] 2c.2 Cross-repo reuse policy (Part C of protocol-standards doc):
+      share contracts/data/stateful services (ACA stays a service
+      consumed as tools; P19 shares catalog schema + pricing with
+      agentic-coding-tools), duplicate stateless mechanism; ADR
+      candidate added to X3
+
 ## 3. Validation & handoff
 
 - [x] 3.1 `openspec validate roadmap-v3-heterogeneous-fleet --strict`
