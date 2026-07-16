@@ -1,0 +1,53 @@
+# Simulation persona (P27 eval-simulation-loop) — PUBLIC, safe to commit.
+#
+# FIXTURE_PERSONA_SENTINEL_v1-style public config: contains no private
+# data, no credentials, and no references to private submodule content.
+#
+# Home rationale (design.md D2): this persona lives under
+# evaluation/simulation/personas/ — NOT under the repo-root personas/
+# mount (that directory is reserved for private submodules; a public
+# `personas/_simulation/` would blur the execution-boundary rule and
+# `_`-prefixed dirs are skipped by PersonaRegistry.discover anyway) and
+# NOT under tests/fixtures/personas/ (that root is the privacy-guarded
+# public *test* corpus; this persona is a *runtime* eval surface).
+# Load it by pointing the registry at this directory:
+#
+#   export ASSISTANT_PERSONAS_DIR=evaluation/simulation/personas
+#
+# Tool-source base URLs resolve from SIM_*_URL env vars, which
+# `assistant simulate` prints when it starts the fixture-backed
+# simulator (default port 8901).
+
+name: sim
+display_name: "Simulation"
+
+# No database/graphiti/auth: the simulation boundary is tools-only.
+# Memory degrades to FileMemoryPolicy; export-eval-dataset is not
+# applicable to this persona (it has no interactions table).
+
+harnesses:
+  deep_agents:
+    enabled: true
+  ms_agent_framework:
+    enabled: false
+  claude_code:
+    enabled: true
+
+# No `models:` registry — resolves against the synthesized default
+# registry (P19 registry-only rules), same as the fixture persona.
+
+default_role: chief_of_staff
+disabled_roles: []
+
+tool_sources:
+  content_analyzer:
+    base_url_env: SIM_CONTENT_ANALYZER_URL
+    allowed_tools: []
+  coding_tools:
+    base_url_env: SIM_CODING_TOOLS_URL
+    allowed_tools: []
+  ms_graph:
+    base_url_env: SIM_MS_GRAPH_URL
+    allowed_tools: []
+
+extensions: []

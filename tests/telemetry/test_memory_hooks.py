@@ -145,6 +145,19 @@ async def test_store_interaction_emits_op_interaction_write(
 
 
 @pytest.mark.asyncio
+async def test_list_interactions_emits_op_interaction_list(
+    spy_and_manager: Any,
+) -> None:
+    spy, mgr, _ = spy_and_manager
+    await mgr.list_interactions("personal", limit=10)
+    calls = spy.calls["trace_memory_op"]
+    assert len(calls) == 1
+    assert calls[0]["op"] == "interaction_list"
+    assert calls[0]["target"] == "personal"
+    assert isinstance(calls[0]["duration_ms"], float)
+
+
+@pytest.mark.asyncio
 async def test_store_episode_emits_op_episode_write_no_double_count(
     spy_and_manager: Any,
 ) -> None:

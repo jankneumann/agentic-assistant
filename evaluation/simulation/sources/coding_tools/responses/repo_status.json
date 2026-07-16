@@ -1,0 +1,8 @@
+// FIXTURE_SIM_RESPONSE_v1
+{
+  "repo": "synthetic-org/synthetic-repo",
+  "branch": "main",
+  "clean": true,
+  "ahead": 0,
+  "behind": 0
+}

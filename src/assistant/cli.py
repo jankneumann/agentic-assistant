@@ -747,6 +747,156 @@ def downgrade(revision: str) -> None:
         sys.exit(1)
 
 
+@main.command()
+@click.option(
+    "--fixtures",
+    "-f",
+    type=click.Path(file_okay=False),
+    default="evaluation/simulation/sources",
+    show_default=True,
+    help="Fixtures root: one subdirectory per simulated source, each with "
+    "a routes.yaml manifest (or a single-source dir containing routes.yaml).",
+)
+@click.option("--host", type=str, default="127.0.0.1", help="Bind host (default: 127.0.0.1).")
+@click.option("--port", type=int, default=8901, help="Bind port (default: 8901).")
+def simulate(fixtures: str, host: str, port: int) -> None:
+    """Serve fixture-backed simulated tool APIs (simulation personas).
+
+    Starts a loopback FastAPI server whose per-source /openapi.json
+    endpoints are consumed by the existing http_tools discovery, so a
+    persona whose tool_sources point at the printed URLs runs the real
+    agent stack against deterministic canned responses.
+    """
+    try:
+        import uvicorn
+    except ImportError:
+        click.echo("Error: uvicorn/fastapi not installed. Run `uv sync`.", err=True)
+        sys.exit(1)
+
+    from assistant.simulation.server import (
+        discover_sources,
+        env_var_for_source,
+        make_simulator_app_from_sources,
+    )
+
+    fixtures_root = Path(fixtures)
+    try:
+        sources = discover_sources(fixtures_root)
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
+
+    app = make_simulator_app_from_sources(sources)
+
+    if host != "127.0.0.1" and not host.startswith("127."):
+        click.echo(
+            f"Warning: binding to non-loopback host '{host}'. "
+            "This exposes the simulator beyond localhost.",
+            err=True,
+        )
+
+    base = f"http://{host}:{port}"
+    click.echo(f"Simulator: {base}  (health: {base}/health)")
+    click.echo("Simulated tool sources:")
+    for source in sources:
+        click.echo(
+            f"  export {env_var_for_source(source.name)}={base}/{source.name}"
+            f"    # {len(source.routes)} operation(s)"
+        )
+    personas_dir = fixtures_root.parent / "personas"
+    if personas_dir.is_dir():
+        click.echo(f"  export ASSISTANT_PERSONAS_DIR={personas_dir}")
+        click.echo(
+            "\nThen, from another shell:  uv run assistant -p sim --list-tools"
+        )
+
+    try:
+        uvicorn.run(app, host=host, port=port)
+    except KeyboardInterrupt:
+        pass
+
+
+@main.command("export-eval-dataset")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.option(
+    "--role",
+    "-r",
+    type=str,
+    default=None,
+    help="Only export interactions recorded under this role.",
+)
+@click.option(
+    "--limit",
+    type=int,
+    default=20,
+    show_default=True,
+    help="Maximum number of interactions to export (newest first).",
+)
+@click.option(
+    "--output-dir",
+    "-o",
+    type=click.Path(file_okay=False),
+    default="evaluation/datasets/exported",
+    show_default=True,
+    help="Directory for the generated scenario stub files (created if "
+    "missing). Deliberately outside the gen-eval scenario_dirs — stubs "
+    "need human completion before promotion into a suite.",
+)
+def export_eval_dataset(
+    persona: str, role: str | None, limit: int, output_dir: str
+) -> None:
+    """Export stored interactions as gen-eval scenario YAML stubs.
+
+    Offline-first trace→eval-dataset export (P27): reads the persona
+    DB's interactions table via MemoryManager and writes one scenario
+    stub per interaction. Production regressions become permanent
+    tests once a human completes the stub's message + expectations.
+    """
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+
+    if not pc.database_url:
+        click.echo(
+            f"Error: persona '{persona}' has no database_url configured — "
+            "there are no stored interactions to export.",
+            err=True,
+        )
+        sys.exit(1)
+
+    from assistant.core.db import async_session_factory, create_async_engine
+    from assistant.core.graphiti import create_graphiti_client
+    from assistant.core.memory import MemoryManager
+    from assistant.simulation.dataset import (
+        dump_scenario_yaml,
+        interactions_to_scenarios,
+        scenario_filename,
+    )
+
+    engine = create_async_engine(pc)
+    session_fac = async_session_factory(engine)
+    graphiti = create_graphiti_client(pc)
+    mgr = MemoryManager(session_fac, graphiti_client=graphiti)
+
+    interactions = asyncio.run(
+        mgr.list_interactions(pc.name, role=role, limit=limit)
+    )
+    if not interactions:
+        click.echo("No stored interactions matched — nothing to export.")
+        return
+
+    scenarios = interactions_to_scenarios(pc.name, interactions)
+    out_root = Path(output_dir)
+    out_root.mkdir(parents=True, exist_ok=True)
+    for scenario in scenarios:
+        out_path = out_root / scenario_filename(scenario)
+        out_path.write_text(dump_scenario_yaml(scenario), encoding="utf-8")
+        click.echo(f"  wrote {out_path}")
+    click.echo(
+        f"\nExported {len(scenarios)} scenario stub(s) to {out_root}. "
+        "Complete each stub (message + expectations) before promoting it "
+        "into a scenario suite."
+    )
+
+
 @main.command("export-memory")
 @click.option("--persona", "-p", type=str, required=True, help="Persona name.")
 def export_memory(persona: str) -> None:

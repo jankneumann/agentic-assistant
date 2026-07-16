@@ -36,6 +36,7 @@ _VALID_OPS: frozenset[str] = frozenset(
         "snippets",
         "fact_write",
         "interaction_write",
+        "interaction_list",
         "episode_write",
         "search",
         "export",

@@ -1,0 +1,55 @@
+# Simulated content-analyzer (ACA) tool source (P27 eval-simulation-loop).
+#
+# Operation ids match the `content_analyzer:*` names that
+# roles/{chief_of_staff,researcher,teacher,planner}/role.yaml declare in
+# preferred_tools, so DefaultToolPolicy admits these tools for every
+# role that binds to the real ACA service.
+name: content_analyzer
+title: "Simulated Content Analyzer"
+version: "0.1.0"
+
+routes:
+  - operation_id: search
+    method: GET
+    path: /search
+    summary: "Search indexed content"
+    response_file: responses/search.json
+    parameters:
+      - name: query
+        description: "Free-text search query"
+        required: true
+      - name: limit
+        description: "Maximum number of results"
+        required: false
+
+  - operation_id: knowledge_graph
+    method: GET
+    path: /knowledge-graph
+    summary: "Query the knowledge graph"
+    response_file: responses/knowledge_graph.json
+    parameters:
+      - name: entity
+        description: "Entity to expand"
+        required: false
+
+  - operation_id: daily_digest
+    method: GET
+    path: /digest/daily
+    summary: "Get the daily content digest"
+    response_file: responses/daily_digest.json
+
+  - operation_id: weekly_digest
+    method: GET
+    path: /digest/weekly
+    summary: "Get the weekly content digest"
+    response_file: responses/weekly_digest.json
+
+  - operation_id: newsletter_archive
+    method: GET
+    path: /newsletters
+    summary: "Browse the newsletter archive"
+    response_file: responses/newsletter_archive.json
+    parameters:
+      - name: query
+        description: "Filter newsletters by free text"
+        required: false

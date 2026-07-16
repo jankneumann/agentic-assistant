@@ -1,0 +1,8 @@
+// FIXTURE_SIM_RESPONSE_v1
+{
+  "date": "2026-07-16",
+  "items": [
+    {"title": "Synthetic daily item one", "summary": "Synthetic summary one."},
+    {"title": "Synthetic daily item two", "summary": "Synthetic summary two."}
+  ]
+}

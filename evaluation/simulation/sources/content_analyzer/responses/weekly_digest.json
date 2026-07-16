@@ -1,0 +1,7 @@
+// FIXTURE_SIM_RESPONSE_v1
+{
+  "week_of": "2026-07-13",
+  "items": [
+    {"title": "Synthetic weekly item", "summary": "Synthetic weekly summary."}
+  ]
+}

@@ -176,6 +176,44 @@ class MemoryManager:
             session.add(interaction)
             await session.commit()
 
+    @trace_memory_op("interaction_list")
+    async def list_interactions(
+        self,
+        persona: str,
+        role: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Return recent interaction records as JSON-safe dicts.
+
+        Consumed by ``assistant export-eval-dataset`` (P27
+        eval-simulation-loop) to turn the post-turn capture stream into
+        gen-eval scenario stubs. Newest first; optionally filtered by
+        ``role``.
+        """
+        if limit <= 0:
+            return []
+        async with self._session_factory() as session:
+            stmt = select(Interaction).where(Interaction.persona == persona)
+            if role is not None:
+                stmt = stmt.where(Interaction.role == role)
+            stmt = stmt.order_by(Interaction.created_at.desc()).limit(limit)
+            result = await session.execute(stmt)
+            interactions = result.scalars().all()
+        return [
+            {
+                "id": i.id,
+                "role": i.role,
+                "summary": i.summary,
+                "created_at": (
+                    i.created_at.isoformat()
+                    if isinstance(i.created_at, datetime)
+                    else (str(i.created_at) if i.created_at else None)
+                ),
+                "metadata": i.metadata_ or {},
+            }
+            for i in interactions
+        ]
+
     @trace_memory_op("episode_write")
     async def store_episode(
         self, persona: str, content: str, source: str
