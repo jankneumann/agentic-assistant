@@ -59,14 +59,14 @@ items:
     depends_on: []
   - item_id: P27
     title: eval-simulation-loop
-    status: candidate
+    status: in_progress
     priority: 5
     effort: L
     change_id: eval-simulation-loop
     depends_on: []
   - item_id: P10
     title: extension-lifecycle
-    status: candidate
+    status: in_progress
     priority: 6
     effort: M
     change_id: extension-lifecycle
