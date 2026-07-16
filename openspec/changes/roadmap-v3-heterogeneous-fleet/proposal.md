@@ -80,6 +80,16 @@ operating environment, documented in the 2026-07-07 architecture review
   (share contracts/data/stateful services, duplicate stateless
   mechanism; ACA consumed as tools, P19 shares catalog schema with
   agentic-coding-tools' cost-aware routing).
+- **2026-07-16 amendment 4 (model seam, OpenBao, feedback loop)**:
+  model seam generalized to `ModelProvider` → harness-neutral
+  `ModelRef` → per-consumer bindings (LangChain `init_chat_model`
+  demoted to the LangChain binding — MSAF cannot consume LangChain
+  models, and embeddings/summarization need no harness); P24 gains
+  contract 7 (`CredentialProvider` seam, env-var default) with OpenBao
+  (already operated for the coding coordinator) as P25's vault backend;
+  P28's improvement loop made source-agnostic (`FeedbackEvent` →
+  `ImprovementProposal` from human and machine sources, risk-tiered via
+  `RiskLevel` through the P24 approval gate).
 
 ## What Does NOT Change
 

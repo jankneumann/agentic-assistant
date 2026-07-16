@@ -57,6 +57,18 @@
       agentic-coding-tools), duplicate stateless mechanism; ADR
       candidate added to X3
 
+## 2d. Model-seam generalization, OpenBao, feedback abstraction (2026-07-16)
+
+- [x] 2d.1 Generalize the model seam: `ModelProvider` → harness-neutral
+      `ModelRef` → per-consumer bindings (LangChain init_chat_model /
+      MSAF chat clients / raw OpenAI-compatible); principle 5, P19, P24
+      contract 1 updated
+- [x] 2d.2 OpenBao as the P25 vault backend behind a new P24 contract 7
+      `CredentialProvider` seam (env-var default impl; P13 note)
+- [x] 2d.3 P28 loop made source-agnostic: `FeedbackEvent` →
+      `ImprovementProposal` from human + machine sources, risk-tiered
+      via `RiskLevel` through the P24 approval gate
+
 ## 3. Validation & handoff
 
 - [x] 3.1 `openspec validate roadmap-v3-heterogeneous-fleet --strict`

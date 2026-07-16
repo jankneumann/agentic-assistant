@@ -21,10 +21,11 @@ mapping, not a rewrite.** Placeholders are marked ⧗.
 | Agent-facing tool protocol | **MCP** (tools/resources/prompts, JSON-RPC, streamable HTTP) | Planned (P17 server; P24 ToolSpec) | Internal `ToolSpec` = MCP tool schema shape (name, description, JSON-Schema input). OpenAPI-derived and extension tools compile into it; per-harness adapters render it native. Serving it over MCP (P17) becomes a transport, and MCP-speaking harnesses consume it directly |
 | Agent ↔ agent | **A2A** (Linux Foundation; agent cards, tasks, `message:stream`) | Planned (P6) | Keep as planned. Agent card is also where P25 authn declarations live (A2A uses standard HTTP auth schemes) |
 | Agent ↔ user UI | **AG-UI** (session/event channel) + **MCP-UI / MCP Apps** (tool-embedded UI) | AG-UI adopted (P14a); MCP-UI planned via P17/P29 | Two complementary layers: AG-UI is our session transport; MCP-UI/Apps is how tool results carry interactive UI when we're consumed *as* an MCP server. P29 multimodal parts follow AG-UI/MCP content-part types rather than inventing any |
-| Model calling (wire) | **OpenAI-compatible** (Chat Completions — lingua franca of OpenRouter, vLLM, Ollama, NIM), **Anthropic Messages**, **Gemini generateContent**, Bedrock/Vertex | Partially (LangChain `init_chat_model` seam) | Do not invent a wire protocol. Registry entries declare which dialect an endpoint speaks; `openai-compatible` alone covers OpenRouter + all local backends (GX10). LangChain adapters remain the in-process seam (P19) |
+| Model calling (wire) | **OpenAI-compatible** (Chat Completions — lingua franca of OpenRouter, vLLM, Ollama, NIM), **Anthropic Messages**, **Gemini generateContent**, Bedrock/Vertex | Partially (LangChain `init_chat_model` in DeepAgents only) | Do not invent a wire protocol. The in-process seam is the `ModelProvider` protocol resolving to a harness-neutral `ModelRef` (dialect, endpoint, credential ref, tags, pricing); **bindings** adapt it per consumer — LangChain `init_chat_model` (DeepAgents), `agent-framework` chat clients (MSAF), raw OpenAI-compatible client (direct calls: embeddings, summarization). `openai-compatible` alone covers OpenRouter + all local backends (GX10) |
 | Model *metadata* (capability tags, pricing) | ⧗ none converged | P19 catalog | Placeholder: mirror the **OpenRouter `/models` schema** (id, pricing, context length, modalities) as the catalog format so cloud entries can be synced verbatim and local entries hand-authored in the same shape |
 | Observability | **OpenTelemetry GenAI semantic conventions** | Langfuse provider (P4) | Harden: align span/attribute names to OTel GenAI semconv so the backend (Langfuse today, OpenLLMetry/other OTLP later) is swappable without touching call sites |
 | Auth (service surfaces) | **OAuth 2.1 + MCP authorization spec**; A2A card auth schemes | Planned (P25) | Standard exists for the *transport* auth. ⧗ Agent *identity* (persona×role×delegation-chain principal) has no converged standard — SPIFFE-like workload identity is the closest analogue; keep `AgentIdentity` as placeholder shaped for it |
+| Secrets & credential storage | **OpenBao** (Vault-compatible API; already operated as a service for the coding coordinator) | Planned (P25 backend; P24 contract 7 seam) | Reuse policy applied: share the stateful service. Per-persona policies/mounts, short-lived dynamic credentials, AppRole/JWT auth per agent principal, audit log. Fronted by a `CredentialProvider` seam whose default impl is the existing `_env()` indirection — a fresh clone (GX10) boots without a vault |
 | Skills packaging | **Agent Skills** (`SKILL.md` folder format) | Partially (roles carry skills dirs; deepagents + Claude Code both consume) | Adopt the open format for role skills so the same skill folders serve DeepAgents, Claude Code, Codex, and Gemini CLI without translation |
 | Memory | ⧗ none converged | Own `MemoryPolicy` (P2/P21) | Keep ours. Expose read paths as MCP resources (free interop); watch AgentCore Memory / Letta-style APIs as candidate shapes |
 | Sandbox config | ⧗ none converged (OCI is the packaging substrate) | Own `SandboxConfig` (P24 planes) | Adopt **Codex's policy vocabulary** as the FS plane's named levels (`read-only` / `workspace-write` / `full-access`) + explicit network on/off — proven, human-legible; compiles to Docker/OpenShell/E2B backends |
@@ -175,3 +176,14 @@ stateless mechanism.**
    cost-aware routing but not its code; ACA remains a service consumed
    as tools (OpenAPI today, MCP when available — same ToolSpec either
    way).
+9. The model seam is generalized from "LangChain `init_chat_model`" to
+   the `ModelProvider` → `ModelRef` → per-consumer-binding shape
+   (init_chat_model is the LangChain binding, not the seam) — MSAF
+   cannot consume LangChain model objects, and direct calls
+   (embeddings, summarization) need no harness at all.
+10. P24 gains contract 7: the `CredentialProvider` seam (env-var
+    default impl), with OpenBao as the P25 production backend.
+11. P28's loop is source-agnostic: `FeedbackEvent` →
+    `ImprovementProposal` from human *and* machine sources, risk-tiered
+    (`RiskLevel`) through the P24 approval gate — the human seam and
+    the learning gate are one mechanism.
