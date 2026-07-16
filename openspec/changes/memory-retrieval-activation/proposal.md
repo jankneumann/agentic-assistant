@@ -49,10 +49,12 @@ This phase activates the retrieval and capture loop:
    tell retrieval-for-prepend apart from `get_context`.
 
 3. **`PostgresGraphitiMemoryPolicy.get_recent_snippets`** — replaces
-   the `return []` stub with a sync facade over the async manager (see
-   design.md D1 for the bridge). Any backend failure returns `[]` with
-   a WARNING. `export_memory_context` is refactored onto the same
-   `_run_blocking` helper.
+   the `return []` stub with an async method awaiting the manager
+   directly; the protocol method is async per the
+   capability-protocols-v2 owner review verdict C8, 2026-07-16 (see
+   design.md D1). Any backend failure returns `[]` with a WARNING.
+   `export_memory_context` stays sync (true sync edge: host export /
+   CLI export) and is refactored onto the `_run_blocking` helper.
 
 4. **`FileMemoryPolicy.get_recent_snippets`** — returns the persona's
    `memory.md` split into `## ` sections, most recent (last) section
@@ -83,8 +85,8 @@ This phase activates the retrieval and capture loop:
    path, empty-DB path, Graphiti-down degradation, budget split, file
    policy bounds, DeepAgents prompt injection (present / absent),
    capture on success, capture swallowed on failure, no capture on
-   agent failure, sync/async bridge from inside and outside a running
-   loop.
+   agent failure, sync/async bridge at the sync export edge from
+   inside and outside a running loop.
 
 9. **Docs** — CLAUDE.md "What's Not Yet Wired" MSAF/memory bullet
    rewritten to reflect the new reality.

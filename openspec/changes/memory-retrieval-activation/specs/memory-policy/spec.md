@@ -7,15 +7,21 @@
 The system SHALL define a `MemoryPolicy` runtime-checkable Protocol
 with the methods `resolve(persona: PersonaConfig, harness_name: str) →
 MemoryConfig`, `export_memory_context(persona: PersonaConfig) → str`,
-`get_recent_snippets(persona, role, *, limit: int = 10) → list[str]`,
-and `async record_interaction(persona, role, *, user_message: str,
-response: str) → None`.
+`async get_recent_snippets(persona, role, *, limit: int = 10) →
+list[str]`, and `async record_interaction(persona, role, *,
+user_message: str, response: str) → None`.
 
-`get_recent_snippets` returns up to `limit` short memory snippets for
-prompt prepend; implementations MUST degrade to `[]` on backend
-failure rather than raising. `record_interaction` persists a completed
-turn to the policy's backend (best effort); policies without a
-per-turn write path MUST implement it as a no-op.
+`get_recent_snippets` is async at the protocol level (owner review
+verdict C8, 2026-07-16): consumers on async paths — SDK harness prompt
+composition at `create_agent` time — MUST await it directly on the
+running event loop, and synchronous callers (host-harness export, CLI
+export) MUST bridge at their own edge rather than relying on a
+sync-to-async bridge inside policy implementations. It returns up to
+`limit` short memory snippets for prompt prepend; implementations MUST
+degrade to `[]` on backend failure rather than raising.
+`record_interaction` persists a completed turn to the policy's backend
+(best effort); policies without a per-turn write path MUST implement
+it as a no-op.
 
 #### Scenario: Stub implementation satisfies Protocol
 
@@ -29,6 +35,13 @@ per-turn write path MUST implement it as a no-op.
 - **WHEN** `FileMemoryPolicy`, `PostgresGraphitiMemoryPolicy`, or
   `HostProvidedMemoryPolicy` is instantiated
 - **THEN** `isinstance(instance, MemoryPolicy)` MUST return `True`
+
+#### Scenario: Snippet retrieval is awaited on the async hot path
+
+- **WHEN** an SDK harness composes its prompt inside async
+  `create_agent`
+- **THEN** `get_recent_snippets` MUST be awaited directly on the
+  running event loop with no intermediate sync-to-async bridge
 
 ## ADDED Requirements
 
@@ -92,29 +105,20 @@ separate span for the internal Graphiti call.
 
 The system SHALL implement
 `PostgresGraphitiMemoryPolicy.get_recent_snippets(persona, role, *,
-limit=10)` as a synchronous facade over
-`MemoryManager.get_recent_snippets`. When called with no running event
-loop it MUST execute via `asyncio.run`; when called from inside a
-running event loop it MUST execute the coroutine on a worker thread
-with its own event loop and block on the result. Any retrieval failure
-MUST degrade to `[]` with a `logging.WARNING`-level message including
-the persona name — a down memory backend MUST NOT break agent
-construction.
+limit=10)` as an async method that awaits
+`MemoryManager.get_recent_snippets` directly on the caller's event
+loop, with no intermediate sync-to-async bridge (owner review verdict
+C8, 2026-07-16). Any retrieval failure MUST degrade to `[]` with a
+`logging.WARNING`-level message including the persona name — a down
+memory backend MUST NOT break agent construction.
 
-#### Scenario: Returns manager snippets outside an event loop
+#### Scenario: Returns manager snippets
 
-- **WHEN** `get_recent_snippets(persona, role, limit=5)` is called
-  from synchronous code and the manager returns `["a", "b"]`
+- **WHEN** `get_recent_snippets(persona, role, limit=5)` is awaited
+  and the manager returns `["a", "b"]`
 - **THEN** the call MUST return `["a", "b"]`
-- **AND** the manager MUST be invoked with the persona name, the role
+- **AND** the manager MUST be awaited with the persona name, the role
   name, and `limit=5`
-
-#### Scenario: Bridges from inside a running event loop
-
-- **WHEN** `get_recent_snippets(...)` is called from a coroutine
-  executing on a running event loop
-- **THEN** the call MUST return the manager's snippets without
-  raising or deadlocking
 
 #### Scenario: Backend failure degrades to empty list
 
@@ -126,9 +130,9 @@ construction.
 ### Requirement: FileMemoryPolicy Recent Snippets
 
 The system SHALL implement
-`FileMemoryPolicy.get_recent_snippets(persona, role, *, limit=10)` to
-return bounded excerpts of the persona's `memory.md` content
-(`persona.memory_content`). The content MUST be split into `## `
+`FileMemoryPolicy.get_recent_snippets(persona, role, *, limit=10)` as
+an async method returning bounded excerpts of the persona's
+`memory.md` content (`persona.memory_content`). The content MUST be split into `## `
 sections (content before the first heading, or heading-free content,
 forms a single section) and returned most-recent-first, treating later
 sections as more recent. The result MUST contain at most `limit`

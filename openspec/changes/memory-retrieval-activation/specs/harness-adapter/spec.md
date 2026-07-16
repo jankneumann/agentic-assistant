@@ -7,10 +7,12 @@
 The `DeepAgentsHarness` SHALL inject the persona's recent memory
 snippets into the `system_prompt` passed to `create_deep_agent` at
 `create_agent` time, achieving parity with the MSAF harness's D27
-prepend. The harness SHALL request snippets via the configured
+prepend. The harness SHALL await the configured async
 `MemoryPolicy.get_recent_snippets(persona, role, limit=N)` (N defaults
 to 10; overridable via the `memory_snippet_limit` constructor kwarg)
-and SHALL prepend the result under a `## Recent context` heading ahead
+directly on the `create_agent` event loop (owner review verdict C8,
+2026-07-16 — no sync-to-async bridge on the hot path) and SHALL
+prepend the result under a `## Recent context` heading ahead
 of the composed system prompt. The policy is resolved via
 `CapabilityResolver` (SDK tier) unless a `memory_policy` constructor
 kwarg is injected. When the policy returns an empty list, the

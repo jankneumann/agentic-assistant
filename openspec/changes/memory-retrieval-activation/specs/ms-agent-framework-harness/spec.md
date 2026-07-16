@@ -6,9 +6,11 @@
 
 The system SHALL inject the persona's recent memory snippets into the
 constructed `Agent`'s `instructions` parameter at `create_agent`
-time. The harness SHALL request the snippets via the configured
+time. The harness SHALL await the configured async
 `MemoryPolicy.get_recent_snippets(persona, role, limit=N)` (where N
-defaults to 10), and SHALL prepend the resulting text block to the
+defaults to 10) directly on the `create_agent` event loop (owner
+review verdict C8, 2026-07-16 — no sync-to-async bridge on the hot
+path), and SHALL prepend the resulting text block to the
 composed system prompt under a clearly demarcated section heading
 (`## Recent context`). When the persona has no `MemoryPolicy`
 configured, or the policy returns an empty list, no section MUST be

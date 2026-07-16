@@ -1,45 +1,49 @@
 # Design: memory-retrieval-activation
 
-## D1. Async/sync bridge for the sync `MemoryPolicy` protocol
+## D1. Async retrieval at the protocol level; bridge only at sync edges
 
-`MemoryPolicy.get_recent_snippets` is synchronous (protocol shape fixed
-in P1.8/P5) while `MemoryManager` is async. The call site is the sync
-`_compose_*` helper invoked from the **async** `create_agent` path, so
-"there is a running event loop" is the hot path, not the edge case.
+**As amended by the capability-protocols-v2 (P24) owner review verdict
+C8, 2026-07-16.** The original P21 design kept
+`MemoryPolicy.get_recent_snippets` synchronous (protocol shape fixed
+in P1.8/P5) and bridged to the async `MemoryManager` with a
+`_run_blocking` helper (worker-thread `asyncio.run` when a loop was
+already running). The owner review rejected that trade: the call site
+is the `_compose_*` helper on the **async** `create_agent` path, so
+the worker-thread bridge sat on the hot path — a fresh event loop per
+call (defeating asyncpg pool reuse), a blocked running loop, and a
+sync protocol shape that P19+ consumers would have built on.
 
-Chosen bridge (`_run_blocking` in
-`src/assistant/core/capabilities/memory.py`):
+Final shape:
 
-- **No running loop** (sync CLI setup, sync tests): `asyncio.run(coro)`.
-- **Inside a running loop**: submit `asyncio.run(coro)` to a
-  single-worker `ThreadPoolExecutor` and block on `.result()`. Calling
-  `loop.run_until_complete` on the already-running loop would raise /
-  deadlock; the worker thread runs the coroutine on its own private
-  loop instead.
-
-Explicit consequences, accepted:
-
-- The worker-thread path creates a **fresh event loop per call**, so
-  loop-bound resources (asyncpg pooled connections in the cached
-  `AsyncEngine`) cannot be assumed reusable across calls. Retrieval is
-  therefore wrapped in a policy-level `try/except` that degrades to
-  `[]` with a WARNING — a cross-loop pool error is a degraded-memory
-  condition, never a fatal one. A loop-affine engine strategy (or
-  `NullPool` for policy reads) is a follow-up if real usage shows churn.
-- The call **blocks the running loop** for the duration of the DB
-  round-trip. This is a `create_agent`-time cost (once per session /
-  role switch), not a per-token cost; bounded queries (`LIMIT` on all
-  three tables) keep it small.
-- `export_memory_context` used the same pattern ad hoc
-  (`asyncio.get_event_loop()` + `is_running()`); it now shares
-  `_run_blocking`, which also removes the Python 3.12+
-  `get_event_loop()` deprecation exposure.
+- **`get_recent_snippets` is `async def` on the protocol and all
+  implementations.** `PostgresGraphitiMemoryPolicy` awaits
+  `MemoryManager.get_recent_snippets` directly on the caller's loop;
+  `FileMemoryPolicy` / `HostProvidedMemoryPolicy` are trivial async
+  defs. Both SDK harness composition helpers
+  (`MSAgentFrameworkHarness._compose_instructions`,
+  `DeepAgentsHarness._compose_system_prompt`) became async and are
+  awaited from `create_agent`.
+- **`_run_blocking` survives only for true sync edges** — today the
+  sync `export_memory_context`, consumed by host-harness
+  `export_context` and the CLI `export` command. Bridge at the edge,
+  never inside an implementation's retrieval path. Its two branches
+  are unchanged: `asyncio.run` off-loop; single-worker
+  `ThreadPoolExecutor` + `asyncio.run` on-loop (a fresh loop per call,
+  so loop-bound resources are not reusable there — acceptable for the
+  rare export path).
+- The policy-level `try/except` that degrades retrieval failures to
+  `[]` with a WARNING is retained unchanged — a down backend is a
+  degraded-memory condition, never a fatal one.
+- The former "bridges from inside a running event loop" test moved to
+  the sync edge (`export_memory_context` in
+  `tests/test_postgres_memory_policy.py`); the retrieval tests now
+  simply await the policy.
 
 Alternatives rejected:
 
-- **Make the protocol async**: touches every implementer and consumer
-  (including host-harness export paths) for no behavioral gain; the
-  P24 capability-protocols-v2 effort owns protocol-shape evolution.
+- **Keep the sync protocol + hot-path bridge** (original D1): rejected
+  by the P24 owner review — parallel phases (P19 model routing, P22)
+  must not inherit a sync seam that immediately needs re-widening.
 - **`asyncio.create_task` fire-and-forget retrieval**: retrieval MUST
   complete before the prompt is composed — it cannot be detached.
 

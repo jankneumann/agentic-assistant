@@ -16,9 +16,12 @@
 - [x] 2.1 Add `_run_blocking` sync/async bridge helper to
   `src/assistant/core/capabilities/memory.py` (design D1) and refit
   `PostgresGraphitiMemoryPolicy.export_memory_context` onto it.
+  *(Amended per P24 owner review verdict C8, 2026-07-16: the bridge
+  now serves only the sync export edge, not snippet retrieval.)*
 - [x] 2.2 Implement `PostgresGraphitiMemoryPolicy.get_recent_snippets`
-  — delegate to `MemoryManager.get_recent_snippets` through
-  `_run_blocking`; degrade to `[]` with WARNING on any failure.
+  — async method awaiting `MemoryManager.get_recent_snippets`
+  directly (protocol is async per P24 verdict C8); degrade to `[]`
+  with WARNING on any failure.
 - [x] 2.3 Implement `FileMemoryPolicy.get_recent_snippets` — reversed
   `## ` sections of `persona.memory_content`, capped at `limit`
   sections and `_FILE_SNIPPET_CHAR_BUDGET` (4000) chars (design D5).
@@ -54,9 +57,11 @@
 - [x] 4.3 `tests/test_memory_policy.py` — file policy: empty content,
   most-recent-first ordering, limit cap, char budget, no-headings
   fallback, no-op `record_interaction`.
-- [x] 4.4 `tests/test_postgres_memory_policy.py` — bridge from outside
-  and inside a running loop, backend-failure degradation to `[]`,
-  `record_interaction` delegation + bounded summary + propagation.
+- [x] 4.4 `tests/test_postgres_memory_policy.py` — awaited retrieval
+  happy path, backend-failure degradation to `[]`, bridge from
+  outside and inside a running loop at the sync `export_memory_context`
+  edge (P24 verdict C8), `record_interaction` delegation + bounded
+  summary + propagation.
 - [x] 4.5 `tests/test_harnesses.py` — DeepAgents prompt contains
   `## Recent context` with snippets, unchanged when empty, default
   file-policy no-injection, capture on success, capture failure

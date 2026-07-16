@@ -38,6 +38,11 @@ implementation code ships in this change.
   protocol, EnvCredentialProvider default (`_env()` semantics),
   all-secret-reads-through-the-seam; inbound/outbound noted as P25
   scope
+- [x] 1.10 specs/memory-policy/spec.md — MODIFIED: async
+  `get_recent_snippets` at the protocol level (owner review verdict
+  C8, 2026-07-16); requirement text kept identical to the open P21
+  memory-policy delta so archive order (P24 then P21) yields the
+  same spec
 
 ## 2. Validation
 

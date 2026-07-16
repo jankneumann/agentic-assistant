@@ -87,6 +87,14 @@ implementation code ships here.
   implementation for DeepAgents) and a session registry
   (create/lookup/expire by `thread_id`) so the daemon and A2A server
   can multiplex.
+- **MODIFIED `memory-policy`** (added post-review — owner review
+  verdict C8, 2026-07-16) — `MemoryPolicy.get_recent_snippets`
+  becomes `async` at the protocol level so P19+ consumers never build
+  on a sync-to-async bridge; async consumers await it directly, sync
+  callers (host export / CLI export) bridge at their own edge. The
+  open P21 `memory-retrieval-activation` implementation was updated
+  to match in the same session (its memory-policy delta carries the
+  identical final requirement text).
 - **MODIFIED `capability-resolver`** — resolver assembles slot #6
   (`ModelProvider`) with the same factory-override pattern; host
   harnesses get a host-provided model slot; the traced-aggregation
@@ -96,8 +104,11 @@ implementation code ships here.
 
 - **Specs touched:** `model-provider` (new), `tool-spec` (new),
   `credential-provider` (new), `sandbox-provider`,
-  `guardrail-provider`, `harness-adapter`, `capability-resolver`.
-- **Code:** none. This change ships no implementation; all deltas are
+  `guardrail-provider`, `harness-adapter`, `capability-resolver`,
+  `memory-policy` (post-review, verdict C8).
+- **Code:** none shipped under this change-id — the verdict-C8 async
+  retrieval implementation rides under the open P21
+  `memory-retrieval-activation` change. All other deltas are
   contracts that downstream phases implement — P19 (`model-provider`,
   budget hook, cost attribution), P13 (`credential-provider` env
   scoping, first real guardrails), P22 (sandbox planes enforcement),
