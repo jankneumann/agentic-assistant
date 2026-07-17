@@ -4,7 +4,7 @@
   "current_item_id": "P17",
   "phase": "implementing",
   "created_at": "2026-07-16T11:24:20.731701+00:00",
-  "updated_at": "2026-07-17T08:28:11.427196+00:00",
+  "updated_at": "2026-07-17T08:42:35.997845+00:00",
   "completed_items": [
     "X3",
     "P24",
@@ -19,8 +19,9 @@
   "pause_state": {
     "parallel": [
       "P17",
-      "P20"
+      "P20",
+      "P25"
     ],
-    "note": "owner approved 2026-07-17"
+    "note": "owner approved P25 2026-07-17"
   }
 }

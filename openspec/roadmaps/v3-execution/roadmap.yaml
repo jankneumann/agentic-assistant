@@ -143,7 +143,7 @@ items:
         rationale: Composition surface needs A2A (or MCP) exposed
   - item_id: P25
     title: agent-iam
-    status: candidate
+    status: in_progress
     priority: 14
     effort: L
     change_id: agent-iam
