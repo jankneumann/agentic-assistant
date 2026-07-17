@@ -21,7 +21,6 @@ import yaml
 from assistant.core.capabilities.credentials import (
     CredentialProvider,
     EnvCredentialProvider,
-    persona_credential_provider,
 )
 from assistant.core.capabilities.guardrails import (
     GuardrailConfig,
@@ -32,6 +31,11 @@ from assistant.core.capabilities.models import (
     ModelRegistry,
     ModelRegistryError,
     parse_model_registry,
+)
+from assistant.core.capabilities.openbao import (
+    CredentialsConfigError,
+    build_credential_provider,
+    parse_credentials_config,
 )
 from assistant.core.extension_integrity import (
     IntegrityVerdict,
@@ -90,7 +94,9 @@ class PersonaConfig:
     schedules: ScheduleConfig = field(default_factory=ScheduleConfig)
     # Persona-scoped credential provider (credential-provider spec /
     # P13): persona ``.env`` values first, process env fallback.
-    # ``repr=False`` — the scoped namespace holds secret values.
+    # Since P25 agent-iam a persona ``credentials: {backend: openbao}``
+    # section selects the OpenBao backend layered over the same env
+    # tiers. ``repr=False`` — the scoped namespace holds secret values.
     credentials: CredentialProvider = field(
         default_factory=EnvCredentialProvider, repr=False
     )
@@ -203,11 +209,25 @@ class PersonaRegistry:
         # P13 security-hardening: every persona-config secret read goes
         # through the persona-scoped CredentialProvider (persona .env
         # values first, process env fallback) — never through a direct
-        # os.environ read.
+        # os.environ read. P25 agent-iam: an injected factory still
+        # wins; otherwise a persona ``credentials: {backend: openbao}``
+        # section selects the OpenBao backend layered over the env
+        # tiers (unconfigured/unreachable degrades to env, never fatal).
+        try:
+            credentials_config = parse_credentials_config(
+                raw.get("credentials")
+            )
+        except CredentialsConfigError as exc:
+            raise ValueError(
+                f"Persona '{raw['name']}' ({config_path}): invalid "
+                f"credentials: section — {exc}"
+            ) from exc
         credentials = (
             self._credential_provider_factory(raw["name"], persona_dir)
             if self._credential_provider_factory is not None
-            else persona_credential_provider(persona_dir)
+            else build_credential_provider(
+                raw["name"], persona_dir, credentials_config
+            )
         )
 
         def _cred(ref: Any) -> str:
