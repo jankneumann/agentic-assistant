@@ -58,11 +58,31 @@ harnesses:
 #                   local-only | private-data-ok
 #   pricing         OpenRouter-mirrored per-token USD rates (verbatim
 #                   key names; omit for local endpoints — cost is then
-#                   omitted from telemetry, never guessed)
+#                   omitted from telemetry, never guessed. Cloud entries
+#                   may also omit it and inherit from the catalog cache
+#                   written by `assistant models sync-catalog` when the
+#                   entry `id` matches — declared values always win)
 #   context_length  OpenRouter-mirrored context window size
 #   modalities      OpenRouter-mirrored input/output modalities
 #   fallbacks       ordered list of other entry names tried after this
 #                   one fails (each must still satisfy required tags)
+#   health          optional endpoint health check (P20 — local
+#                   inference nodes; requires `endpoint`):
+#                     path:    probe path (default /models — vLLM,
+#                              Ollama's OpenAI facade, and NIM serve it)
+#                     timeout: probe timeout seconds (default 2.0)
+#                     ttl:     verdict freshness seconds (default 60)
+#                   Resolution skips entries with a fresh UNHEALTHY
+#                   verdict (fallback chain proceeds to cloud) but
+#                   FAILS CLOSED when a required local-only /
+#                   private-data-ok tag has no healthy entry left.
+#                   Probe with: assistant models check-health -p <name>
+#
+# The example below is the fleet story (arch-review §1): a GX10 node
+# (or any OpenAI-compatible host — NIM / vLLM / Ollama) serves the
+# cheap/private tier for background work (scheduler), memory
+# summarization, and embeddings; metered cloud remains the interactive
+# default and the fallback for non-private work when the node is down.
 #
 # models:
 #   entries:
@@ -74,16 +94,30 @@ harnesses:
 #       pricing: {prompt: "0.000003", completion: "0.000015"}
 #       context_length: 200000
 #       modalities: {input: [text, image], output: [text]}
-#       fallbacks: [local-fast]
-#     local-fast:
+#       fallbacks: [gx10-chat]
+#     gx10-chat:
 #       dialect: openai-compatible
-#       id: llama-3.1-8b-instruct
+#       id: llama-3.1-8b-instruct        # the model name the server exposes
 #       endpoint: "http://gx10.local:8000/v1"
 #       tags: [fast, cheap, local-only, private-data-ok]
+#       health: {path: /models, timeout: 2.0, ttl: 60}
+#       fallbacks: [sonnet]              # cloud fallback for non-private work
+#     gx10-embed:
+#       dialect: openai-compatible
+#       id: nvidia/nv-embedqa-e5-v5      # embedding model served on the node
+#       endpoint: "http://gx10.local:8001/v1"
+#       tags: [cheap, local-only, private-data-ok]
+#       health: {path: /models}
 #   bindings:
-#     default: sonnet
+#     default: sonnet                    # interactive tier
 #     deep_agents: sonnet
-#     ms_agent_framework: local-fast
+#     ms_agent_framework: gx10-chat
+#     scheduler: gx10-chat               # background jobs stay local/cheap
+#     memory: gx10-chat                  # reserved: memory summarization tier
+#     embeddings: gx10-embed             # Graphiti semantic search embeds
+#                                        # locally (explicit binding only —
+#                                        # `default` never spills into
+#                                        # embeddings)
 
 # ── Default role ──
 default_role: chief_of_staff

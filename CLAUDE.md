@@ -59,6 +59,10 @@ uv run assistant simulate                          # fixture-backed tool simulat
 evaluation/run-gate.sh                             # eval gate: gen-eval suites vs the sim persona
                                                    # (SKIPs cleanly without the tools-repo checkout)
 
+# Local inference / model registry (P20)
+uv run assistant models check-health -p personal   # probe health:-declaring registry entries
+uv run assistant models sync-catalog -p personal   # cache OpenRouter pricing metadata
+
 # OpenSpec workflow
 openspec list                                      # in-progress changes
 openspec list --specs                              # current specs
@@ -191,6 +195,44 @@ alongside AG-UI on the same loopback-default server:
   multi-turn task continuation, file/data parts (rejected with
   -32005), agent-card auth (P25).
 
+## Local Inference & Fleet (P20)
+
+Local OpenAI-compatible endpoints (GX10 via NIM / vLLM / Ollama — or
+any host) are first-class model-registry citizens; quickstart in
+[docs/deployment/gx10-node.md](docs/deployment/gx10-node.md), fleet
+rationale in the 2026-07-07 architecture review §1:
+
+- **Registry entries**: nothing schema-new for the endpoint itself —
+  dialect `openai-compatible` + `endpoint` (P19). P20 adds an optional
+  per-entry `health:` block (`path` default `/models`, `timeout` 2 s,
+  `ttl` 60 s; requires an `endpoint`).
+- **Health-checked resolution** (`core/capabilities/health.py`):
+  `EndpointHealthMonitor` probes async and caches verdicts;
+  `RegistryModelProvider.resolve` consults the cache only (sync path
+  never probes). Fresh-unhealthy entries are skipped → fallback chain
+  proceeds to cloud; never-probed/stale = eligible (optimistic — the
+  bind-time fallback walk still covers a dead node). **Fail-closed**:
+  when health filtering empties a tag-satisfying chain (e.g. all
+  `private-data-ok` entries down), resolution raises — privacy never
+  silently falls back to cloud. Pre-warm: `assistant models
+  check-health` and daemon startup.
+- **Local embeddings**: an **explicit** `embeddings` binding (the
+  `default` key never spills into it) makes `create_graphiti_client`
+  pass a `RegistryEmbedder` (graphiti `EmbedderClient` over the P19
+  raw `OpenAICompatibleClient`; budget-gated, persona-scoped
+  credentials) so semantic memory search embeds locally. Declared but
+  unhonorable binding → Graphiti disabled (Postgres-only memory), not
+  a silent cloud embedder. `memory` is a reserved binding key for the
+  P21 summarization consumer (not yet dispatched on).
+- **Catalog sync** (`core/capabilities/catalog.py`): `assistant
+  models sync-catalog -p <persona>` fetches OpenRouter `/models` (D9
+  posture: no redirects, 10 MiB cap; key ref `OPENROUTER_API_KEY`
+  optional) into git-ignored
+  `<persona_dir>/.cache/models/catalog.json`; on persona load,
+  entries with a matching `id` inherit pricing/context_length/
+  modalities for fields they left empty — declared values win,
+  missing cache is a silent no-op (load never touches the network).
+
 ## OpenSpec Workflow
 
 Spec-driven development via [OpenSpec](https://github.com/Fission-AI/OpenSpec).
@@ -278,10 +320,11 @@ See `openspec/roadmap.md` for the full sequence. Notable gaps:
   against a registry synthesized from the built-in harness defaults
   (`default_model_registry`). Every binding is budget-gated via
   `GuardrailProvider.check_action(action_type="model_call")` and API
-  keys resolve through the `CredentialProvider` seam. Still deferred:
-  OpenRouter catalog **sync** and health-checked local GX10 entries
-  (P20), and the MSAF binding covers `openai-compatible` refs only
-  (no connector packages for the other dialects).
+  keys resolve through the `CredentialProvider` seam. P20
+  `local-inference-node` added the OpenRouter catalog **sync** and
+  health-checked local (GX10) entries — see "Local Inference & Fleet"
+  above. Still deferred: the MSAF binding covers `openai-compatible`
+  refs only (no connector packages for the other dialects).
 - **Security hardening is live** (P13 `security-hardening`):
   guardrails are no longer allow-all-only — a persona `guardrails:`
   section (budgets / policies / delegation, see
