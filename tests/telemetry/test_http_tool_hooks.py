@@ -1,7 +1,7 @@
 """Tests for HTTP tool tracing in ``http_tools/builder.py``.
 
 Per spec ``http-tools`` "HTTP Tool Invocations Emit Observability
-Span", every StructuredTool produced by ``_build_tool`` MUST be
+Span", every ToolSpec produced by ``_build_tool`` MUST be
 wrapped so each invocation emits one ``trace_tool_call`` span with
 ``tool_kind="http"``. Authorization headers and other secrets in
 error messages MUST flow through the sanitizer (req observability.5).
@@ -78,7 +78,7 @@ async def test_http_tool_emits_trace_with_kind_http(
             client=client,
             auth_headers={},
         )
-        out = await tool.ainvoke({"query": "open"})
+        out = await tool.handler(query="open")
     assert out == {"ok": True}
     calls = spy_provider.calls["trace_tool_call"]
     assert len(calls) == 1
@@ -107,7 +107,7 @@ async def test_http_tool_error_emits_trace_then_propagates(
             auth_headers={},
         )
         with pytest.raises(httpx.HTTPStatusError):
-            await tool.ainvoke({"query": "open"})
+            await tool.handler(query="open")
     calls = spy_provider.calls["trace_tool_call"]
     assert len(calls) == 1
     assert calls[0]["tool_kind"] == "http"
