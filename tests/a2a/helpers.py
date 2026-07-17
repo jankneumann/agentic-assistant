@@ -73,6 +73,14 @@ class FakeHarness:
     async def create_agent(self, tools: list, extensions: list) -> Any:
         return {"agent-for": self._thread_id}
 
+    async def invoke(self, agent: Any, message: str) -> str:
+        """Blocking variant (consumed by the MCP ask tools): returns the
+        concatenation of the scripted TextDelta texts."""
+        self.invocations.append(message)
+        return "".join(
+            e.text for e in self._events if isinstance(e, TextDelta)
+        )
+
     async def astream_invoke(
         self, agent: Any, message: str
     ) -> AsyncIterator[Any]:

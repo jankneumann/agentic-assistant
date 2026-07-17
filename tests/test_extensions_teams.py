@@ -32,7 +32,6 @@ import inspect
 from typing import Any
 
 import pytest
-from assistant.core.toolspec import ToolSpec
 
 from assistant.core.cloud_client import CloudGraphClient
 from assistant.core.resilience import (
@@ -40,6 +39,7 @@ from assistant.core.resilience import (
     HealthStatus,
     get_circuit_breaker_registry,
 )
+from assistant.core.toolspec import ToolSpec
 from assistant.extensions import teams as teams_module
 from assistant.extensions.base import Extension
 from assistant.extensions.teams import (

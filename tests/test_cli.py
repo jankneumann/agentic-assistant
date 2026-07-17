@@ -281,30 +281,30 @@ def test_export_rejects_sdk_harness(stub_factory) -> None:
 
 def _canned_registry() -> object:
     """Build a small ``HttpToolRegistry`` for list-tools / startup tests."""
-    from langchain_core.tools import StructuredTool
-    from pydantic import BaseModel
-
+    from assistant.core.toolspec import ToolSpec
     from assistant.http_tools import HttpToolRegistry
-
-    class _Args(BaseModel):
-        name: str
 
     async def _noop(name: str) -> None:
         return None
 
+    schema = {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": ["name"],
+    }
     reg = HttpToolRegistry()
     reg.register(
         "backend", "list_items",
-        StructuredTool.from_function(
-            coroutine=_noop, name="backend:list_items",
-            description="List items", args_schema=_Args,
+        ToolSpec(
+            name="backend:list_items", description="List items",
+            input_schema=dict(schema), handler=_noop,
         ),
     )
     reg.register(
         "backend", "create_item",
-        StructuredTool.from_function(
-            coroutine=_noop, name="backend:create_item",
-            description="Create an item", args_schema=_Args,
+        ToolSpec(
+            name="backend:create_item", description="Create an item",
+            input_schema=dict(schema), handler=_noop,
         ),
     )
     return reg
