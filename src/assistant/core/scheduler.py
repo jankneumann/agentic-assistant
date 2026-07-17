@@ -43,6 +43,8 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from croniter import croniter
 
+from assistant.core.harness_routing import AUTO_HARNESS
+
 if TYPE_CHECKING:
     from assistant.core.capabilities.models import ModelProvider, ModelRef, ModelRequest
     from assistant.core.persona import PersonaConfig
@@ -62,7 +64,9 @@ DEFAULT_CALENDAR_LEAD_MINUTES: int = 15
 DEFAULT_CALENDAR_POLL_SECONDS: float = 300.0
 
 _TRIGGER_KINDS = ("cron", "interval", "calendar")
-_JOB_KEYS = frozenset({"trigger", "role", "prompt", "consumer", "enabled"})
+_JOB_KEYS = frozenset(
+    {"trigger", "role", "prompt", "consumer", "enabled", "harness"}
+)
 _TRIGGER_KEYS = frozenset({*_TRIGGER_KINDS, "lead_minutes"})
 
 
@@ -92,13 +96,19 @@ class ScheduleTrigger:
 
 @dataclass
 class ScheduledJob:
-    """One named entry of the persona ``schedules:`` section."""
+    """One named entry of the persona ``schedules:`` section.
+
+    ``harness`` (P11 harness-routing) optionally pins this job's runs
+    to a specific SDK harness (or the ``auto`` sentinel). Empty means
+    inherit the runner's configured harness (the daemon ``-H`` value).
+    """
 
     name: str
     trigger: ScheduleTrigger
     role: str
     prompt: str
     consumer: str = DEFAULT_SCHEDULER_CONSUMER
+    harness: str = ""
     enabled: bool = True
 
 
@@ -199,6 +209,7 @@ def parse_schedule_config(raw: dict[str, Any] | None) -> ScheduleConfig:
             role: chief_of_staff             # or {calendar: gcal,
             prompt: "Prepare my briefing."   #     lead_minutes: 15}
             consumer: scheduler              # optional models binding key
+            harness: auto                    # optional per-job harness
             enabled: true                    # optional, default true
 
     Unknown keys, missing/empty ``role`` or ``prompt``, ambiguous or
@@ -252,6 +263,13 @@ def parse_schedule_config(raw: dict[str, Any] | None) -> ScheduleConfig:
                 f"non-empty models bindings key (default "
                 f"{DEFAULT_SCHEDULER_CONSUMER!r})."
             )
+        harness = spec.get("harness", "")
+        if not isinstance(harness, str) or ("harness" in spec and not harness):
+            raise ScheduleConfigError(
+                f"schedules job {name!r}: 'harness' must be a non-empty "
+                f"SDK harness name (or 'auto'); omit the key to inherit "
+                f"the daemon -H selection."
+            )
         enabled = spec.get("enabled", True)
         if not isinstance(enabled, bool):
             raise ScheduleConfigError(
@@ -264,6 +282,7 @@ def parse_schedule_config(raw: dict[str, Any] | None) -> ScheduleConfig:
             role=role,
             prompt=prompt,
             consumer=consumer,
+            harness=harness,
             enabled=enabled,
         )
     return ScheduleConfig(jobs=jobs)
@@ -421,17 +440,26 @@ class HarnessJobRunner:
         )
 
         rc = self._load_role(job.role)
+        # P11 harness-routing: per-job `harness:` override wins over the
+        # runner default (the daemon -H value); `auto` resolves through
+        # select_harness against the job's role — the factory never
+        # receives the sentinel.
+        harness_name = job.harness or self._harness_name
+        if harness_name == AUTO_HARNESS:
+            from assistant.harnesses.factory import select_harness
+
+            harness_name = select_harness(self._persona, rc)
         create = self._create_harness or default_create_harness
         adapter = create(
             self._persona,
             rc,
-            self._harness_name,
+            harness_name,
             model_provider=self._build_model_provider(rc, job.consumer),
         )
         if not isinstance(adapter, SdkHarnessAdapter):
             raise ValueError(
                 f"Scheduled job {job.name!r}: harness "
-                f"{self._harness_name!r} is a host harness; scheduled "
+                f"{harness_name!r} is a host harness; scheduled "
                 f"jobs require an SDK harness."
             )
         agent = await adapter.create_agent(

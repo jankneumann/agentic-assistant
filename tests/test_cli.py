@@ -1028,3 +1028,69 @@ def test_teacher_help_line_appends_method_commands(stub_factory) -> None:
     # Order: /quit MUST come before /methods (terminator before
     # teacher-specific commands, matching the visual progression).
     assert help_region.index("/quit") < help_region.index("/methods")
+
+
+# ── P11 harness-routing: --harness auto default ─────────────────────
+
+
+def test_auto_default_resolves_through_select_harness(
+    stub_factory, monkeypatch
+) -> None:
+    """Omitted -H sends the 'auto' sentinel through the _select_harness
+    seam; the factory receives the concrete resolution."""
+    select_seen: list[str | None] = []
+    create_seen: list[str] = []
+
+    def fake_select(pc, rc, *, requested=None):
+        select_seen.append(requested)
+        return "deep_agents"
+
+    def capture(persona, role, harness_name):
+        create_seen.append(harness_name)
+        return StubHarness(persona, role)
+
+    monkeypatch.setattr(cli_mod, "_select_harness", fake_select)
+    monkeypatch.setattr(cli_mod, "_create_harness", capture)
+    runner = CliRunner()
+    result = runner.invoke(cli_mod.main, ["-p", "personal"], input="quit\n")
+    assert result.exit_code == 0
+    assert select_seen == ["auto"]
+    assert create_seen and create_seen[0] == "deep_agents"
+
+
+def test_explicit_harness_bypasses_routing(stub_factory, monkeypatch) -> None:
+    """-H deep_agents reaches the factory verbatim (select passes
+    explicit names through — exercised here with the REAL seam)."""
+    create_seen: list[str] = []
+
+    def capture(persona, role, harness_name):
+        create_seen.append(harness_name)
+        return StubHarness(persona, role)
+
+    monkeypatch.setattr(cli_mod, "_create_harness", capture)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main, ["-p", "personal", "-H", "deep_agents"], input="quit\n"
+    )
+    assert result.exit_code == 0
+    assert create_seen and create_seen[0] == "deep_agents"
+
+
+def test_auto_routing_failure_is_a_usage_error(
+    stub_factory, monkeypatch
+) -> None:
+    def fail_select(pc, rc, *, requested=None):
+        raise ValueError("No enabled SDK harness for persona 'personal'")
+
+    monkeypatch.setattr(cli_mod, "_select_harness", fail_select)
+    runner = CliRunner()
+    result = runner.invoke(cli_mod.main, ["-p", "personal"], input="quit\n")
+    assert result.exit_code != 0
+    assert "No enabled SDK harness" in result.output
+
+
+def test_run_help_advertises_auto_choice() -> None:
+    runner = CliRunner()
+    result = runner.invoke(cli_mod.main, ["run", "--help"])
+    assert result.exit_code == 0
+    assert "auto" in result.output

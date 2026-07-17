@@ -314,3 +314,51 @@ def test_help_mentions_serve():
     shows `run`'s help instead of the group's. Inspect the registry directly.
     """
     assert "serve" in main.commands
+
+
+# ---------------------------------------------------------------------------
+# P11 harness-routing — serve resolves 'auto' before make_app
+# ---------------------------------------------------------------------------
+
+
+def test_serve_auto_default_passes_concrete_harness_to_make_app():
+    """The default -H auto resolves against the personal persona
+    (deep_agents is its only enabled SDK harness) so make_app never
+    sees the sentinel."""
+    make_app_calls: list = []
+
+    def fake_make_app(persona, role, harness_name):
+        make_app_calls.append(harness_name)
+        return MagicMock(name="asgi-app")
+
+    with (
+        patch("assistant.cli._create_harness", side_effect=_fake_sdk_harness),
+        patch("assistant.web.app.make_app", side_effect=fake_make_app),
+        patch("uvicorn.run"),
+    ):
+        result = CliRunner().invoke(
+            main, ["serve", "-p", "personal"], catch_exceptions=False
+        )
+    assert result.exit_code == 0, result.output
+    assert make_app_calls == ["deep_agents"]
+
+
+def test_serve_explicit_harness_bypasses_routing():
+    make_app_calls: list = []
+
+    def fake_make_app(persona, role, harness_name):
+        make_app_calls.append(harness_name)
+        return MagicMock(name="asgi-app")
+
+    with (
+        patch("assistant.cli._create_harness", side_effect=_fake_sdk_harness),
+        patch("assistant.web.app.make_app", side_effect=fake_make_app),
+        patch("uvicorn.run"),
+    ):
+        result = CliRunner().invoke(
+            main,
+            ["serve", "-p", "personal", "-H", "deep_agents"],
+            catch_exceptions=False,
+        )
+    assert result.exit_code == 0, result.output
+    assert make_app_calls == ["deep_agents"]
