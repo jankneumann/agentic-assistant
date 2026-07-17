@@ -25,6 +25,22 @@ Decision: use the official `mcp` Python SDK (1.27+), specifically the
   mapping for free — all things the hand-rolled fallback would have
   re-implemented.
 
+### D1 addendum — owner review 2026-07-17 (FastMCP question)
+
+Clarifications ratified during review: (a) FastMCP is the high-level
+layer of the SAME official `mcp` package — wire protocol and client
+compatibility are identical either way; this choice affects only the
+in-process API. (b) The FastAPI analogy inverts here: FastMCP/FastAPI
+generate schemas from hand-authored function signatures, while our
+tools are pre-schematized ToolSpecs assembled dynamically per
+persona×role — feeding them through FastMCP would reintroduce the
+translation layer the tool-spec contract forbids. (c) Boundary for
+future work: when the deferred hand-authored MCP surfaces land
+(resources, prompts, elicitation — the P24 ApprovalRequest transport),
+use FastMCP-style decorators for those; both layers coexist in one
+server. Switching layers is an internal refactor with zero wire
+impact.
+
 ## D2 — Stateless streamable HTTP, JSON responses; context_id carries continuity
 
 `StreamableHTTPSessionManager(stateless=True, json_response=True)`:
