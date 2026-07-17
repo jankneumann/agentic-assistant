@@ -41,6 +41,11 @@ from assistant.core.capabilities.openbao import (
     build_credential_provider,
     parse_credentials_config,
 )
+from assistant.core.capabilities.sandbox import (
+    SandboxConfigError,
+    SandboxSettings,
+    parse_sandbox_settings,
+)
 from assistant.core.extension_integrity import (
     IntegrityVerdict,
     check_extension_integrity,
@@ -155,6 +160,11 @@ class PersonaConfig:
     # keeps the pre-P25 loopback-unauthenticated posture (the A2A
     # server warns at startup).
     a2a_auth: A2AAuthConfig | None = None
+    # Parsed ``sandbox:`` section (sandbox-provider spec / P22
+    # meta-harness-compat). ``None`` keeps the PassthroughSandbox
+    # default; ``provider: container`` selects the
+    # ContainerSandboxProvider through the capability resolver.
+    sandbox: SandboxSettings | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -285,6 +295,14 @@ class PersonaRegistry:
                 f"auth.a2a: section — {exc}"
             ) from exc
 
+        try:
+            sandbox = parse_sandbox_settings(raw.get("sandbox"))
+        except SandboxConfigError as exc:
+            raise ValueError(
+                f"Persona '{raw['name']}' ({config_path}): invalid "
+                f"sandbox: section — {exc}"
+            ) from exc
+
         # P13 security-hardening: every persona-config secret read goes
         # through the persona-scoped CredentialProvider (persona .env
         # values first, process env fallback) — never through a direct
@@ -339,6 +357,7 @@ class PersonaRegistry:
             schedules=schedules,
             credentials=credentials,
             a2a_auth=a2a_auth,
+            sandbox=sandbox,
             raw=raw,
         )
 

@@ -19,6 +19,7 @@ link to their replacement.
 | [0004](0004-test-privacy-boundary.md) | Two-layer public-test / private-persona privacy boundary | ACCEPTED | 2026-04-13 |
 | [0005](0005-model-seam-modelref-bindings.md) | One model seam — ModelProvider → ModelRef → per-consumer bindings | ACCEPTED | 2026-07-16 |
 | [0006](0006-cross-repo-reuse-policy.md) | Cross-repo reuse policy — share contracts, data, and stateful services; duplicate stateless mechanism | ACCEPTED | 2026-07-16 |
+| [0007](0007-meta-harness-posture.md) | Meta-harness posture — integrate under Omnigent, target NemoClaw for the GX10, OpenShell behind the sandbox runner seam | ACCEPTED | 2026-07-17 |
 
 ## Adding a new ADR
 

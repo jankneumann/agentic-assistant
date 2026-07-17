@@ -26,7 +26,12 @@ from assistant.core.capabilities.models import (
     RegistryModelProvider,
     default_model_registry,
 )
-from assistant.core.capabilities.sandbox import PassthroughSandbox, SandboxProvider
+from assistant.core.capabilities.sandbox import (
+    ContainerSandboxProvider,
+    PassthroughSandbox,
+    SandboxProvider,
+    SandboxSettings,
+)
 from assistant.core.capabilities.tools import DefaultToolPolicy, ToolPolicy
 from assistant.core.capabilities.types import (
     CapabilitySet,
@@ -85,6 +90,32 @@ class CapabilityResolver:
         if isinstance(registry, ModelRegistry) and registry.entries:
             return RegistryModelProvider(registry)
         return RegistryModelProvider(default_model_registry())
+
+    def _resolve_sandbox(self, persona: Any) -> SandboxProvider:
+        """Sandbox slot — P22 meta-harness-compat.
+
+        Factory override wins (unchanged). Otherwise a persona whose
+        ``sandbox:`` section requests ``provider: container`` gets the
+        first real provider, :class:`ContainerSandboxProvider`
+        (persona-scoped credentials injected for the credentials
+        plane); every other persona keeps :class:`PassthroughSandbox`,
+        preserving pre-P22 behavior. Construction errors (e.g. no
+        docker/podman on PATH) propagate — a persona that explicitly
+        requested isolation never silently degrades to passthrough.
+        """
+        if self._sandbox_factory:
+            return self._sandbox_factory()
+        settings = getattr(persona, "sandbox", None)
+        if (
+            isinstance(settings, SandboxSettings)
+            and settings.provider == "container"
+        ):
+            return ContainerSandboxProvider(
+                image=settings.image,
+                runtime=settings.runtime,
+                credentials=getattr(persona, "credentials", None),
+            )
+        return PassthroughSandbox()
 
     def _resolve_guardrails(self, persona: Any) -> GuardrailProvider:
         """Guardrail slot — P13 security-hardening.
@@ -146,11 +177,7 @@ class CapabilityResolver:
 
         return CapabilitySet(
             guardrails=self._resolve_guardrails(persona),
-            sandbox=(
-                self._sandbox_factory()
-                if self._sandbox_factory
-                else PassthroughSandbox()
-            ),
+            sandbox=self._resolve_sandbox(persona),
             memory=memory,
             tools=(
                 self._tool_factory()

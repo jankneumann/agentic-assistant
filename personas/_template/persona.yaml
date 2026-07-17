@@ -243,6 +243,33 @@ extensions: []
 #   secret_id_env: OPENBAO_SECRET_ID #   persona's agent principal
 #   mount: secret                    # KV v2 mount (default: secret)
 
+# ── Sandbox (P22 — meta-harness-compat) ──
+# Optional. Omit the section entirely to keep the no-isolation
+# PassthroughSandbox. `provider: container` selects the
+# ContainerSandboxProvider, which compiles the three planes below
+# (sandbox-provider spec v2) into a `docker run`/`podman run`
+# invocation enforced at the extension-subprocess seam
+# (SandboxedProcessRunner). See docs/deployment/meta-harness.md §3.
+# sandbox:
+#   provider: container         # passthrough (default) | container
+#   image: python:3.12-slim     # required when provider: container
+#   runtime: docker             # docker | podman (omit = autodetect)
+#   filesystem:
+#     level: workspace-write    # read-only | workspace-write | full-access
+#     mounts:                   # explicit mounts (writable requires a
+#       - host_path: /srv/data  #   non-read-only level)
+#         sandbox_path: /data
+#         writable: false
+#   network:                    # deny-by-default when declared:
+#     allow: []                 #   [] = no network (--network=none);
+#                               #   hosts/CIDRs compile to SANDBOX_NET_ALLOW
+#                               #   env (needs an enforcing proxy/backend —
+#                               #   plain docker can't filter per-host)
+#     proxy: ""                 # optional egress proxy for allowed hosts
+#   credentials:
+#     visible: []               # ONLY these credential refs enter the
+#                               #   container env — no ambient inheritance
+
 # ── Extension integrity manifest (P13) ──
 # `assistant persona hash-extensions -p <name>` writes
 # extensions/manifest.yaml with SHA-256 hashes. When present, private
