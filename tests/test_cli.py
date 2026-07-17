@@ -343,13 +343,8 @@ def test_list_tools_with_successful_sources(
     """Per spec: per-source sections with tool names + exit 0 on success."""
     monkeypatch.setenv("CONTENT_ANALYZER_URL", "http://127.0.0.1:1/ignored")
 
-    from langchain_core.tools import StructuredTool
-    from pydantic import BaseModel
-
+    from assistant.core.toolspec import ToolSpec
     from assistant.http_tools import HttpToolRegistry
-
-    class _Args(BaseModel):
-        q: str
 
     async def _noop(q: str) -> None:
         return None
@@ -359,9 +354,15 @@ def test_list_tools_with_successful_sources(
     registry = HttpToolRegistry()
     registry.register(
         "content_analyzer", "search",
-        StructuredTool.from_function(
-            coroutine=_noop, name="content_analyzer:search",
-            description="Search content", args_schema=_Args,
+        ToolSpec(
+            name="content_analyzer:search",
+            description="Search content",
+            input_schema={
+                "type": "object",
+                "properties": {"q": {"type": "string"}},
+                "required": ["q"],
+            },
+            handler=_noop,
         ),
     )
 
@@ -392,13 +393,8 @@ def test_list_tools_exits_zero_when_warning_but_tools_registered(
 
     # Canned registry has `backend:*` tools, not `content_analyzer:*`,
     # so we need a registry keyed by the actually-configured source name.
-    from langchain_core.tools import StructuredTool
-    from pydantic import BaseModel
-
+    from assistant.core.toolspec import ToolSpec
     from assistant.http_tools import HttpToolRegistry
-
-    class _Args(BaseModel):
-        pass
 
     async def _noop() -> None:
         return None
@@ -406,9 +402,11 @@ def test_list_tools_exits_zero_when_warning_but_tools_registered(
     registry = HttpToolRegistry()
     registry.register(
         "content_analyzer", "search",
-        StructuredTool.from_function(
-            coroutine=_noop, name="content_analyzer:search",
-            description="Search content", args_schema=_Args,
+        ToolSpec(
+            name="content_analyzer:search",
+            description="Search content",
+            input_schema={"type": "object", "properties": {}},
+            handler=_noop,
         ),
     )
 

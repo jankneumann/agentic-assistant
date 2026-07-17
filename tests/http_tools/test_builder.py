@@ -13,7 +13,6 @@ from typing import Any
 
 import httpx
 import pytest
-from pydantic import BaseModel
 from pytest_httpserver import HTTPServer
 
 from assistant.http_tools.builder import (
@@ -24,25 +23,14 @@ from assistant.http_tools.openapi import ParsedOperation
 
 
 def _call(tool: Any, **kwargs: Any) -> Any:
-    """Type-narrowed invocation of a StructuredTool's coroutine.
+    """Invoke a built ToolSpec's async handler (P17 tool-spec migration).
 
-    LangChain types ``StructuredTool.coroutine`` as ``Coroutine | None``;
-    our tools always set it. This helper asserts non-None for mypy.
+    The handler validates kwargs against the runtime Pydantic model
+    before issuing the HTTP call — the same validation LangChain's
+    StructuredTool used to apply.
     """
-    assert tool.coroutine is not None
-    return tool.coroutine(**kwargs)
-
-
-def _instantiate_args(tool: Any, **kwargs: Any) -> BaseModel:
-    """Type-narrowed instantiation of a StructuredTool's args_schema.
-
-    LangChain types ``args_schema`` as ``type[BaseModel] | dict | None``;
-    our builder always produces a Pydantic model. Assert and return a
-    concrete BaseModel instance so mypy drops the union.
-    """
-    schema_cls = tool.args_schema
-    assert isinstance(schema_cls, type) and issubclass(schema_cls, BaseModel)
-    return schema_cls(**kwargs)
+    assert tool.handler is not None
+    return tool.handler(**kwargs)
 
 
 def _op(**kwargs: Any) -> ParsedOperation:
@@ -228,7 +216,7 @@ async def test_path_param_url_encoded() -> None:
 # ── Required / Optional / Typeless field handling ────────────────────
 
 
-def test_required_field_is_required(client: httpx.AsyncClient) -> None:
+async def test_required_field_is_required(client: httpx.AsyncClient) -> None:
     op = _op(
         method="post", path="/x", operation_id="op",
         request_body_schema={
@@ -243,8 +231,12 @@ def test_required_field_is_required(client: httpx.AsyncClient) -> None:
         source_name="s", base_url="http://e",
         operation=op, client=client, auth_headers={},
     )
+    # The JSON-Schema surface marks the field required...
+    assert "name" in tool.input_schema.get("required", [])
+    # ...and the handler's Pydantic validation rejects a missing value
+    # before any HTTP request is issued.
     with pytest.raises(ValidationError):
-        _instantiate_args(tool)
+        await _call(tool)
 
 
 def test_optional_field_uses_declared_default(client: httpx.AsyncClient) -> None:
@@ -259,9 +251,8 @@ def test_optional_field_uses_declared_default(client: httpx.AsyncClient) -> None
         source_name="s", base_url="http://e",
         operation=op, client=client, auth_headers={},
     )
-    model = _instantiate_args(tool)
-    # Dynamically generated model — mypy can't see the ``n`` attribute.
-    assert getattr(model, "n") == 7  # noqa: B009
+    # The declared default survives into the JSON-Schema surface.
+    assert tool.input_schema["properties"]["n"]["default"] == 7
 
 
 def test_typeless_field_is_any(client: httpx.AsyncClient) -> None:

@@ -14,28 +14,22 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from langchain_core.tools import StructuredTool
-from pydantic import BaseModel
-
 from assistant.core.capabilities.tools import DefaultToolPolicy
+from assistant.core.toolspec import ToolSpec
 from assistant.http_tools import HttpToolRegistry
 
 
-class _EmptyArgs(BaseModel):
-    """Minimal args schema — not exercised at runtime."""
-
-
-def _make_http_tool(name: str) -> StructuredTool:
-    """Build a ``StructuredTool`` whose ``name`` equals the registry key."""
+def _make_http_tool(name: str) -> ToolSpec:
+    """Build a ``ToolSpec`` whose ``name`` equals the registry key."""
 
     async def _noop(**_: object) -> None:  # pragma: no cover - unused
         return None
 
-    return StructuredTool.from_function(
-        coroutine=_noop,
+    return ToolSpec(
         name=name,
         description=f"HTTP tool {name}",
-        args_schema=_EmptyArgs,
+        input_schema={"type": "object", "properties": {}},
+        handler=_noop,
     )
 
 
@@ -46,8 +40,11 @@ def _make_ext_tool(name: str) -> MagicMock:
 
 
 def _make_extension(tools: list) -> MagicMock:
+    # P17 tool-spec migration: extensions expose tool_specs(); the
+    # policy's telemetry wrapper passes non-ToolSpec fakes through
+    # unchanged.
     ext = MagicMock()
-    ext.as_langchain_tools.return_value = tools
+    ext.tool_specs.return_value = tools
     return ext
 
 

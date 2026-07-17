@@ -32,7 +32,7 @@ import inspect
 from typing import Any
 
 import pytest
-from langchain_core.tools import StructuredTool
+from assistant.core.toolspec import ToolSpec
 
 from assistant.core.cloud_client import CloudGraphClient
 from assistant.core.resilience import (
@@ -92,11 +92,11 @@ def test_extension_satisfies_protocol() -> None:
     assert isinstance(ext, Extension)
 
 
-def test_as_langchain_tools_includes_read_and_write_tools() -> None:
+def test_tool_specs_includes_read_and_write_tools() -> None:
     """ms-extensions / "Tool list includes read and write tools" (teams)."""
     ext = _build()
-    tools = ext.as_langchain_tools()
-    names = {t.name for t in tools}
+    specs = ext.tool_specs()
+    names = {s.name for s in specs}
     expected = {
         "teams.list_chats",
         "teams.list_channel_messages",
@@ -106,48 +106,20 @@ def test_as_langchain_tools_includes_read_and_write_tools() -> None:
     assert expected.issubset(names), (
         f"missing teams tool(s): {expected - names}"
     )
-    for tool in tools:
-        assert isinstance(tool, StructuredTool)
+    for spec in specs:
+        assert isinstance(spec, ToolSpec)
 
 
-def test_as_ms_agent_tools_returns_callables() -> None:
-    """ms-extensions / "as_ms_agent_tools returns non-empty list" (parity)."""
+def test_tool_specs_carry_source_and_json_schema() -> None:
+    """Every spec carries provenance + a JSON-Schema object surface
+    (P17 tool-spec migration — replaces the D11 dual-format parity)."""
     ext = _build()
-    msaf_tools = ext.as_ms_agent_tools()
-    assert len(msaf_tools) >= 4, "expected at least 4 MSAF tools"
-    for fn in msaf_tools:
-        assert callable(fn)
-
-
-def test_dual_format_tool_count_parity() -> None:
-    """ms-extensions / "Tool counts match across formats"."""
-    ext = _build()
-    assert len(ext.as_langchain_tools()) == len(ext.as_ms_agent_tools())
-
-
-def test_dual_format_tool_name_parity_by_index() -> None:
-    """ms-extensions / "Tool names match by index".
-
-    The MSAF tool's ``__name__`` (after ``@ai_function`` decoration)
-    MUST match the LangChain tool's ``.name`` at the same index.
-    """
-    ext = _build()
-    lc_tools = ext.as_langchain_tools()
-    msaf_tools = ext.as_ms_agent_tools()
-    for idx, (lc, msaf) in enumerate(zip(lc_tools, msaf_tools, strict=True)):
-        # ``ai_function`` decorators preserve / set ``__name__``; if
-        # ``agent_framework`` is unavailable the extension falls back
-        # to a plain function whose ``__name__`` is the tool name we
-        # set on the wrapper. Either way, the contract is that the
-        # MSAF callable carries the same identity as the LangChain
-        # tool at this index.
-        msaf_name = getattr(msaf, "__name__", None) or getattr(
-            msaf, "name", None
-        )
-        assert msaf_name == lc.name, (
-            f"tool[{idx}] name mismatch: langchain={lc.name!r} "
-            f"msaf={msaf_name!r}"
-        )
+    specs = ext.tool_specs()
+    assert len(specs) >= 4, "expected at least 4 tools"
+    for spec in specs:
+        assert callable(spec.handler)
+        assert spec.source == "extension:teams"
+        assert spec.input_schema.get("type") == "object"
 
 
 # ── list_chats ───────────────────────────────────────────────────────

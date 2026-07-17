@@ -109,13 +109,20 @@ def test_create_agent_resolves_model_through_registry_binding() -> None:
         assert kwargs["model"] is sentinel_model
 
 
-def test_create_agent_includes_extension_tools() -> None:
+def test_create_agent_uses_only_the_provided_tool_list() -> None:
+    """Spec harness-adapter "create_agent uses only the provided tool
+    list": ``tools`` is the complete ToolPolicy-aggregated list; the
+    harness derives nothing from ``extensions`` (P17 tool-spec
+    migration removed the former second aggregation site)."""
     tool_a = MagicMock(name="tool_a")
     tool_b = MagicMock(name="tool_b")
 
     class _Ext(StubExtension):
-        def as_langchain_tools(self) -> list:
-            return [tool_a]
+        def tool_specs(self) -> list:
+            raise AssertionError(
+                "DeepAgentsHarness called tool_specs(); harnesses must "
+                "not derive tools from extensions"
+            )
 
     ext = _Ext("e", {})
     with patch(
@@ -126,10 +133,47 @@ def test_create_agent_includes_extension_tools() -> None:
     ) as cda_mock:
         cda_mock.return_value = MagicMock()
         h = DeepAgentsHarness(_persona(), _role())
-        asyncio.run(h.create_agent(tools=[tool_b], extensions=[ext]))
+        asyncio.run(h.create_agent(tools=[tool_a, tool_b], extensions=[ext]))
         passed_tools = cda_mock.call_args.kwargs["tools"]
-        assert tool_a in passed_tools
-        assert tool_b in passed_tools
+        # Non-ToolSpec entries pass through the adapter unchanged.
+        assert passed_tools == [tool_a, tool_b]
+
+
+def test_create_agent_renders_tool_specs_via_langchain_adapter() -> None:
+    """ToolSpec entries in ``tools`` are rendered to StructuredTools
+    (name/description/schema preserved; invocation hits the handler)."""
+    from langchain_core.tools import StructuredTool
+
+    from assistant.core.toolspec import ToolSpec
+
+    async def _handler(query: str) -> str:
+        return f"hit:{query}"
+
+    spec = ToolSpec(
+        name="gmail.search",
+        description="Search.",
+        input_schema={
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+        handler=_handler,
+        source="extension:gmail",
+    )
+    with patch(
+        "assistant.harnesses.sdk.deep_agents.init_chat_model",
+        return_value=MagicMock(),
+    ), patch(
+        "assistant.harnesses.sdk.deep_agents.create_deep_agent"
+    ) as cda_mock:
+        cda_mock.return_value = MagicMock()
+        h = DeepAgentsHarness(_persona(), _role())
+        asyncio.run(h.create_agent(tools=[spec], extensions=[]))
+        [tool] = cda_mock.call_args.kwargs["tools"]
+        assert isinstance(tool, StructuredTool)
+        assert tool.name == "gmail.search"
+        assert tool.description == "Search."
+        assert asyncio.run(tool.ainvoke({"query": "x"})) == "hit:x"
 
 
 def test_invoke_returns_last_assistant_message_content() -> None:

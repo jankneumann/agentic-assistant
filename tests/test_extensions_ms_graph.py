@@ -87,52 +87,28 @@ def _build_ext(
 
 
 # ---------------------------------------------------------------------------
-# Tool surface (presence, names, dual-format parity per D11)
+# Tool surface (presence, names — ToolSpec since the P17 migration)
 # ---------------------------------------------------------------------------
 
 
 class TestToolSurface:
-    """Spec: ms-extensions / ms_graph Extension Real Implementation;
-    Tool Format Parity Between LangChain and MSAF."""
+    """Spec: ms-extensions / ms_graph Extension Real Implementation
+    (ToolSpec surface per spec tool-spec)."""
 
-    def test_as_langchain_tools_returns_non_empty_list(self) -> None:
+    def test_tool_specs_returns_non_empty_list(self) -> None:
         ext = _build_ext()
-        tools = ext.as_langchain_tools()
-        assert len(tools) >= 3
-        names = {t.name for t in tools}
+        specs = ext.tool_specs()
+        assert len(specs) >= 3
+        names = {s.name for s in specs}
         assert "ms_graph.search_people" in names
         assert "ms_graph.get_my_profile" in names
         assert "ms_graph.search_messages" in names
 
-    def test_as_ms_agent_tools_returns_non_empty_list(self) -> None:
+    def test_tool_specs_carry_source_and_schema(self) -> None:
         ext = _build_ext()
-        tools = ext.as_ms_agent_tools()
-        assert len(tools) >= 3
-        # Each callable carries an attached name (either via @ai_function
-        # decoration when SDK is present, or via the simple-wrapper fallback
-        # the extension uses when the SDK is absent).
-        names = {getattr(t, "__ai_name__", getattr(t, "__name__", "")) for t in tools}
-        assert "ms_graph.search_people" in names
-        assert "ms_graph.get_my_profile" in names
-        assert "ms_graph.search_messages" in names
-
-    def test_tool_counts_match_across_formats(self) -> None:
-        """Spec: Tool counts match across formats (D11)."""
-        ext = _build_ext()
-        assert len(ext.as_langchain_tools()) == len(ext.as_ms_agent_tools())
-
-    def test_tool_names_match_by_index(self) -> None:
-        """Spec: Tool names match by index."""
-        ext = _build_ext()
-        lc = ext.as_langchain_tools()
-        msaf = ext.as_ms_agent_tools()
-        for i, lc_tool in enumerate(lc):
-            msaf_name = getattr(
-                msaf[i], "__ai_name__", getattr(msaf[i], "__name__", "")
-            )
-            assert lc_tool.name == msaf_name, (
-                f"index {i}: {lc_tool.name!r} vs {msaf_name!r}"
-            )
+        for spec in ext.tool_specs():
+            assert spec.source == "extension:ms_graph"
+            assert spec.input_schema.get("type") == "object"
 
 
 # ---------------------------------------------------------------------------
@@ -508,7 +484,7 @@ class TestPageCeilingDescription:
 
     def test_search_messages_description_contains_page_ceiling(self) -> None:
         ext = _build_ext()
-        tools = {t.name: t for t in ext.as_langchain_tools()}
+        tools = {s.name: s for s in ext.tool_specs()}
         tool = tools["ms_graph.search_messages"]
         assert "page_ceiling" in tool.description
 

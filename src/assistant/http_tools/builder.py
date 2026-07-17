@@ -1,9 +1,18 @@
-"""Builds a :class:`langchain_core.tools.StructuredTool` per OpenAPI operation.
+"""Builds a :class:`~assistant.core.toolspec.ToolSpec` per OpenAPI operation.
 
 Runtime Pydantic model generation (D1), single shared httpx client
 (D2), URL-safe path-parameter encoding, streaming response-size cap
 (D9), content-type validation, and description fallback (D6) all live
 here.
+
+P17 ``mcp-server-exposure`` (spec ``tool-spec``): the builder emits
+harness-neutral ``ToolSpec`` instances instead of LangChain
+``StructuredTool``s. The runtime Pydantic model still exists — it now
+validates arguments *inside* the ToolSpec handler (so every rendering
+surface gets identical validation) and supplies the JSON-Schema
+``input_schema`` via ``model_json_schema()``. Harnesses render the
+specs through the per-harness adapters in
+``assistant.harnesses.tool_adapters``.
 """
 
 from __future__ import annotations
@@ -15,13 +24,13 @@ from collections.abc import Callable, Coroutine
 from typing import Any
 
 import httpx
-from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field, create_model
 
 from assistant.core.resilience import resilient_http
+from assistant.core.toolspec import ToolSpec, tool_spec_from_model
 from assistant.http_tools.openapi import ParsedOperation
 from assistant.http_tools.registry import tool_key
-from assistant.telemetry.tool_wrap import wrap_http_tool
+from assistant.telemetry.tool_wrap import wrap_http_tool_spec
 
 logger = logging.getLogger(__name__)
 
@@ -192,11 +201,11 @@ def _build_tool(
     operation: ParsedOperation,
     client: httpx.AsyncClient,
     auth_headers: dict[str, str],
-) -> StructuredTool:
-    """Wrap an OpenAPI operation as a LangChain StructuredTool.
+) -> ToolSpec:
+    """Compile an OpenAPI operation into a harness-neutral ToolSpec.
 
-    See spec "Tool Builder Generates Typed StructuredTool" for the
-    full behavior contract.
+    See spec "Tool Builder Generates a Typed ToolSpec" for the full
+    behavior contract.
     """
     op_id = operation.operation_id
     name = tool_key(source_name, op_id)
@@ -266,28 +275,32 @@ def _build_tool(
             return json.loads(raw)
 
     # P9 error-resilience: wrap the inner coroutine with the resilience
-    # decorator before LangChain receives it. Composition order outside-in:
-    #   wrap_http_tool (observability summary span)
-    #     → resilient_http (retry + breaker + per-attempt start_span events)
-    #       → _coroutine (raw HTTP call)
+    # decorator before the ToolSpec handler receives it. Composition
+    # order outside-in:
+    #   wrap_http_tool_spec (observability summary span)
+    #     → Pydantic validation (tool_spec_from_model handler)
+    #       → resilient_http (retry + breaker + per-attempt start_span events)
+    #         → _coroutine (raw HTTP call)
     # See design D9 in the error-resilience proposal.
     resilient_coroutine = resilient_http(
         breaker_key=f"http_tools:{source_name}",
     )(_coroutine)
 
-    # LangChain's StructuredTool.from_function stores the coroutine
-    # and calls it with **validated_model.model_dump().
-    tool = StructuredTool.from_function(
-        coroutine=_async_wrapper(resilient_coroutine),
+    # The ToolSpec handler validates kwargs against the runtime Pydantic
+    # model, then invokes the resilient coroutine — the same validation
+    # LangChain's StructuredTool used to apply, now surface-independent.
+    spec = tool_spec_from_model(
         name=name,
         description=description,
-        args_schema=args_schema,
+        args_model=args_schema,
+        handler=_async_wrapper(resilient_coroutine),
+        source=f"http:{source_name}",
     )
     # Spec http-tools "HTTP Tool Invocations Emit Observability Span":
-    # every constructed tool is wrapped here so each invocation emits
+    # every constructed spec is wrapped here so each invocation emits
     # one ``trace_tool_call(tool_kind="http", ...)`` and the wrapping
     # is transparent to ``discover_tools`` consumers.
-    return wrap_http_tool(tool)
+    return wrap_http_tool_spec(spec)
 
 
 def _async_wrapper(

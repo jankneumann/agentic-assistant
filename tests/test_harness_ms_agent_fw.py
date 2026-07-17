@@ -5,7 +5,7 @@ Covers ms-agent-framework-harness spec scenarios:
 - "Harness is registered and instantiable"
 - "create_agent no longer raises NotImplementedError"
 - "Agent receives composed instructions"
-- "Agent receives extension tools via as_ms_agent_tools"
+- "create_agent consumes the aggregated ToolSpec list as-is" (P17)
 - "Chat client selection respects persona configuration"
 - "invoke returns the agent's response string"
 - "invoke propagates underlying exceptions unchanged"
@@ -163,18 +163,19 @@ class _FakeGuardrailProvider:
 
 
 class _FakeExtension:
+    """P17 tool-spec migration: harnesses MUST NOT derive tools from
+    extensions at all — any tool-producing method call raises loud."""
+
     def __init__(self, name: str, tools: list[Any]) -> None:
         self.name = name
         self._tools = tools
 
-    def as_langchain_tools(self):
-        # MSAF harness MUST NOT call this — assert by raising loud here.
+    def tool_specs(self):
         raise AssertionError(
-            "MSAF harness called as_langchain_tools(); spec D11 forbids this"
+            "MSAF harness called tool_specs(); the harness-adapter spec "
+            "forbids harnesses deriving tools from extensions — "
+            "ToolPolicy is the sole aggregator"
         )
-
-    def as_ms_agent_tools(self):
-        return list(self._tools)
 
 
 def _patched_agent_factory():
@@ -222,11 +223,13 @@ def test_create_agent_passes_composed_instructions() -> None:
     assert "You are work assistant." in instructions
 
 
-def test_create_agent_passes_extension_tools_via_as_ms_agent_tools() -> None:
-    """Spec: Agent receives extension tools via as_ms_agent_tools."""
-    outlook_tool = MagicMock(name="outlook_list_messages")
+def test_create_agent_consumes_aggregated_tool_list_as_is() -> None:
+    """Spec harness-adapter: ``tools`` is the complete, already-
+    aggregated list from ``ToolPolicy.authorized_tools()``; the harness
+    renders it via the MSAF adapter and derives nothing from
+    ``extensions`` (P17 tool-spec migration)."""
     ad_hoc = MagicMock(name="ad_hoc_tool")
-    outlook = _FakeExtension("outlook", [outlook_tool])
+    outlook = _FakeExtension("outlook", [MagicMock(name="unused")])
 
     h = MSAgentFrameworkHarness(
         _persona(),
@@ -239,11 +242,45 @@ def test_create_agent_passes_extension_tools_via_as_ms_agent_tools() -> None:
             h.create_agent(tools=[ad_hoc], extensions=[outlook])
         )
     tools = agent.kwargs["tools"]
+    # Non-ToolSpec entries pass through the adapter unchanged.
     assert ad_hoc in tools
-    assert outlook_tool in tools
-    # MSAF harness MUST NOT consult as_langchain_tools(); _FakeExtension
-    # raises AssertionError if it does — this test passing proves we
-    # didn't call it.
+    assert len(tools) == 1
+    # _FakeExtension raises if the harness consults tool_specs() —
+    # this test passing proves it didn't.
+
+
+def test_create_agent_renders_tool_specs_via_msaf_adapter() -> None:
+    """ToolSpec entries in ``tools`` are rendered to MSAF FunctionTool
+    instances (name/description/schema preserved)."""
+    from agent_framework import FunctionTool
+
+    from assistant.core.toolspec import ToolSpec
+
+    async def _handler(query: str) -> str:
+        return f"hit:{query}"
+
+    spec = ToolSpec(
+        name="outlook.search_messages",
+        description="Search.",
+        input_schema={
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+        handler=_handler,
+        source="extension:outlook",
+    )
+    h = MSAgentFrameworkHarness(
+        _persona(),
+        _role(),
+        chat_client_factory=lambda: _FakeChatClient(),
+    )
+    with _patched_agent_factory():
+        agent = asyncio.run(h.create_agent(tools=[spec], extensions=[]))
+    [tool] = agent.kwargs["tools"]
+    assert isinstance(tool, FunctionTool)
+    assert tool.name == "outlook.search_messages"
+    assert tool.description == "Search."
 
 
 def test_create_agent_uses_azure_chat_client_when_persona_says_so() -> None:
@@ -266,36 +303,31 @@ def test_create_agent_uses_azure_chat_client_when_persona_says_so() -> None:
     assert captured_client == [azure_marker]
 
 
-# ── Tool policy filtering ────────────────────────────────────────────
+# ── Tool aggregation stays upstream ──────────────────────────────────
 
 
-def test_tool_policy_filters_authorized_extensions_first() -> None:
-    """Spec: Authorized extensions are filtered through ToolPolicy.
+def test_harness_never_derives_tools_from_extensions() -> None:
+    """Spec harness-adapter: the harness MUST NOT re-aggregate,
+    re-derive, filter, or re-wrap tools from ``extensions`` — the tool
+    policy already produced the complete list (P17 tool-spec
+    migration; replaces the pre-P17 authorized_extensions filtering
+    inside create_agent)."""
+    outlook = _FakeExtension("outlook", [MagicMock(name="outlook_tool")])
+    teams = _FakeExtension("teams", [MagicMock(name="teams_tool")])
 
-    The harness MUST consult ``ToolPolicy.authorized_extensions`` before
-    reading ``as_ms_agent_tools()`` — the unauthorized extension's tools
-    MUST NOT flow into the constructed Agent.
-    """
-    outlook_tool = MagicMock(name="outlook_tool")
-    teams_tool = MagicMock(name="teams_tool")
-    outlook = _FakeExtension("outlook", [outlook_tool])
-    teams = _FakeExtension("teams", [teams_tool])
-
-    # Policy authorizes ONLY outlook.
-    tool_policy = _FakeToolPolicy(allowed=[outlook])
     h = MSAgentFrameworkHarness(
         _persona(),
         _role(),
-        tool_policy=tool_policy,
+        tool_policy=_FakeToolPolicy(allowed=[outlook]),
         chat_client_factory=lambda: _FakeChatClient(),
     )
     with _patched_agent_factory():
         agent = asyncio.run(
             h.create_agent(tools=[], extensions=[outlook, teams])
         )
-    tools = agent.kwargs["tools"]
-    assert outlook_tool in tools
-    assert teams_tool not in tools
+    # Neither extension's tools flowed in: the aggregated list was
+    # empty, so the agent's tool set is empty.
+    assert agent.kwargs["tools"] == []
 
 
 # ── invoke ───────────────────────────────────────────────────────────

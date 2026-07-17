@@ -13,6 +13,7 @@ from assistant.core.resilience import (
     HealthStatus,
     default_health_status_for_unimplemented,
 )
+from assistant.core.toolspec import ToolSpec
 from assistant.extensions.base import ExtensionBase
 
 
@@ -30,10 +31,7 @@ class StubExtension(ExtensionBase):
         self.config = config
         self.scopes: list[str] = list(config.get("scopes", []) or [])
 
-    def as_langchain_tools(self) -> list[Any]:
-        return []
-
-    def as_ms_agent_tools(self) -> list[Any]:
+    def tool_specs(self) -> list[ToolSpec]:
         return []
 
     async def health_check(self) -> HealthStatus:

@@ -49,10 +49,7 @@ def create_extension(config, *, persona=None):
     class _Ext:
         name = {name!r}
 
-        def as_langchain_tools(self):
-            return []
-
-        def as_ms_agent_tools(self):
+        def tool_specs(self):
             return []
 
         async def health_check(self):
@@ -425,10 +422,7 @@ def test_hookless_class_still_satisfies_protocol() -> None:
     class _Legacy:
         name = "legacy"
 
-        def as_langchain_tools(self) -> list[Any]:
-            return []
-
-        def as_ms_agent_tools(self) -> list[Any]:
+        def tool_specs(self) -> list[Any]:
             return []
 
         async def health_check(self) -> Any:
