@@ -22,6 +22,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+from assistant.core.capabilities.health import (
+    EndpointHealth,
+    EndpointHealthMonitor,
+    HealthStatus,
+    default_health_monitor,
+    parse_endpoint_health,
+)
+
 #: Closed wire-dialect vocabulary — the five converged wire protocols
 #: (model-provider spec "ModelRef Type"). No new wire protocol is
 #: invented; local backends (vLLM, Ollama, NIM) and OpenRouter are all
@@ -101,6 +109,8 @@ class ModelRef:
     the OpenRouter ``/models`` schema — defaults to ``name`` when
     omitted). ``credential_ref`` is a :class:`CredentialProvider`
     lookup key — a ``ModelRef`` never carries a resolved secret value.
+    ``health`` is the parsed optional ``health:`` block (P20
+    local-inference-node) — ``None`` when the entry declares none.
     """
 
     name: str
@@ -112,6 +122,7 @@ class ModelRef:
     pricing: dict[str, Any] = field(default_factory=dict)
     context_length: int = 0
     modalities: dict[str, Any] = field(default_factory=dict)
+    health: EndpointHealth | None = None
 
     def __post_init__(self) -> None:
         if self.dialect not in DIALECTS:
@@ -219,6 +230,22 @@ def parse_model_registry(raw: dict[str, Any] | None) -> ModelRegistry:
                 f"models entry {name!r}: expected a mapping, got "
                 f"{type(spec).__name__}."
             )
+        raw_health = spec.get("health")
+        health: EndpointHealth | None = None
+        if raw_health is not None:
+            endpoint = spec.get("endpoint", "") or ""
+            if not endpoint:
+                raise ModelRegistryError(
+                    f"models entry {name!r}: health: requires a non-empty "
+                    f"endpoint — there is nothing to probe on a "
+                    f"hosted-default entry."
+                )
+            try:
+                health = parse_endpoint_health(raw_health)
+            except ValueError as exc:
+                raise ModelRegistryError(
+                    f"models entry {name!r}: {exc}"
+                ) from exc
         try:
             entries[name] = ModelRef(
                 name=name,
@@ -230,6 +257,7 @@ def parse_model_registry(raw: dict[str, Any] | None) -> ModelRegistry:
                 pricing=dict(spec.get("pricing") or {}),
                 context_length=int(spec.get("context_length") or 0),
                 modalities=dict(spec.get("modalities") or {}),
+                health=health,
             )
         except ValueError as exc:
             raise ModelRegistryError(f"models entry {name!r}: {exc}") from exc
@@ -306,13 +334,56 @@ class RegistryModelProvider:
     tag are candidates, ordered by preferred-tag match count
     (descending) then declaration order, each followed by its filtered
     ``fallbacks``. Duplicates keep their first position.
+
+    Health filtering (P20 local-inference-node) runs AFTER tag
+    filtering on both paths, consulting only the monitor's cached
+    state (the sync resolve path never probes): entries with a fresh
+    unhealthy verdict are skipped so the fallback chain proceeds;
+    entries without a ``health:`` block, never-probed entries, and
+    stale verdicts stay eligible. When health filtering would empty a
+    tag-satisfying chain, resolution fails closed — it can only
+    remove candidates, never re-admit an entry lacking a required tag
+    such as ``private-data-ok``.
     """
 
-    def __init__(self, registry: ModelRegistry) -> None:
+    def __init__(
+        self,
+        registry: ModelRegistry,
+        *,
+        health_monitor: EndpointHealthMonitor | None = None,
+    ) -> None:
         self._registry = registry
+        self._health_monitor = health_monitor
 
     def list_models(self) -> list[ModelRef]:
         return list(self._registry.entries.values())
+
+    def _apply_health_filter(
+        self, request: ModelRequest, chain: list[ModelRef]
+    ) -> list[ModelRef]:
+        """Drop chain members with a fresh unhealthy verdict.
+
+        ``chain`` is already required-tag-filtered and non-empty. An
+        emptied chain raises rather than substituting anything — the
+        fail-closed guarantee for privacy tags (design D2).
+        """
+        monitor = self._health_monitor or default_health_monitor()
+        healthy = [
+            ref
+            for ref in chain
+            if monitor.status(ref) is not HealthStatus.UNHEALTHY
+        ]
+        if healthy:
+            return healthy
+        raise ModelResolutionError(
+            f"Every entry satisfying required_tags="
+            f"{sorted(request.required_tags)} for consumer "
+            f"{request.consumer!r} is currently unhealthy: "
+            f"{[ref.name for ref in chain]}. Refusing to substitute an "
+            f"entry without the required tags — fix or restart the "
+            f"endpoint(s), or re-probe with 'assistant models "
+            f"check-health'."
+        )
 
     def _resolve_binding(
         self, request: ModelRequest, bound_name: str
@@ -333,7 +404,7 @@ class RegistryModelProvider:
                 f"but neither it nor its declared fallbacks carry "
                 f"required_tags={sorted(required)}."
             )
-        return chain
+        return self._apply_health_filter(request, chain)
 
     def resolve(self, request: ModelRequest) -> list[ModelRef]:
         bindings = self._registry.bindings
@@ -381,7 +452,7 @@ class RegistryModelProvider:
                 fallback = self._registry.entries[fallback_name]
                 if required.issubset(fallback.tags):
                     _append(fallback)
-        return chain
+        return self._apply_health_filter(request, chain)
 
 
 class HostProvidedModelProvider:
