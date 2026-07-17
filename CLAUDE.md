@@ -39,6 +39,7 @@ uv sync                                            # install deps
 # Run
 uv run assistant -p personal                       # CLI with persona
 uv run assistant serve -p personal -r coder        # AG-UI SSE server (loopback only)
+uv run assistant serve -p personal --a2a           # + A2A surface (agent card, /a2a/v1)
 # Smoke test from another shell:
 #   curl -N -H 'Content-Type: application/json' \
 #     -d '{"message":"hello"}' http://127.0.0.1:8765/chat
@@ -122,6 +123,40 @@ checkout is absent (`EVAL_GATE_REQUIRE=1` makes that fatal). Exported
 dataset stubs land git-ignored in `evaluation/datasets/exported/` and
 need human completion before promotion into a suite — self-improvement
 is propose → eval → human-approved diff, never self-merge.
+
+## A2A Server (P6)
+
+`assistant serve --a2a` mounts the A2A agent↔agent protocol surface
+(guiding principle 7: A2A is the adopted agent↔agent standard)
+alongside AG-UI on the same loopback-default server:
+
+- **Agent card**: `GET /.well-known/agent-card.json` (A2A 0.3.0
+  canonical) and legacy `GET /.well-known/agent.json` — same card at
+  both paths; built from persona + enabled roles (one skill per role),
+  `capabilities.streaming=true`.
+- **JSON-RPC**: `POST /a2a/v1` with `message/send` (blocking; returns
+  the terminal Task) and `message/stream` (SSE; each `data:` line is a
+  JSON-RPC envelope wrapping one A2A event). REST-style alias:
+  `POST /a2a/v1/message:stream` (bare MessageSendParams in, bare
+  events out).
+- **Sessions**: A2A `contextId` ≡ session `thread_id`; the in-memory
+  `SessionRegistry` (`src/assistant/a2a/task_handler.py` — first
+  consumer of the harness-adapter Session Registry requirement)
+  creates a FRESH harness+agent per context, reuses known contextIds,
+  and REJECTS unknown ones (durable/resumable sessions wait on the
+  Postgres checkpointer).
+- **Approval bridge**: a guardrail approval denial
+  (`ModelCallDeniedError`, P13 deny-until-interrupt) surfaces as task
+  state `input-required` before the final `failed` update —
+  observational only until interrupt/resume lands.
+- **Types are hand-rolled** in `src/assistant/a2a/types.py`
+  (spec-shaped, camelCase wire aliases); adopt the official `a2a-sdk`
+  later — migration is a mechanical import swap. The HarnessEvent→A2A
+  mapping lives in `src/assistant/transports/a2a/mapper.py` (sibling
+  of the AG-UI mapper; AG-UI untouched).
+- **Deferred**: `tasks/get`/`tasks/cancel`, push notifications,
+  multi-turn task continuation, file/data parts (rejected with
+  -32005), agent-card auth (P25).
 
 ## OpenSpec Workflow
 
