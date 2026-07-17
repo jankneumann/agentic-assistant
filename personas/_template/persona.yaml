@@ -108,6 +108,42 @@ tool_sources:
 #   2. Public:  src/assistant/extensions/<module>.py (generic stubs in P1)
 extensions: []
 
+# ── Scheduled jobs (P7 — scheduler) ──
+# Optional. Run with `assistant daemon -p <persona>`. Each named job
+# declares exactly one trigger:
+#   cron: "<5-field expr>"   fires at matching UTC wall-clock times
+#   interval: <seconds>      fires every N seconds (first fire after N)
+#   calendar: <source>       fires lead_minutes before upcoming events
+#                            from a CalendarTriggerSource extension
+#                            (gcal/outlook — lands in a later phase;
+#                            declared jobs are skipped with a warning
+#                            until a matching source is enabled)
+# `consumer` is the models: bindings key the job's harness resolves
+# its chat model under (default: scheduler). Bind `scheduler` to a
+# cheap/local entry so recurring background work never burns the
+# interactive tier (P19 routing).
+#
+# schedules:
+#   morning_briefing:
+#     trigger: {cron: "0 7 * * *"}
+#     role: chief_of_staff
+#     prompt: "Prepare my morning briefing: calendar, urgent email, open tasks."
+#     consumer: scheduler           # optional (default: scheduler)
+#     enabled: true                 # optional (default: true)
+#   email_triage:
+#     trigger: {interval: 900}
+#     role: chief_of_staff
+#     prompt: "Triage new email: flag urgent items, draft suggested replies."
+#   pre_meeting_brief:
+#     trigger: {calendar: gcal, lead_minutes: 15}
+#     role: researcher
+#     prompt: "Prepare a one-page brief for the upcoming meeting."
+#
+# DAEMON NOTE: long-running daemons should set
+# guardrails.budgets.model_call.persist: file (below) — the default
+# in-memory spend ledger resets on every restart, silently re-arming
+# daily/monthly ceilings.
+
 # ── Guardrails (P13 — security-hardening) ──
 # Optional. Omit the section entirely to keep allow-all behavior.
 # guardrails:
