@@ -4,12 +4,13 @@ Per OpenSpec change ``ms-graph-extension`` (P5), spec
 ``ms-extensions / ms_graph Extension Real Implementation``. Replaces the
 P1 11-line stub with the canonical extension shape (D6, D11):
 
-- One ``MsGraphExtension`` class with the seven-method ``Extension``
+- One ``MsGraphExtension`` class implementing the ``Extension``
   contract.
 - A canonical private async method per tool (``_search_people``,
-  ``_get_my_profile``, ``_search_messages``); ``as_langchain_tools()`` and
-  ``as_ms_agent_tools()`` each wrap the same private method, so behaviour
-  is identical at the wire level regardless of harness.
+  ``_get_my_profile``, ``_search_messages``); ``tool_specs()`` compiles
+  each into a harness-neutral :class:`~assistant.core.toolspec.ToolSpec`
+  (P17 tool-spec migration), so behaviour is identical at the wire
+  level regardless of which per-harness adapter renders it.
 - ``health_check()`` derived from the per-extension circuit breaker
   (``extension:ms_graph``) via :func:`health_status_from_breaker`.
 - ``create_extension(config, *, persona)`` factory that short-circuits
@@ -32,10 +33,8 @@ from __future__ import annotations
 
 import unicodedata
 import urllib.parse
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from assistant.core.cloud_client import CloudGraphClient
@@ -45,6 +44,7 @@ from assistant.core.resilience import (
     get_circuit_breaker_registry,
     health_status_from_breaker,
 )
+from assistant.core.toolspec import ToolSpec, tool_spec_from_model
 from assistant.extensions.base import ExtensionBase
 
 if TYPE_CHECKING:
@@ -190,50 +190,7 @@ def _raise_breaker_open_error(
 
 
 # ---------------------------------------------------------------------------
-# MSAF tool decoration (D11) — gated behind try/except per the briefing.
-# ---------------------------------------------------------------------------
-
-
-try:  # pragma: no cover — exercised at import time only
-    from agent_framework import ai_function as _real_ai_function  # type: ignore[attr-defined]
-
-    def _ai_function_wrapper(name: str, description: str) -> Callable[..., Any]:
-        def _decorate(fn: Callable[..., Any]) -> Callable[..., Any]:
-            # Wrap in a free async function so the SDK decorator and any
-            # custom attributes can attach without colliding with bound-
-            # method machinery (you can't set attributes on a bound method).
-            async def _async_proxy(**kwargs: Any) -> Any:
-                return await fn(**kwargs)
-
-            _async_proxy.__name__ = name.replace(".", "_")
-            decorated: Callable[..., Any] = _real_ai_function(
-                name=name, description=description
-            )(_async_proxy)
-            decorated.__ai_name__ = name  # type: ignore[attr-defined]
-            decorated.__ai_description__ = description  # type: ignore[attr-defined]
-            return decorated
-
-        return _decorate
-
-except ImportError:
-    # SDK not installed — fall back to a thin wrapper that records the
-    # tool name on the free callable so dual-format parity tests still
-    # work. Real MSAF integration lights up when ``agent-framework`` lands.
-    def _ai_function_wrapper(name: str, description: str) -> Callable[..., Any]:
-        def _decorate(fn: Callable[..., Any]) -> Callable[..., Any]:
-            async def _async_proxy(**kwargs: Any) -> Any:
-                return await fn(**kwargs)
-
-            _async_proxy.__name__ = name.replace(".", "_")
-            _async_proxy.__ai_name__ = name  # type: ignore[attr-defined]
-            _async_proxy.__ai_description__ = description  # type: ignore[attr-defined]
-            return _async_proxy
-
-        return _decorate
-
-
-# ---------------------------------------------------------------------------
-# LangChain args schemas
+# Args schemas (Pydantic — drive ToolSpec.input_schema and validation)
 # ---------------------------------------------------------------------------
 
 
@@ -325,11 +282,12 @@ class MsGraphExtension(ExtensionBase):
         if callable(refresh):
             await refresh()
 
-    # ----- Tool surfaces -----
+    # ----- Tool surface (ToolSpec — spec tool-spec / P17) -----
 
-    def as_langchain_tools(self) -> list[StructuredTool]:
+    def tool_specs(self) -> list[ToolSpec]:
+        source = f"extension:{self.name}"
         return [
-            self._build_lc_tool(
+            tool_spec_from_model(
                 name="ms_graph.search_people",
                 description=(
                     "Search Microsoft 365 People (the active user's relevance-"
@@ -339,20 +297,22 @@ class MsGraphExtension(ExtensionBase):
                     f"page_ceiling={_PAGE_CEILING}; raises page_ceiling_exceeded "
                     "above. Narrow your query to stay within bounds.)"
                 ),
-                args_schema=_SearchPeopleArgs,
-                coroutine=self._search_people,
+                args_model=_SearchPeopleArgs,
+                handler=self._search_people,
+                source=source,
             ),
-            self._build_lc_tool(
+            tool_spec_from_model(
                 name="ms_graph.get_my_profile",
                 description=(
                     "Read the active user's Microsoft Graph profile (/me). "
                     "Returns the user dict (displayName, mail, jobTitle, "
                     "userPrincipalName, etc.). Single GET, no pagination."
                 ),
-                args_schema=_GetMyProfileArgs,
-                coroutine=self._get_my_profile,
+                args_model=_GetMyProfileArgs,
+                handler=self._get_my_profile,
+                source=source,
             ),
-            self._build_lc_tool(
+            tool_spec_from_model(
                 name="ms_graph.search_messages",
                 description=(
                     "Cross-mailbox search of the active user's messages "
@@ -363,29 +323,11 @@ class MsGraphExtension(ExtensionBase):
                     "page_ceiling_exceeded above. Narrow your query to stay "
                     "within bounds.)"
                 ),
-                args_schema=_SearchMessagesArgs,
-                coroutine=self._search_messages,
+                args_model=_SearchMessagesArgs,
+                handler=self._search_messages,
+                source=source,
             ),
         ]
-
-    def as_ms_agent_tools(self) -> list[Callable[..., Any]]:
-        # Author the MSAF wrappers in the same order as the LangChain
-        # tools so dual-format parity tests can compare by index (D11).
-        sp = _ai_function_wrapper(
-            name="ms_graph.search_people",
-            description="Search Microsoft 365 People; returns person dicts.",
-        )(self._search_people)
-        gp = _ai_function_wrapper(
-            name="ms_graph.get_my_profile",
-            description="Read the active user's /me profile.",
-        )(self._get_my_profile)
-        sm = _ai_function_wrapper(
-            name="ms_graph.search_messages",
-            description=(
-                "Cross-mailbox message search via /me/messages (paginated)."
-            ),
-        )(self._search_messages)
-        return [sp, gp, sm]
 
     # ----- Private canonical impls -----
 
@@ -448,25 +390,6 @@ class MsGraphExtension(ExtensionBase):
         """
         if self._breaker.state == "open":
             _raise_breaker_open_error(self.name, self._breaker.state)
-
-    def _build_lc_tool(
-        self,
-        *,
-        name: str,
-        description: str,
-        args_schema: type[BaseModel],
-        coroutine: Callable[..., Any],
-    ) -> StructuredTool:
-        # StructuredTool.from_function wires args_schema through Pydantic
-        # validation before invoking the coroutine, so input validation
-        # for typed kwargs (top: int) is free; the path-segment
-        # validator (D23) covers the rest at the per-tool boundary.
-        return StructuredTool.from_function(
-            coroutine=coroutine,
-            name=name,
-            description=description,
-            args_schema=args_schema,
-        )
 
 
 # ---------------------------------------------------------------------------

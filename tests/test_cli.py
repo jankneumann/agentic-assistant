@@ -281,30 +281,30 @@ def test_export_rejects_sdk_harness(stub_factory) -> None:
 
 def _canned_registry() -> object:
     """Build a small ``HttpToolRegistry`` for list-tools / startup tests."""
-    from langchain_core.tools import StructuredTool
-    from pydantic import BaseModel
-
+    from assistant.core.toolspec import ToolSpec
     from assistant.http_tools import HttpToolRegistry
-
-    class _Args(BaseModel):
-        name: str
 
     async def _noop(name: str) -> None:
         return None
 
+    schema = {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": ["name"],
+    }
     reg = HttpToolRegistry()
     reg.register(
         "backend", "list_items",
-        StructuredTool.from_function(
-            coroutine=_noop, name="backend:list_items",
-            description="List items", args_schema=_Args,
+        ToolSpec(
+            name="backend:list_items", description="List items",
+            input_schema=dict(schema), handler=_noop,
         ),
     )
     reg.register(
         "backend", "create_item",
-        StructuredTool.from_function(
-            coroutine=_noop, name="backend:create_item",
-            description="Create an item", args_schema=_Args,
+        ToolSpec(
+            name="backend:create_item", description="Create an item",
+            input_schema=dict(schema), handler=_noop,
         ),
     )
     return reg
@@ -343,13 +343,8 @@ def test_list_tools_with_successful_sources(
     """Per spec: per-source sections with tool names + exit 0 on success."""
     monkeypatch.setenv("CONTENT_ANALYZER_URL", "http://127.0.0.1:1/ignored")
 
-    from langchain_core.tools import StructuredTool
-    from pydantic import BaseModel
-
+    from assistant.core.toolspec import ToolSpec
     from assistant.http_tools import HttpToolRegistry
-
-    class _Args(BaseModel):
-        q: str
 
     async def _noop(q: str) -> None:
         return None
@@ -359,9 +354,15 @@ def test_list_tools_with_successful_sources(
     registry = HttpToolRegistry()
     registry.register(
         "content_analyzer", "search",
-        StructuredTool.from_function(
-            coroutine=_noop, name="content_analyzer:search",
-            description="Search content", args_schema=_Args,
+        ToolSpec(
+            name="content_analyzer:search",
+            description="Search content",
+            input_schema={
+                "type": "object",
+                "properties": {"q": {"type": "string"}},
+                "required": ["q"],
+            },
+            handler=_noop,
         ),
     )
 
@@ -392,13 +393,8 @@ def test_list_tools_exits_zero_when_warning_but_tools_registered(
 
     # Canned registry has `backend:*` tools, not `content_analyzer:*`,
     # so we need a registry keyed by the actually-configured source name.
-    from langchain_core.tools import StructuredTool
-    from pydantic import BaseModel
-
+    from assistant.core.toolspec import ToolSpec
     from assistant.http_tools import HttpToolRegistry
-
-    class _Args(BaseModel):
-        pass
 
     async def _noop() -> None:
         return None
@@ -406,9 +402,11 @@ def test_list_tools_exits_zero_when_warning_but_tools_registered(
     registry = HttpToolRegistry()
     registry.register(
         "content_analyzer", "search",
-        StructuredTool.from_function(
-            coroutine=_noop, name="content_analyzer:search",
-            description="Search content", args_schema=_Args,
+        ToolSpec(
+            name="content_analyzer:search",
+            description="Search content",
+            input_schema={"type": "object", "properties": {}},
+            handler=_noop,
         ),
     )
 

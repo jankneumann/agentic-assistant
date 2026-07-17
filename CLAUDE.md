@@ -40,6 +40,7 @@ uv sync                                            # install deps
 uv run assistant -p personal                       # CLI with persona
 uv run assistant serve -p personal -r coder        # AG-UI SSE server (loopback only)
 uv run assistant serve -p personal --a2a           # + A2A surface (agent card, /a2a/v1)
+uv run assistant serve -p personal --mcp           # + MCP surface (streamable HTTP at /mcp)
 # Smoke test from another shell:
 #   curl -N -H 'Content-Type: application/json' \
 #     -d '{"message":"hello"}' http://127.0.0.1:8765/chat
@@ -79,10 +80,25 @@ openspec show <change-id>
 - `src/assistant/harnesses/` — harness adapters (Deep Agents implemented;
   MS Agent Framework is a registered-but-stubbed placeholder until the
   `ms-graph-extension` phase)
-- `src/assistant/extensions/` — extension implementations (P1 ships empty-tool
-  stubs for `ms_graph`, `teams`, `sharepoint`, `outlook`, `gmail`, `gcal`,
-  `gdrive`; real impls land in `ms-graph-extension` and `google-extensions`
-  phases). Since P10 `extension-lifecycle`, extensions may implement
+- `src/assistant/core/toolspec.py` — `ToolSpec`, the single internal,
+  harness-neutral tool representation (MCP-shaped: name, description,
+  JSON-Schema `input_schema`, async `handler`, `source` provenance;
+  P17 `mcp-server-exposure`). Every tool source compiles into it:
+  extensions via `Extension.tool_specs()`, OpenAPI-derived HTTP tools
+  via the `http_tools` builder. `ToolPolicy.authorized_tools()` is the
+  SOLE aggregator (telemetry-wrapped there via
+  `wrap_extension_tool_specs`); harnesses render the list through the
+  per-harness adapters in `src/assistant/harnesses/tool_adapters.py`
+  (LangChain `StructuredTool`, MSAF `FunctionTool`, `mcp.types.Tool`)
+  and never derive tools from extensions. Argument validation lives in
+  the handler (`tool_spec_from_model`), so every surface — including
+  direct MCP dispatch — validates identically.
+- `src/assistant/extensions/` — extension implementations. The
+  Extension protocol is `name` + `tool_specs() -> list[ToolSpec]` +
+  `health_check()` — the legacy `as_langchain_tools()` /
+  `as_ms_agent_tools()` dual surface was REMOVED in P17 (tool-spec
+  exit criterion; no shim retained — out-of-tree structural extensions
+  must implement `tool_specs()`). Since P10 `extension-lifecycle`, extensions may implement
   optional async hooks `initialize()` / `shutdown()` /
   `refresh_credentials()` — NOT required Protocol members (private
   structural extensions stay compatible); subclass `ExtensionBase`
@@ -281,6 +297,39 @@ rationale in the 2026-07-07 architecture review §1:
   modalities for fields they left empty — declared values win,
   missing cache is a silent no-op (load never touches the network).
 
+## MCP Server (P17)
+
+`assistant serve --mcp` exposes the assistant as an MCP server
+(complementary to A2A — different protocol, different clients;
+protocol-standards analysis 2026-07-16) on the same loopback-default
+server:
+
+- **Transport**: official `mcp` Python SDK, low-level `Server` +
+  `StreamableHTTPSessionManager(stateless=True, json_response=True)`
+  mounted at `POST /mcp` by `make_app(..., enable_mcp=True)`
+  (`src/assistant/mcp/server.py`; the lifespan holds
+  `session_manager.run()` open). Every POST is self-contained — no
+  MCP transport session; plain JSON responses.
+- **Tools**: one `ask_<role>` per enabled role plus a generic `ask`
+  bound to the serving role (`ask` and `ask_<serving-role>` share a
+  registry, so contexts are interchangeable). The persona's own tool
+  inventory is NOT re-exported — callers delegate tasks; the
+  assistant's ToolPolicy governs what *it* calls. `tools/list` is a
+  pure `render_mcp_tools` rendering of MCP-shaped ToolSpecs (no
+  translation layer); `tools/call` validates args against
+  `inputSchema` and maps handler errors to `isError` results.
+- **Sessions**: tool argument `context_id` ≡ session `thread_id`
+  (mirrors A2A `contextId`). Missing → fresh session (same
+  `create_harness` + agent pipeline as `/chat` and A2A, one per-role
+  `SessionRegistry`); known → reuse (per-session lock serializes
+  turns); unknown/expired → rejected as a tool error (in-memory
+  registry; durable sessions still deferred).
+- **Every result** carries `{response, context_id}` as structured
+  content — pass `context_id` back to continue the conversation.
+- **Deferred**: MCP resources/prompts/elicitation, streaming task
+  updates over MCP, transport auth (OAuth 2.1 / MCP authorization
+  spec — P25; keep the default loopback bind until then).
+
 ## OpenSpec Workflow
 
 Spec-driven development via [OpenSpec](https://github.com/Fission-AI/OpenSpec).
@@ -349,7 +398,7 @@ that waste the most time:
 See `openspec/roadmap.md` for the full sequence. Notable gaps:
 
 - **`google-extensions` phase**: `gmail`, `gcal`, `gdrive` still
-  return `[]` from `as_langchain_tools()`. The four MS extensions
+  return `[]` from `tool_specs()`. The four MS extensions
   (`ms_graph`, `outlook`, `teams`, `sharepoint`) are real after
   `ms-graph-extension` (P5) — they ship code only and stay disabled
   on the personal persona until the work persona lands in P15.

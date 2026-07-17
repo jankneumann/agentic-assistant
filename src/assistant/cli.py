@@ -316,6 +316,18 @@ def export(persona: str, role: str | None, harness: str) -> None:
         "JSON-RPC POST /a2a/v1 (message/send, message/stream)."
     ),
 )
+@click.option(
+    "--mcp",
+    "enable_mcp",
+    is_flag=True,
+    default=False,
+    help=(
+        "Also serve the MCP surface: streamable-HTTP transport at "
+        "/mcp exposing one ask_<role> tool per enabled role (plus a "
+        "generic ask). Auth is deferred to P25 — keep the default "
+        "loopback bind."
+    ),
+)
 def serve(
     persona: str,
     role: str | None,
@@ -323,6 +335,7 @@ def serve(
     host: str,
     port: int,
     enable_a2a: bool,
+    enable_mcp: bool,
 ) -> None:
     """Start the AG-UI bridge HTTP server (SSE endpoint)."""
     try:
@@ -370,23 +383,28 @@ def serve(
             err=True,
         )
 
-    # Only pass the A2A kwargs when the flag is set so the default
+    # Only pass the surface kwargs when a flag is set so the default
     # invocation keeps the exact legacy make_app(persona, role, harness)
     # call shape (and injected test fakes with that signature keep
     # working).
-    a2a_kwargs: dict = {}
+    surface_kwargs: dict = {}
     if enable_a2a:
-        a2a_kwargs = {
-            "enable_a2a": True,
-            "a2a_base_url": f"http://{host}:{port}",
-        }
+        surface_kwargs.update(
+            enable_a2a=True,
+            a2a_base_url=f"http://{host}:{port}",
+        )
         click.echo(
             f"A2A enabled: agent card at http://{host}:{port}"
             "/.well-known/agent-card.json"
         )
+    if enable_mcp:
+        surface_kwargs.update(enable_mcp=True)
+        click.echo(
+            f"MCP enabled: streamable HTTP at http://{host}:{port}/mcp"
+        )
 
     try:
-        app = make_app(persona, role_name, harness, **a2a_kwargs)
+        app = make_app(persona, role_name, harness, **surface_kwargs)
         uvicorn.run(app, host=host, port=port)
     except KeyboardInterrupt:
         pass
@@ -717,11 +735,13 @@ async def _print_tool_catalog(pc) -> int:
         for tool in tools:
             desc = (tool.description or "").split("\n", 1)[0]
             click.echo(f"  {tool.name}  — {desc}")
-            args_schema = tool.args_schema
-            if args_schema is not None and hasattr(args_schema, "model_fields"):
-                field_names = sorted(args_schema.model_fields.keys())
-                if field_names:
-                    click.echo(f"    args: {', '.join(field_names)}")
+            # ToolSpec input_schema is a JSON-Schema object; its
+            # ``properties`` keys are the argument names (P17
+            # tool-spec migration replaced the Pydantic args_schema).
+            properties = (tool.input_schema or {}).get("properties", {})
+            field_names = sorted(properties.keys())
+            if field_names:
+                click.echo(f"    args: {', '.join(field_names)}")
 
     if failed_sources:
         click.echo("\nFailures:", err=True)

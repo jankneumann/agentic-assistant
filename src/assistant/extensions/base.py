@@ -4,6 +4,22 @@ Extensions wrap external system APIs (Gmail, MS Graph, etc.) and expose them
 to the underlying harness. P1 shipped empty-tool stubs; P5 added the four
 real MS implementations; P14 adds real Google implementations.
 
+Tool surface (P17 ``mcp-server-exposure`` / spec ``tool-spec``)
+---------------------------------------------------------------
+
+Extensions expose their tools as harness-neutral
+:class:`~assistant.core.toolspec.ToolSpec` instances via a single
+``tool_specs() → list[ToolSpec]`` method. The per-harness adapters in
+``assistant.harnesses.tool_adapters`` render those specs to each
+harness's native shape (LangChain ``StructuredTool``, MSAF
+``FunctionTool``, MCP tool listings). The legacy dual-surface methods
+``as_langchain_tools()`` / ``as_ms_agent_tools()`` were REMOVED from
+the Protocol and from every in-tree extension per the ``tool-spec``
+spec's deprecation requirement (removal is the P17 exit criterion;
+owner review verdict 2026-07-16). Out-of-tree structural extensions
+must migrate to ``tool_specs()`` — no compatibility shim is consulted
+by any call site.
+
 Lifecycle hooks (P10 ``extension-lifecycle``)
 ---------------------------------------------
 
@@ -37,18 +53,17 @@ no-op defaults instead of hand-writing the hooks.
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from assistant.core.resilience import HealthStatus
+from assistant.core.toolspec import ToolSpec
 
 
 @runtime_checkable
 class Extension(Protocol):
     name: str
 
-    def as_langchain_tools(self) -> list[Any]: ...
-
-    def as_ms_agent_tools(self) -> list[Any]: ...
+    def tool_specs(self) -> list[ToolSpec]: ...
 
     async def health_check(self) -> HealthStatus: ...
 

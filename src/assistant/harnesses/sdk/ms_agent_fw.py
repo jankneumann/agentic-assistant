@@ -11,8 +11,12 @@ Design references (``openspec/changes/ms-graph-extension``):
         ``OpenAIChatClient`` or ``AzureOpenAIChatClient`` per persona
 - D10 — capability resolver wiring (ToolPolicy + ContextProvider +
         GuardrailProvider + MemoryPolicy minimal injection)
-- D11 — extensions emit MSAF tools via ``as_ms_agent_tools()``; the
-        harness consumes this list, NEVER ``as_langchain_tools()``
+- P17 tool-spec migration — ``create_agent(tools)`` receives the
+        complete, already-aggregated ToolSpec list from
+        ``ToolPolicy.authorized_tools()`` and renders it through the
+        MSAF adapter (``render_msaf_tools`` → ``FunctionTool``); the
+        harness NEVER derives tools from the ``extensions`` argument
+        (replaces the D11 ``as_ms_agent_tools()`` consumption)
 - D27 — minimal MemoryPolicy injection: prepend
         ``MemoryPolicy.get_recent_snippets`` results under a
         ``## Recent context`` heading inside the composed system prompt
@@ -326,26 +330,22 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         """Build an ``agent_framework.Agent`` for the persona/role pair.
 
         Steps:
-        1. Filter ``extensions`` through ``ToolPolicy.authorized_extensions``
-           (spec scenario "Authorized extensions are filtered through
-           ToolPolicy"). The harness MUST consult the policy before
-           reading ``as_ms_agent_tools()``.
-        2. Compose tools = ``tools`` + each authorized extension's
-           ``as_ms_agent_tools()`` output. The harness MUST NOT consume
-           ``as_langchain_tools()``.
-        3. Compose instructions via ``_compose_instructions``
+        1. Render ``tools`` — the complete, already-aggregated ToolSpec
+           list produced by ``ToolPolicy.authorized_tools()`` (the tool
+           policy is the SOLE tool aggregator; spec harness-adapter
+           "SdkHarnessAdapter.create_agent consumes the aggregated tool
+           list as-is") — to the MSAF native shape via the per-harness
+           adapter. The harness MUST NOT derive tools from
+           ``extensions`` (that parameter is retained for non-tool
+           concerns only).
+        2. Compose instructions via ``_compose_instructions``
            (system prompt + optional memory snippets per D27).
-        4. Build chat client per persona config.
-        5. Construct ``Agent(client, instructions, tools)``.
+        3. Build chat client per persona config.
+        4. Construct ``Agent(client, instructions, tools)``.
         """
-        tool_policy = self._resolve_tool_policy()
-        authorized = tool_policy.authorized_extensions(
-            self.persona, self.role, loaded_extensions=extensions
-        )
+        from assistant.harnesses.tool_adapters import render_msaf_tools
 
-        ext_tools: list[Any] = []
-        for ext in authorized:
-            ext_tools.extend(ext.as_ms_agent_tools())
+        rendered_tools = render_msaf_tools(tools)
 
         instructions = await self._compose_instructions()
         chat_client = self._build_chat_client()
@@ -362,7 +362,7 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         return Agent(
             client=chat_client,
             instructions=instructions,
-            tools=[*tools, *ext_tools],
+            tools=rendered_tools,
         )
 
     @traced_harness

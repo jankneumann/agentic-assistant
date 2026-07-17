@@ -20,7 +20,7 @@ they cannot satisfy the streaming contract.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
 import httpx
@@ -111,6 +111,7 @@ def make_app(
     _agent_factory: AgentFactory = _default_agent_factory,
     enable_a2a: bool = False,
     a2a_base_url: str = "http://127.0.0.1:8765",
+    enable_mcp: bool = False,
 ) -> FastAPI:
     """Build and return a configured FastAPI application.
 
@@ -140,6 +141,16 @@ def make_app(
         a2a_base_url: Externally reachable base URL advertised in the
             agent card's ``url`` field (the CLI passes
             ``http://<host>:<port>``).
+        enable_mcp: When True, additionally mounts the MCP server
+            surface (P17 mcp-server-exposure): a stateless streamable-
+            HTTP transport at ``/mcp`` exposing one ``ask_<role>`` tool
+            per enabled role (plus a generic ``ask`` bound to this
+            app's serving role). MCP tool calls multiplex over per-role
+            ``SessionRegistry`` instances whose session factory runs
+            the SAME harness/agent pipeline as this app's lifespan —
+            one fresh harness (and thread_id ≡ context_id) per
+            conversation. Auth is deferred to P25; keep the bind host
+            loopback-only.
 
     Returns:
         A FastAPI application with ``/chat`` (SSE) and ``/health`` routes,
@@ -210,7 +221,40 @@ def make_app(
                     session_factory=_session_factory,
                     base_url=a2a_base_url,
                 )
-            yield
+            async with AsyncExitStack() as stack:
+                if enable_mcp:
+                    # P17 mcp-server-exposure: same mount pattern as
+                    # A2A — per-role sessions run the same
+                    # create_harness + agent pipeline as this lifespan;
+                    # the streamable-HTTP session manager's run()
+                    # context is held open for the app's lifetime.
+                    from assistant.mcp.server import build_mcp_state
+
+                    async def _mcp_session_factory(role_cfg):
+                        session_harness = create_harness(
+                            pc, role_cfg, harness_name
+                        )
+                        session_agent = await _agent_factory(
+                            session_harness, pc, role_cfg,
+                            persona_reg, http_client,
+                        )
+                        return session_harness, session_agent
+
+                    mcp_role_names = role_reg.available_for_persona(pc)
+                    mcp_role_cfgs = [
+                        role_reg.load(n, pc) for n in mcp_role_names
+                    ]
+                    mcp_state = build_mcp_state(
+                        pc,
+                        mcp_role_cfgs,
+                        session_factory=_mcp_session_factory,
+                        default_role=role,
+                    )
+                    app.state.mcp = mcp_state
+                    await stack.enter_async_context(
+                        mcp_state.session_manager.run()
+                    )
+                yield
         finally:
             # P10 extension-lifecycle: run extension shutdown() hooks
             # on server teardown. Idempotent + safe when the injected
@@ -236,5 +280,18 @@ def make_app(
     if enable_a2a:
         from assistant.a2a.server import register_a2a_routes
         register_a2a_routes(app)
+
+    if enable_mcp:
+        from assistant.mcp.server import MCP_PATH
+
+        async def _mcp_asgi(scope, receive, send) -> None:
+            # The session manager is constructed (and its run() context
+            # entered) by the lifespan above; the mount forwards raw
+            # ASGI so streamable-HTTP semantics stay SDK-owned.
+            await app.state.mcp.session_manager.handle_request(
+                scope, receive, send
+            )
+
+        app.mount(MCP_PATH, _mcp_asgi)
 
     return app

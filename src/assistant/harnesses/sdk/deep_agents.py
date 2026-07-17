@@ -36,8 +36,8 @@ from assistant.harnesses.sdk.events import (
     ToolCallEnd,
     ToolCallStart,
 )
+from assistant.harnesses.tool_adapters import render_langchain_tools
 from assistant.telemetry.decorators import traced_harness
-from assistant.telemetry.tool_wrap import wrap_extension_tools
 
 if TYPE_CHECKING:
     from assistant.core.capabilities.credentials import CredentialProvider
@@ -236,12 +236,15 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         # metadata.
         model = self._build_model()
 
-        ext_tools: list[Any] = []
-        for ext in extensions:
-            # Wrap each extension's StructuredTools so they emit
-            # ``trace_tool_call(tool_kind="extension", ...)`` per spec
-            # capability-resolver "Aggregated Extension Tools Are Traced".
-            ext_tools.extend(wrap_extension_tools(ext))
+        # Spec harness-adapter "create_agent uses only the provided tool
+        # list": ``tools`` is the complete, already-aggregated ToolSpec
+        # list produced by ``ToolPolicy.authorized_tools()`` (extension
+        # + HTTP tools, telemetry-wrapped upstream). The harness renders
+        # it to the LangChain shape via the per-harness adapter and MUST
+        # NOT re-derive, re-aggregate, or re-wrap tools from
+        # ``extensions`` (P17 tool-spec migration removed the former
+        # second aggregation site here).
+        rendered_tools = render_langchain_tools(tools)
 
         skills_dirs: list[str] = ["./src/assistant/skills"]
         if self.role.skills_dir:
@@ -251,7 +254,7 @@ class DeepAgentsHarness(SdkHarnessAdapter):
 
         return create_deep_agent(
             model=model,
-            tools=[*tools, *ext_tools],
+            tools=rendered_tools,
             system_prompt=system_prompt,
             memory=cfg.get("memory_files") or ["./AGENTS.md"],
             skills=skills_dirs,

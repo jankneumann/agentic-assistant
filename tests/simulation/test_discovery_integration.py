@@ -67,8 +67,10 @@ class TestDiscoveryAgainstSimulator:
             t for t in registry.by_source("content_analyzer")
             if t.name == "content_analyzer:search"
         ]
-        assert search.args_schema is not None
-        fields = getattr(search.args_schema, "model_fields", {})
+        # P17 tool-spec migration: discovered tools are ToolSpecs whose
+        # input_schema is a JSON-Schema object.
+        assert search.input_schema is not None
+        fields = search.input_schema.get("properties", {})
         assert "query" in fields
 
     async def test_discovered_tool_invocation_returns_canned_payload(
@@ -81,5 +83,5 @@ class TestDiscoveryAgainstSimulator:
             t for t in registry.by_source("ms_graph")
             if t.name == "ms_graph:get_my_profile"
         ]
-        result = await profile.ainvoke({})
+        result = await profile.handler()
         assert "synthetic.test@synthetic.example" in str(result)

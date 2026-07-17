@@ -105,7 +105,7 @@ def test_tool_list_contains_only_read_tools() -> None:
     or ``sharepoint.upload`` (write surface deferred to P5b).
     """
     ext = _make_extension()
-    tools = ext.as_langchain_tools()
+    tools = ext.tool_specs()
     names = {t.name for t in tools}
     assert names == {
         "sharepoint.search_sites",
@@ -122,37 +122,16 @@ def test_tool_list_contains_only_read_tools() -> None:
     assert len(tools) == 3
 
 
-def test_as_ms_agent_tools_returns_three_callables() -> None:
-    """MSAF surface MUST mirror LangChain surface (3 callables)."""
+def test_tool_specs_returns_three_specs_with_handlers() -> None:
+    """ToolSpec surface MUST expose 3 read tools with async handlers
+    (P17 tool-spec migration — replaces the D11 dual-format parity)."""
     ext = _make_extension()
-    msaf_tools = ext.as_ms_agent_tools()
-    assert len(msaf_tools) == 3
-    for fn in msaf_tools:
-        assert callable(fn)
-
-
-def test_tool_count_parity_between_langchain_and_msaf() -> None:
-    """spec: ms-extensions / "Tool counts match across formats"."""
-    ext = _make_extension()
-    assert len(ext.as_langchain_tools()) == len(ext.as_ms_agent_tools())
-
-
-def test_tool_name_parity_between_langchain_and_msaf() -> None:
-    """spec: ms-extensions / "Tool names match by index".
-
-    For each index i, the LangChain tool's ``.name`` MUST equal the
-    MSAF callable's recorded name.
-    """
-    ext = _make_extension()
-    lc_tools = ext.as_langchain_tools()
-    msaf_tools = ext.as_ms_agent_tools()
-    for i, (lc, msaf) in enumerate(zip(lc_tools, msaf_tools, strict=True)):
-        msaf_name = getattr(msaf, "__name__", None) or getattr(
-            msaf, "name", None
-        )
-        assert msaf_name == lc.name, (
-            f"index {i}: MSAF name {msaf_name!r} != LC name {lc.name!r}"
-        )
+    specs = ext.tool_specs()
+    assert len(specs) == 3
+    for spec in specs:
+        assert callable(spec.handler)
+        assert spec.source == "extension:sharepoint"
+        assert spec.input_schema.get("type") == "object"
 
 
 # ── search_sites ──────────────────────────────────────────────────────

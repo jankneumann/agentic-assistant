@@ -14,10 +14,11 @@ Write tools (list-item create/update, document upload) are explicitly
 deferred to the P5b follow-up. This module ships zero write surface.
 
 Design references:
-- D6  — Extension internal structure (config, client, breaker, dual
-        wrappers, health from breaker)
-- D11 — Per-extension tool format conversion (LangChain + MSAF authored
-        twice from the same private async method)
+- D6  — Extension internal structure (config, client, breaker, health
+        from breaker)
+- P17 tool-spec migration — ``tool_specs()`` compiles the private
+  async methods into harness-neutral ToolSpecs (replaces the D11
+  dual-format authoring)
 - D19 — Binary download via ``get_bytes`` (the central novelty for
         SharePoint — returning raw bytes through the agent context
         would overflow LLM serialization on multi-MB PDFs)
@@ -50,6 +51,7 @@ from assistant.core.resilience import (
     get_circuit_breaker_registry,
     health_status_from_breaker,
 )
+from assistant.core.toolspec import ToolSpec, tool_spec_from_model
 from assistant.extensions.base import ExtensionBase
 
 if TYPE_CHECKING:
@@ -180,34 +182,6 @@ def _resolve_scopes(config: dict[str, Any]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Lazy MSAF decorator resolution — agent-framework lives in the optional
-# ``ms`` extras and the package's top-level ``__init__`` may shadow names
-# at install time (the package landed as 1.0 with API churn from beta).
-# Resolve via importlib so mypy's static check does not trip on the
-# decorator name; the runtime fallback returns ``None`` and the caller
-# treats it as "extras not installed".
-# ---------------------------------------------------------------------------
-
-
-def _resolve_ai_function() -> Any:
-    """Return the ``ai_function`` decorator if importable, else None.
-
-    Per design D5 + D11 the MSAF harness consumes ``as_ms_agent_tools()``
-    output decorated with ``@ai_function(name=...)``. The decorator
-    lives in ``agent-framework``; if that package is not installed (or
-    cannot be imported in the current environment), return None and let
-    the caller fall back to bare callables.
-    """
-    import importlib
-
-    try:
-        module = importlib.import_module("agent_framework")
-    except ImportError:
-        return None
-    return getattr(module, "ai_function", None)
-
-
-# ---------------------------------------------------------------------------
 # Lazy GraphAPIError — wp-foundation-impls owns the canonical class
 # ---------------------------------------------------------------------------
 
@@ -321,19 +295,18 @@ class SharepointExtension(ExtensionBase):
             f"extension:{self.name}"
         )
 
-    # ── Tool wrappers (LangChain + MSAF) ────────────────────────────
+    # ── Tool surface (ToolSpec — spec tool-spec / P17) ──────────────
 
-    def as_langchain_tools(self) -> list[Any]:
-        """Return the three read-only StructuredTool instances.
+    def tool_specs(self) -> list[ToolSpec]:
+        """Return the three read-only harness-neutral ToolSpecs.
 
-        Tool format conversion is per-extension (D11) — the MSAF list
-        is authored independently from the same private async methods.
+        Per-harness adapters render these; every rendering invokes the
+        same private async method.
         """
-        from langchain_core.tools import StructuredTool
-
+        source = f"extension:{self.name}"
         return [
-            StructuredTool.from_function(
-                coroutine=self._search_sites,
+            tool_spec_from_model(
+                handler=self._search_sites,
                 name="sharepoint.search_sites",
                 description=(
                     "Search SharePoint sites by free-text query. Returns "
@@ -341,10 +314,11 @@ class SharepointExtension(ExtensionBase):
                     "page_ceiling=100 applies to nextLink chasing; "
                     "narrow the query if results would exceed it."
                 ),
-                args_schema=_SearchSitesArgs,
+                args_model=_SearchSitesArgs,
+                source=source,
             ),
-            StructuredTool.from_function(
-                coroutine=self._list_documents,
+            tool_spec_from_model(
+                handler=self._list_documents,
                 name="sharepoint.list_documents",
                 description=(
                     "List documents at the root of a SharePoint site's "
@@ -354,10 +328,11 @@ class SharepointExtension(ExtensionBase):
                     "avoid truncation. <= ceil(items / page_size) Graph "
                     "calls per invocation."
                 ),
-                args_schema=_ListDocumentsArgs,
+                args_model=_ListDocumentsArgs,
+                source=source,
             ),
-            StructuredTool.from_function(
-                coroutine=self._download_document,
+            tool_spec_from_model(
+                handler=self._download_document,
                 name="sharepoint.download_document",
                 description=(
                     "Download a SharePoint document by site_id + item_id. "
@@ -366,48 +341,10 @@ class SharepointExtension(ExtensionBase):
                     "request_id}. The caller is responsible for cleanup. "
                     "Default size ceiling: 50 MiB."
                 ),
-                args_schema=_DownloadDocumentArgs,
+                args_model=_DownloadDocumentArgs,
+                source=source,
             ),
         ]
-
-    def as_ms_agent_tools(self) -> list[Any]:
-        """Return MSAF-compatible callables (one per tool, D11).
-
-        Each callable's ``__name__`` matches the LangChain tool name so
-        the dual-format parity scenario in ms-extensions holds.
-        """
-        ai_function = _resolve_ai_function()
-
-        bindings: list[tuple[str, Any]] = [
-            ("sharepoint.search_sites", self._search_sites),
-            ("sharepoint.list_documents", self._list_documents),
-            ("sharepoint.download_document", self._download_document),
-        ]
-
-        result: list[Any] = []
-        for tool_name, fn in bindings:
-            if ai_function is not None:
-                decorated: Any = ai_function(name=tool_name)(fn)
-            else:
-                # Without ``agent-framework``, return the bound method
-                # but rename it so name-parity checks still pass. The
-                # MSAF harness consumes ``as_ms_agent_tools()``; if the
-                # extras are missing, the harness raises before tool
-                # execution — so a renamed method is sufficient.
-                decorated = fn
-            try:
-                decorated.__name__ = tool_name
-            except (AttributeError, TypeError):
-                # Some decorated callables forbid attribute assignment;
-                # fall back to a tiny wrapper carrying the right
-                # __name__.
-                async def _bound(*args: Any, _fn: Any = decorated, **kwargs: Any) -> Any:
-                    return await _fn(*args, **kwargs)
-
-                _bound.__name__ = tool_name
-                decorated = _bound
-            result.append(decorated)
-        return result
 
     # ── Health ─────────────────────────────────────────────────────
 

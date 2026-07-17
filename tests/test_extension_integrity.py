@@ -34,10 +34,7 @@ class _Ext:
         self.name = "{name}"
         self.scopes = config.get("scopes", [])
 
-    def as_langchain_tools(self):
-        return []
-
-    def as_ms_agent_tools(self):
+    def tool_specs(self):
         return []
 
     async def health_check(self):

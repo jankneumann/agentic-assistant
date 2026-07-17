@@ -6,31 +6,25 @@ Covers the "HttpToolRegistry API" requirement — deterministic ordering,
 
 from __future__ import annotations
 
-from langchain_core.tools import StructuredTool
-from pydantic import BaseModel
-
+from assistant.core.toolspec import ToolSpec
 from assistant.http_tools.registry import HttpToolRegistry, tool_key
 
 
-class _EmptyArgs(BaseModel):
-    """Minimal args schema for tools under test."""
+def _make_tool(name: str) -> ToolSpec:
+    """Build a trivial ``ToolSpec`` whose ``name`` is the registry key.
 
-
-def _make_tool(name: str) -> StructuredTool:
-    """Build a trivial ``StructuredTool`` whose ``name`` is the registry key.
-
-    The tool's coroutine is never invoked in these tests — it exists only
-    so the registry has a real ``StructuredTool`` to hold.
+    The spec's handler is never invoked in these tests — it exists only
+    so the registry has a real ``ToolSpec`` to hold.
     """
 
     async def _noop(**kwargs: object) -> None:  # pragma: no cover - unused
         return None
 
-    return StructuredTool.from_function(
-        coroutine=_noop,
+    return ToolSpec(
         name=name,
         description=f"Tool {name}",
-        args_schema=_EmptyArgs,
+        input_schema={"type": "object", "properties": {}},
+        handler=_noop,
     )
 
 
