@@ -109,6 +109,8 @@ def make_app(
     harness_name: str,
     *,
     _agent_factory: AgentFactory = _default_agent_factory,
+    enable_a2a: bool = False,
+    a2a_base_url: str = "http://127.0.0.1:8765",
 ) -> FastAPI:
     """Build and return a configured FastAPI application.
 
@@ -127,6 +129,17 @@ def make_app(
             Tests inject a trivial factory to avoid mocking the full
             discover/resolve/authorize chain. Production callers should
             never pass this.
+        enable_a2a: When True, additionally mounts the A2A protocol
+            surface (P6 a2a-server): agent card at
+            ``/.well-known/agent-card.json`` (+ legacy ``agent.json``)
+            and JSON-RPC ``POST /a2a/v1`` with message/send +
+            message/stream. A2A tasks multiplex over a
+            ``SessionRegistry`` whose session factory runs the SAME
+            harness/agent pipeline as this app's lifespan — one fresh
+            harness (and thread_id) per A2A context.
+        a2a_base_url: Externally reachable base URL advertised in the
+            agent card's ``url`` field (the CLI passes
+            ``http://<host>:<port>``).
 
     Returns:
         A FastAPI application with ``/chat`` (SSE) and ``/health`` routes,
@@ -174,6 +187,29 @@ def make_app(
             app.state.role = role
             app.state.harness_name = harness_name
             app.state.http_client = http_client
+            if enable_a2a:
+                # P6 a2a-server: sessions are created lazily per A2A
+                # context through the same create_harness + agent
+                # pipeline this lifespan just ran — the AG-UI harness
+                # above stays the single instance for /chat, while A2A
+                # multiplexes fresh instances via the SessionRegistry.
+                from assistant.a2a.server import build_a2a_state
+
+                async def _session_factory():
+                    session_harness = create_harness(pc, rc, harness_name)
+                    session_agent = await _agent_factory(
+                        session_harness, pc, rc, persona_reg, http_client,
+                    )
+                    return session_harness, session_agent
+
+                role_names = role_reg.available_for_persona(pc)
+                role_cfgs = [role_reg.load(n, pc) for n in role_names]
+                app.state.a2a = build_a2a_state(
+                    pc,
+                    role_cfgs,
+                    session_factory=_session_factory,
+                    base_url=a2a_base_url,
+                )
             yield
         finally:
             # P10 extension-lifecycle: run extension shutdown() hooks
@@ -196,5 +232,9 @@ def make_app(
 
     from assistant.web.routes import register_routes
     register_routes(app)
+
+    if enable_a2a:
+        from assistant.a2a.server import register_a2a_routes
+        register_a2a_routes(app)
 
     return app
