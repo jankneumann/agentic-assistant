@@ -1,0 +1,227 @@
+"""A2A server surface — agent-card GET + JSON-RPC POST routes.
+
+Routes (registered onto an existing FastAPI app by ``register_a2a_routes``;
+the web app factory mounts them when ``assistant serve --a2a`` is used):
+
+  GET  /.well-known/agent-card.json  — agent card (A2A ≥ 0.3.0 canonical)
+  GET  /.well-known/agent.json       — same card (pre-0.3.0 legacy alias)
+  POST /a2a/v1                       — JSON-RPC 2.0: message/send,
+                                       message/stream (SSE)
+  POST /a2a/v1/message:stream        — REST-style (HTTP+JSON transport)
+                                       alias for message/stream; body is
+                                       MessageSendParams, SSE events are
+                                       bare A2A objects (no JSON-RPC
+                                       envelope)
+
+JSON-RPC conventions: every protocol-level failure is an HTTP 200 with a
+``JSONRPCErrorResponse`` body (JSON-RPC-over-HTTP convention; A2A error
+codes from ``assistant.a2a.types``). Task-level failures are NOT JSON-RPC
+errors — the request succeeded, the task failed — so they surface as a
+terminal ``failed`` status (message/send result / final stream event).
+
+State: routes read an ``A2AServerState`` from ``request.app.state.a2a``,
+which the web lifespan constructs via ``build_a2a_state`` (mirroring the
+``web/routes.py`` register-then-populate pattern).
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import AsyncIterator
+from contextlib import aclosing
+from dataclasses import dataclass
+from typing import Any
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from pydantic import ValidationError
+from sse_starlette.sse import EventSourceResponse
+
+from assistant.a2a.agent_card import build_agent_card
+from assistant.a2a.task_handler import (
+    DEFAULT_IDLE_TTL_SECONDS,
+    A2ATaskHandler,
+    SessionFactory,
+    SessionRegistry,
+)
+from assistant.a2a.types import (
+    INVALID_PARAMS,
+    INVALID_REQUEST,
+    METHOD_NOT_FOUND,
+    PARSE_ERROR,
+    A2AProtocolError,
+    AgentCard,
+    JSONRPCError,
+    JSONRPCErrorResponse,
+    JSONRPCRequest,
+    JSONRPCSuccessResponse,
+    MessageSendParams,
+)
+from assistant.core.persona import PersonaConfig
+from assistant.core.role import RoleConfig
+
+WELL_KNOWN_AGENT_CARD_PATH = "/.well-known/agent-card.json"
+WELL_KNOWN_AGENT_JSON_PATH = "/.well-known/agent.json"  # legacy (< 0.3.0)
+A2A_RPC_PATH = "/a2a/v1"
+A2A_MESSAGE_STREAM_PATH = "/a2a/v1/message:stream"
+
+_SSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "X-Accel-Buffering": "no",
+}
+
+
+@dataclass
+class A2AServerState:
+    """Everything the A2A routes need, hung on ``app.state.a2a``."""
+
+    card: AgentCard
+    registry: SessionRegistry
+    handler: A2ATaskHandler
+
+
+def build_a2a_state(
+    persona: PersonaConfig,
+    roles: list[RoleConfig],
+    *,
+    session_factory: SessionFactory,
+    base_url: str,
+    idle_ttl_seconds: float = DEFAULT_IDLE_TTL_SECONDS,
+    version: str | None = None,
+) -> A2AServerState:
+    """Assemble card + registry + handler for one persona binding."""
+    registry = SessionRegistry(
+        session_factory, idle_ttl_seconds=idle_ttl_seconds
+    )
+    return A2AServerState(
+        card=build_agent_card(
+            persona, roles, base_url=base_url, version=version
+        ),
+        registry=registry,
+        handler=A2ATaskHandler(registry),
+    )
+
+
+def _dump(model: Any) -> dict[str, Any]:
+    return model.model_dump(by_alias=True, exclude_none=True, mode="json")
+
+
+def _rpc_error(
+    req_id: str | int | None, code: int, message: str
+) -> JSONResponse:
+    body = JSONRPCErrorResponse(
+        id=req_id, error=JSONRPCError(code=code, message=message)
+    )
+    return JSONResponse(status_code=200, content=_dump(body))
+
+
+def register_a2a_routes(app: FastAPI) -> None:
+    """Register the A2A routes; they read ``app.state.a2a`` per request."""
+
+    def _state(req: Request) -> A2AServerState:
+        return req.app.state.a2a
+
+    async def _agent_card(req: Request) -> JSONResponse:
+        return JSONResponse(content=_dump(_state(req).card))
+
+    # Canonical (A2A >= 0.3.0) and legacy well-known paths serve the
+    # same card so pre-0.3 clients keep resolving us.
+    app.add_api_route(
+        WELL_KNOWN_AGENT_CARD_PATH, _agent_card, methods=["GET"]
+    )
+    app.add_api_route(
+        WELL_KNOWN_AGENT_JSON_PATH, _agent_card, methods=["GET"]
+    )
+
+    @app.post(A2A_RPC_PATH)
+    async def a2a_rpc(req: Request):
+        state = _state(req)
+
+        raw = await req.body()
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return _rpc_error(None, PARSE_ERROR, "Invalid JSON payload")
+
+        try:
+            rpc = JSONRPCRequest.model_validate(payload)
+        except ValidationError:
+            req_id = payload.get("id") if isinstance(payload, dict) else None
+            if not isinstance(req_id, (str, int)):
+                req_id = None
+            return _rpc_error(
+                req_id, INVALID_REQUEST, "Invalid JSON-RPC request envelope"
+            )
+
+        if rpc.method not in ("message/send", "message/stream"):
+            return _rpc_error(
+                rpc.id, METHOD_NOT_FOUND, f"Unknown method '{rpc.method}'"
+            )
+
+        try:
+            params = MessageSendParams.model_validate(rpc.params or {})
+        except ValidationError as exc:
+            first = exc.errors()[0]["msg"] if exc.errors() else "invalid params"
+            return _rpc_error(rpc.id, INVALID_PARAMS, first)
+
+        if rpc.method == "message/send":
+            try:
+                task = await state.handler.handle_message_send(params)
+            except A2AProtocolError as exc:
+                return _rpc_error(rpc.id, exc.code, exc.message)
+            return JSONResponse(
+                status_code=200,
+                content=_dump(JSONRPCSuccessResponse(id=rpc.id, result=_dump(task))),
+            )
+
+        # message/stream — each SSE data line is a full JSON-RPC response
+        # envelope whose result is one A2A event (JSONRPC transport rule).
+        async def _generate() -> AsyncIterator[str]:
+            stream = state.handler.handle_message_stream(params)
+            async with aclosing(stream) as events:
+                try:
+                    async for event in events:
+                        yield json.dumps(
+                            _dump(
+                                JSONRPCSuccessResponse(
+                                    id=rpc.id, result=_dump(event)
+                                )
+                            )
+                        )
+                except A2AProtocolError as exc:
+                    # Validation failures surface on first iteration —
+                    # emit a JSON-RPC error envelope, then close.
+                    yield json.dumps(_dump(JSONRPCErrorResponse(
+                        id=rpc.id, error=exc.to_error(),
+                    )))
+
+        return EventSourceResponse(_generate(), headers=dict(_SSE_HEADERS))
+
+    @app.post(A2A_MESSAGE_STREAM_PATH)
+    async def a2a_message_stream_rest(
+        params: MessageSendParams, req: Request
+    ) -> EventSourceResponse:
+        """REST-style alias (HTTP+JSON transport): bare A2A events."""
+        state = _state(req)
+
+        async def _generate() -> AsyncIterator[str]:
+            stream = state.handler.handle_message_stream(params)
+            async with aclosing(stream) as events:
+                try:
+                    async for event in events:
+                        yield json.dumps(_dump(event))
+                except A2AProtocolError as exc:
+                    yield json.dumps(_dump(exc.to_error()))
+
+        return EventSourceResponse(_generate(), headers=dict(_SSE_HEADERS))
+
+
+__all__ = [
+    "A2A_MESSAGE_STREAM_PATH",
+    "A2A_RPC_PATH",
+    "WELL_KNOWN_AGENT_CARD_PATH",
+    "WELL_KNOWN_AGENT_JSON_PATH",
+    "A2AServerState",
+    "build_a2a_state",
+    "register_a2a_routes",
+]
