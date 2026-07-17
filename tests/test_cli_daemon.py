@@ -157,9 +157,12 @@ def test_daemon_happy_path_wires_run_daemon(
     write_persona(personas_root, "schedp", PERSONA_WITH_SCHEDULES)
     result = CliRunner().invoke(cli_mod.main, ["daemon", "-p", "schedp"])
     assert result.exit_code == 0, result.output
+    # P11 harness-routing: the daemon default is the 'auto' sentinel —
+    # it is forwarded as-is so the job runner resolves per job (the
+    # per-job startup validation already ran against the resolution).
     assert daemon_stub == {
         "persona": "schedp",
-        "harness": "deep_agents",
+        "harness": "auto",
         "with_server": False,
         "host": "127.0.0.1",
         "port": 8765,
@@ -215,3 +218,67 @@ def test_daemon_no_budget_warning_with_file_ledger(
     result = CliRunner().invoke(cli_mod.main, ["daemon", "-p", "filedger"])
     assert result.exit_code == 0, result.output
     assert "in-memory" not in result.output
+
+
+# ── P11 harness-routing: per-job harness override + auto default ────
+
+
+def test_daemon_rejects_job_host_harness_override(
+    personas_root: Path, daemon_stub: dict[str, Any]
+) -> None:
+    """A per-job `harness: claude_code` fails startup naming the job."""
+    write_persona(
+        personas_root,
+        "hostjob",
+        "name: hostjob\n"
+        "harnesses:\n  deep_agents:\n    enabled: true\n"
+        "schedules:\n"
+        "  morning:\n"
+        "    trigger: {cron: '0 7 * * *'}\n"
+        "    role: chief_of_staff\n"
+        "    prompt: brief me\n"
+        "    harness: claude_code\n",
+    )
+    result = CliRunner().invoke(cli_mod.main, ["daemon", "-p", "hostjob"])
+    assert result.exit_code != 0
+    assert "morning" in result.output
+    assert "host harness" in result.output
+
+
+def test_daemon_rejects_job_disabled_harness_override(
+    personas_root: Path, daemon_stub: dict[str, Any]
+) -> None:
+    write_persona(
+        personas_root,
+        "disjob",
+        PERSONA_WITH_SCHEDULES.replace("name: schedp", "name: disjob").replace(
+            "    prompt: triage email\n",
+            "    prompt: triage email\n    harness: ms_agent_framework\n",
+        ),
+    )
+    result = CliRunner().invoke(cli_mod.main, ["daemon", "-p", "disjob"])
+    assert result.exit_code != 0
+    assert "triage" in result.output
+    assert "not enabled" in result.output
+
+
+def test_daemon_explicit_harness_is_forwarded(
+    personas_root: Path, daemon_stub: dict[str, Any]
+) -> None:
+    write_persona(personas_root, "schedp", PERSONA_WITH_SCHEDULES)
+    result = CliRunner().invoke(
+        cli_mod.main, ["daemon", "-p", "schedp", "-H", "deep_agents"]
+    )
+    assert result.exit_code == 0, result.output
+    assert daemon_stub["harness"] == "deep_agents"
+
+
+def test_daemon_auto_default_validates_jobs_via_routing(
+    personas_root: Path, daemon_stub: dict[str, Any]
+) -> None:
+    """Default -H auto: startup validation resolves each job through
+    select_harness (deep_agents here) and the daemon starts."""
+    write_persona(personas_root, "schedp", PERSONA_WITH_SCHEDULES)
+    result = CliRunner().invoke(cli_mod.main, ["daemon", "-p", "schedp"])
+    assert result.exit_code == 0, result.output
+    assert daemon_stub["harness"] == "auto"
