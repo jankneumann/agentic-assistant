@@ -123,6 +123,35 @@ openspec show <change-id>
 3. Optional: add persona-specific overrides in private repos at
    `personas/<persona>/roles/newrole.yaml`
 
+## Harness Routing (P11)
+
+`--harness auto` is the CLI default on `run` / `serve` / `daemon`:
+`select_harness(persona, role)` in `harnesses/factory.py` resolves it
+deterministically — NO LLM calls (semantic task routing is P12, not
+this seam). Precedence:
+
+1. **Explicit `-H <name>`** always wins (bypasses routing entirely).
+2. **Persona `harnesses.routing:` rules** (parsed at persona load
+   onto `PersonaConfig.harness_routing` by `core/harness_routing.py`;
+   the `routing` key is popped out of the `harnesses` mapping).
+   Ordered first-match on `role:` (role-name glob) and/or `tools:`
+   (globs over the role's `preferred_tools`; `ms_graph:*` matches the
+   full source:operation string, bare `ms_graph` matches the source
+   prefix). A matching rule with a disabled target is skipped with a
+   WARNING; unknown/host targets raise.
+3. **Built-in defaults**: role prefers MS-source tools
+   (`ms_graph`/`outlook`/`teams`/`sharepoint`) AND
+   `ms_agent_framework` enabled → MSAF; else `deep_agents`; else the
+   remaining enabled SDK harness; else an actionable error.
+
+**Host harnesses are never auto-selected** — they export config
+rather than execute, so the host/subscription tier stays explicit
+(`-H claude_code` + `assistant export`). Every decision emits a
+`harness.routing` span (start_span escape hatch) + INFO log line.
+Scheduled jobs may pin a per-job `harness:` (or `auto`) — it beats
+the daemon `-H`; the REPL routes once at startup (`/role` keeps the
+session's harness).
+
 ## Scheduler & Daemon Mode (P7)
 
 `core/scheduler.py` runs a persona's `schedules:` jobs (see
