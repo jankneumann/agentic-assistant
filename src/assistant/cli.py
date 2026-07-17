@@ -304,12 +304,24 @@ def export(persona: str, role: str | None, harness: str) -> None:
 )
 @click.option("--host", type=str, default="127.0.0.1", help="Bind host (default: 127.0.0.1).")
 @click.option("--port", type=int, default=8765, help="Bind port (default: 8765).")
+@click.option(
+    "--a2a",
+    "enable_a2a",
+    is_flag=True,
+    default=False,
+    help=(
+        "Also serve the A2A protocol surface: agent card at "
+        "/.well-known/agent-card.json (+ legacy agent.json) and "
+        "JSON-RPC POST /a2a/v1 (message/send, message/stream)."
+    ),
+)
 def serve(
     persona: str,
     role: str | None,
     harness: str,
     host: str,
     port: int,
+    enable_a2a: bool,
 ) -> None:
     """Start the AG-UI bridge HTTP server (SSE endpoint)."""
     try:
@@ -357,8 +369,23 @@ def serve(
             err=True,
         )
 
+    # Only pass the A2A kwargs when the flag is set so the default
+    # invocation keeps the exact legacy make_app(persona, role, harness)
+    # call shape (and injected test fakes with that signature keep
+    # working).
+    a2a_kwargs: dict = {}
+    if enable_a2a:
+        a2a_kwargs = {
+            "enable_a2a": True,
+            "a2a_base_url": f"http://{host}:{port}",
+        }
+        click.echo(
+            f"A2A enabled: agent card at http://{host}:{port}"
+            "/.well-known/agent-card.json"
+        )
+
     try:
-        app = make_app(persona, role_name, harness)
+        app = make_app(persona, role_name, harness, **a2a_kwargs)
         uvicorn.run(app, host=host, port=port)
     except KeyboardInterrupt:
         pass
