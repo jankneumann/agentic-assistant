@@ -208,6 +208,11 @@ __marimo__/
 
 # ── agentic-assistant specific ──
 .env
+
+# Clean-room shared knowledge space (P26 knowledge-clean-room):
+# share bundles + revocation records are runtime artifacts, never
+# committed (they may carry sanitized-but-still-personal content).
+.cleanroom/
 personas/*.env
 .status-cache.json
 .DS_Store

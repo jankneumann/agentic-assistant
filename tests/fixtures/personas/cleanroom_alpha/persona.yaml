@@ -1,0 +1,34 @@
+# Public test fixture (FIXTURE_PERSONA_SENTINEL_v1) — clean-room SOURCE
+# persona for P26 knowledge-clean-room tests. Not a mirror of any real
+# private submodule; exists only so public tests can exercise the
+# declassification gateway between two fixture personas.
+
+name: cleanroom_alpha
+display_name: "Clean-Room Alpha (fixture)"
+
+database:
+  url_env: CLEANROOM_ALPHA_DATABASE_URL
+
+graphiti:
+  url_env: CLEANROOM_ALPHA_GRAPHITI_URL
+
+auth:
+  provider: custom
+  config: {}
+
+harnesses:
+  deep_agents:
+    enabled: true
+
+default_role: chief_of_staff
+
+clean_room:
+  share:
+    - audience: [cleanroom_beta]
+      kinds: [facts, preferences]
+      include: ["*"]
+      exclude: ["*do-not-share*"]
+      profile: standard
+    - audience: [external]
+      kinds: [facts]
+      profile: secrets
