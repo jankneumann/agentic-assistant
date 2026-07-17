@@ -549,6 +549,28 @@ async def _run_daemon_with_registry(
         HarnessJobRunner,
     )
 
+    # P20 local-inference-node: pre-warm endpoint health state so the
+    # first scheduled runs skip a known-dead local entry. No-op when no
+    # registry entry declares `health:`; failures never block startup.
+    try:
+        from assistant.core.capabilities.health import default_health_monitor
+
+        registry_models = getattr(pc, "models", None)
+        health_refs = [
+            ref
+            for ref in getattr(registry_models, "entries", {}).values()
+            if ref.health is not None and ref.endpoint
+        ]
+        if health_refs:
+            verdicts = await default_health_monitor().refresh(health_refs)
+            for entry_name, ok in sorted(verdicts.items()):
+                click.echo(
+                    f"Endpoint health: {entry_name}: "
+                    f"{'healthy' if ok else 'UNHEALTHY'}"
+                )
+    except Exception:  # pragma: no cover — defensive; never block startup
+        logger.warning("endpoint health pre-warm failed", exc_info=True)
+
     extensions = await persona_reg.load_extensions_async(pc)
     runner = HarnessJobRunner(
         pc,
@@ -994,6 +1016,99 @@ def hash_extensions(persona: str) -> None:
     click.echo(f"Wrote {extensions_dir / MANIFEST_FILENAME}:")
     for filename, digest in sorted(hashes.items()):
         click.echo(f"  {filename}  {digest}")
+
+
+@main.group(name="models")
+def models_group() -> None:
+    """Model registry maintenance commands (P20 local-inference-node)."""
+
+
+@models_group.command("sync-catalog")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.option(
+    "--url",
+    type=str,
+    default=None,
+    help="Catalog endpoint override (default: OpenRouter /models).",
+)
+def sync_catalog(persona: str, url: str | None) -> None:
+    """Sync the OpenRouter model catalog into the persona's cache.
+
+    Fetches the OpenRouter ``/models`` catalog (API key: persona-scoped
+    credential ``OPENROUTER_API_KEY``, optional) and writes the
+    git-ignored persona-local cache file
+    (``<persona_dir>/.cache/models/catalog.json``). On the next persona
+    load, registry entries whose ``id`` matches a cached row inherit
+    pricing / context_length / modalities for fields they left empty —
+    declared values always win. Offline-safe: without network this
+    command errors clearly and nothing else breaks.
+    """
+    from assistant.core.capabilities.catalog import (
+        OPENROUTER_KEY_REF,
+        OPENROUTER_MODELS_URL,
+        CatalogSyncError,
+        fetch_catalog,
+        write_catalog_cache,
+    )
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    catalog_url = url or OPENROUTER_MODELS_URL
+    api_key = pc.credentials.get_credential(OPENROUTER_KEY_REF)
+
+    try:
+        models = asyncio.run(fetch_catalog(catalog_url, api_key=api_key))
+    except CatalogSyncError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    persona_dir = persona_reg.personas_dir / persona
+    path = write_catalog_cache(persona_dir, models, url=catalog_url)
+    click.echo(f"Synced {len(models)} catalog models to {path}")
+    click.echo(
+        "Registry entries with a matching `id` and empty pricing/"
+        "context_length/modalities inherit the catalog values on the "
+        "next persona load."
+    )
+
+
+@models_group.command("check-health")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+def check_health(persona: str) -> None:
+    """Probe every health-declaring registry entry and report verdicts.
+
+    The documented verification command for a local inference node
+    (GX10 / vLLM / Ollama / NIM — see docs/deployment/gx10-node.md).
+    Also warms this process's shared health cache. Exits 1 when any
+    probed endpoint is unhealthy.
+    """
+    from assistant.core.capabilities.health import (
+        default_health_monitor,
+        probe_url,
+    )
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    refs = [
+        ref
+        for ref in pc.models.entries.values()
+        if ref.health is not None and ref.endpoint
+    ]
+    if not refs:
+        click.echo(
+            f"No models: entries of persona '{persona}' declare health "
+            "checks — nothing to probe."
+        )
+        return
+
+    monitor = default_health_monitor()
+    verdicts = asyncio.run(monitor.refresh(refs))
+    for ref in refs:
+        ok = verdicts.get(ref.name, False)
+        status = "healthy" if ok else "UNHEALTHY"
+        click.echo(f"{ref.name}: {status} ({probe_url(ref)})")
+    if not all(verdicts.values()):
+        sys.exit(1)
 
 
 @main.group()

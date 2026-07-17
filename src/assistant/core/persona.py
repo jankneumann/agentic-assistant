@@ -18,6 +18,10 @@ from typing import Any
 
 import yaml
 
+from assistant.core.capabilities.catalog import (
+    apply_catalog_metadata,
+    load_catalog_cache,
+)
 from assistant.core.capabilities.credentials import (
     CredentialProvider,
     EnvCredentialProvider,
@@ -181,6 +185,22 @@ class PersonaRegistry:
                 f"Persona '{raw['name']}' ({config_path}): invalid "
                 f"models: registry — {exc}"
             ) from exc
+
+        # P20 local-inference-node: entries whose `id` matches a row in
+        # the persona-local catalog cache (written by `assistant models
+        # sync-catalog`) inherit pricing / context_length / modalities
+        # for fields they left empty — declared values always win, and
+        # a missing cache is a silent no-op (offline-safe, no network).
+        if models:
+            updated = apply_catalog_metadata(
+                models, load_catalog_cache(persona_dir)
+            )
+            if updated:
+                logger.debug(
+                    "persona '%s': catalog cache filled metadata for %s",
+                    raw["name"],
+                    updated,
+                )
 
         try:
             guardrails = parse_guardrail_config(
