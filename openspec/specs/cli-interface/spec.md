@@ -384,14 +384,19 @@ server process. The subcommand SHALL accept `-p/--persona` (required),
 `-r/--role` (optional, defaulting to the persona's `default_role`),
 `-H/--harness` (optional, defaulting to `deep_agents`), `--host`
 (optional, defaulting to `127.0.0.1`), `--port` (optional,
-defaulting to `8765`), and `--a2a` (optional flag, default off). The
-server SHALL block until interrupted; the exit code on `Ctrl-C` SHALL
-be 0. When `--a2a` is passed, the app factory MUST be invoked with
-`enable_a2a=True` and `a2a_base_url="http://<host>:<port>"` so the A2A
-protocol surface (agent card + `POST /a2a/v1`) is mounted alongside
-the AG-UI routes on the same server; when the flag is absent the app
-factory MUST be called with the legacy
-`make_app(persona, role, harness)` shape and no A2A routes registered.
+defaulting to `8765`), `--a2a` (optional flag, default off), and
+`--mcp` (optional flag, default off). The server SHALL block until
+interrupted; the exit code on `Ctrl-C` SHALL be 0. When `--a2a` is
+passed, the app factory MUST be invoked with `enable_a2a=True` and
+`a2a_base_url="http://<host>:<port>"` so the A2A protocol surface
+(agent card + `POST /a2a/v1`) is mounted alongside the AG-UI routes
+on the same server. When `--mcp` is passed, the app factory MUST be
+invoked with `enable_mcp=True` so the MCP streamable-HTTP surface is
+mounted at `/mcp` on the same server, and the startup output MUST
+name the `/mcp` endpoint. The two flags SHALL compose. When neither
+flag is present the app factory MUST be called with the legacy
+`make_app(persona, role, harness)` shape and no A2A or MCP routes
+registered.
 
 #### Scenario: serve binds the supplied persona and role at startup
 
@@ -415,14 +420,26 @@ factory MUST be called with the legacy
   `a2a_base_url="http://127.0.0.1:9001"`
 - **AND** the startup output MUST name the agent-card URL
 
-#### Scenario: serve without --a2a keeps the legacy surface
+#### Scenario: serve --mcp mounts the MCP surface
+
+- **WHEN** `assistant serve -p personal --mcp --port 9002` is executed
+- **THEN** the app factory MUST receive `enable_mcp=True`
+- **AND** the startup output MUST name the `/mcp` endpoint
+
+#### Scenario: serve --a2a --mcp composes both surfaces
+
+- **WHEN** `assistant serve -p personal --a2a --mcp` is executed
+- **THEN** the app factory MUST receive `enable_a2a=True`,
+  `a2a_base_url`, and `enable_mcp=True` in the same call
+
+#### Scenario: serve without flags keeps the legacy surface
 
 - **WHEN** `assistant serve -p personal -r coder` is executed without
-  `--a2a`
-- **THEN** the app factory MUST be called without A2A keyword
+  `--a2a` or `--mcp`
+- **THEN** the app factory MUST be called without A2A or MCP keyword
   arguments
-- **AND** requests to `/.well-known/agent-card.json` and `/a2a/v1`
-  MUST return 404
+- **AND** requests to `/.well-known/agent-card.json`, `/a2a/v1`, and
+  `/mcp` MUST return 404
 
 ### Requirement: Simulate Subcommand
 
@@ -568,4 +585,55 @@ SIGINT/SIGTERM, and run extension `shutdown()` hooks on teardown.
 - **THEN** the daemon MUST emit a warning recommending `persist: file`
   before starting
 - **AND** the daemon MUST still start
+
+### Requirement: CLI models Command Group
+
+The CLI SHALL provide a `models` command group with two subcommands.
+`assistant models sync-catalog -p <persona> [--url <base>]` SHALL
+fetch the OpenRouter `/models` catalog (default URL
+`https://openrouter.ai/api/v1/models`, overridable) using the
+persona-scoped credential `OPENROUTER_API_KEY` when present, write the
+persona-local catalog cache file, and print the model count and cache
+path; any fetch failure (network unreachable, redirect, oversize
+response, HTTP error) SHALL exit non-zero with an error naming the
+cause. `assistant models check-health -p <persona>` SHALL probe every
+registry entry that declares a `health:` block, print one line per
+entry with its healthy/unhealthy verdict and probe URL, warm the
+process's shared health cache, and exit `0` when all probed entries
+are healthy (or none declare health checks, with a message saying so)
+and `1` when any entry is unhealthy.
+
+#### Scenario: models group is registered
+
+- **WHEN** `assistant models --help` is executed
+- **THEN** the exit code MUST be 0
+- **AND** the output MUST list `sync-catalog` and `check-health`
+
+#### Scenario: sync-catalog writes the persona cache
+
+- **WHEN** `assistant models sync-catalog -p <persona>` runs against
+  a catalog endpoint returning two models
+- **THEN** the persona's `.cache/models/catalog.json` MUST be written
+  containing both model ids
+- **AND** the output MUST name the cache path
+
+#### Scenario: sync-catalog without network errors clearly
+
+- **WHEN** the catalog URL is unreachable
+- **THEN** the exit code MUST be non-zero
+- **AND** the error output MUST name the transport failure
+
+#### Scenario: check-health reports per-entry verdicts
+
+- **WHEN** `assistant models check-health -p <persona>` runs for a
+  persona with one healthy and one unhealthy health-declaring entry
+- **THEN** the output MUST contain one verdict line per entry
+- **AND** the exit code MUST be 1
+
+#### Scenario: check-health with no health-declaring entries
+
+- **WHEN** the persona's registry declares no `health:` blocks
+- **THEN** the command MUST print that no entries declare health
+  checks
+- **AND** exit 0 without issuing any probe
 

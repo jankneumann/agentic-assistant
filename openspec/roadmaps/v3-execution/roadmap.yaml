@@ -86,7 +86,7 @@ items:
         rationale: Credential plane + CredentialProvider seam from P24
   - item_id: P20
     title: local-inference-node
-    status: in_progress
+    status: completed
     priority: 8
     effort: M
     change_id: local-inference-node
@@ -110,7 +110,7 @@ items:
     depends_on: []
   - item_id: P17
     title: mcp-server-exposure
-    status: in_progress
+    status: completed
     priority: 11
     effort: M
     change_id: mcp-server-exposure
@@ -120,7 +120,7 @@ items:
         rationale: Protocol sibling; shares task/serving surface
   - item_id: P11
     title: harness-routing
-    status: candidate
+    status: in_progress
     priority: 12
     effort: M
     change_id: harness-routing
@@ -130,7 +130,7 @@ items:
         rationale: Consumes P19 capability vocabulary and router
   - item_id: P22
     title: meta-harness-compat
-    status: candidate
+    status: in_progress
     priority: 13
     effort: L
     change_id: meta-harness-compat
@@ -143,7 +143,7 @@ items:
         rationale: Composition surface needs A2A (or MCP) exposed
   - item_id: P25
     title: agent-iam
-    status: in_progress
+    status: completed
     priority: 14
     effort: L
     change_id: agent-iam
@@ -156,7 +156,7 @@ items:
         rationale: Inbound auth lands on the interop surface
   - item_id: P26
     title: knowledge-clean-room
-    status: candidate
+    status: in_progress
     priority: 15
     effort: L
     change_id: knowledge-clean-room

@@ -11,3 +11,6 @@
 | P13 | review | Never os.environ; empty value masks process env; ~30-line parser, no python-dote |
 | P7 | review | ConsumerModelProvider rewrites ModelRequest.consumer to the job binding (default |
 | P6 | review | In-memory SessionRegistry is the first consumer of the P24 session-registry cont |
+| P17 | review | Same official package, wire-identical; low-level accepts pre-built Tool entries  |
+| P20 | review | Health filtering runs after required-tag filtering and only removes candidates — |
+| P25 | review | <mount>/data/<persona>/<REF> with identical masking semantics; migrating a perso |

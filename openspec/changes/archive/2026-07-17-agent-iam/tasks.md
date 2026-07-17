@@ -90,12 +90,12 @@
 - [x] 7.2 `personas/_template/persona.yaml` — `auth.a2a`,
   `credentials:` backend, identity policy dims, `max_chain_depth`
 - [x] 7.3 CLAUDE.md — Agent IAM section
-- [ ] 7.4 FOLLOW-UP (P17 integration): gate the MCP server surface
+- [x] 7.4 FOLLOW-UP (P17 integration): gate the MCP server surface (owner approved 2026-07-17; 17.1 resolved via D1 addendum)
   with the same persona-declared inbound auth (`auth.mcp`, MCP
   authorization spec / OAuth 2.1 posture) + CredentialProvider
   resolution introduced here — file as a `followup` issue when P17
   lands
-- [ ] 7.5 FOLLOW-UP: propagate the delegation-chain identity into
+- [x] 7.5 FOLLOW-UP: propagate the delegation-chain identity into (owner approved 2026-07-17; 17.1 resolved via D1 addendum)
   nested harness principals (extend `spawn_sub_agent` or the harness
   constructor) so multi-hop chains survive harness boundaries
 - [x] 7.6 Gates: `uv run pytest tests/`, `uv run ruff check src

@@ -17,26 +17,18 @@ The system SHALL replace the `ms_graph` stub at
 `src/assistant/extensions/ms_graph.py` with a real implementation that
 exposes generic Microsoft Graph tools (people search, profile read,
 cross-mailbox message search). The extension SHALL accept a
-`GraphClient` instance at construction. Both `as_langchain_tools()`
-and `as_ms_agent_tools()` SHALL return non-empty tool lists when the
-persona enables this extension.
+`GraphClient` instance at construction. `tool_specs()` SHALL return a
+non-empty `ToolSpec` list when the persona enables this extension,
+with `source="extension:ms_graph"` on every spec.
 
-#### Scenario: as_langchain_tools returns non-empty list
+#### Scenario: tool_specs returns non-empty list
 
-- **WHEN** `create_extension(config={}, client=mock_client).as_langchain_tools()`
+- **WHEN** `create_extension(config={}, client=mock_client).tool_specs()`
   is called
-- **THEN** the returned list MUST contain at least three
-  `StructuredTool` instances
-- **AND** the tool names MUST include `ms_graph.search_people`,
+- **THEN** the returned list MUST contain at least three `ToolSpec`
+  instances
+- **AND** the spec names MUST include `ms_graph.search_people`,
   `ms_graph.get_my_profile`, `ms_graph.search_messages`
-
-#### Scenario: as_ms_agent_tools returns non-empty list
-
-- **WHEN** `create_extension(config={}, client=mock_client).as_ms_agent_tools()`
-  is called
-- **THEN** the returned list MUST contain at least three callables
-- **AND** the callables MUST have names matching the LangChain tool
-  names
 
 #### Scenario: search_people calls /users with $search and returns parsed value list
 
@@ -58,14 +50,14 @@ persona enables this extension.
 The system SHALL replace the `outlook` stub at
 `src/assistant/extensions/outlook.py` with a real implementation that
 exposes Outlook mail and calendar read tools plus a `send_email`
-write tool. The extension SHALL accept a `GraphClient` instance at
-construction.
+write tool, surfaced as `ToolSpec` instances via `tool_specs()`. The
+extension SHALL accept a `GraphClient` instance at construction.
 
 #### Scenario: Tool list includes read and write tools
 
-- **WHEN** `create_extension({}, client=mock_client).as_langchain_tools()`
+- **WHEN** `create_extension({}, client=mock_client).tool_specs()`
   is called
-- **THEN** the returned list MUST include at least the tools
+- **THEN** the returned list MUST include at least the specs
   `outlook.list_messages`, `outlook.read_message`,
   `outlook.search_messages`, `outlook.send_email`,
   `outlook.list_calendar_events`, `outlook.find_free_times`
@@ -98,13 +90,13 @@ construction.
 The system SHALL replace the `teams` stub at
 `src/assistant/extensions/teams.py` with a real implementation that
 exposes Teams chat and channel read tools plus a `post_chat_message`
-write tool.
+write tool, surfaced as `ToolSpec` instances via `tool_specs()`.
 
 #### Scenario: Tool list includes read and write tools
 
-- **WHEN** `create_extension({}, client=mock_client).as_langchain_tools()`
+- **WHEN** `create_extension({}, client=mock_client).tool_specs()`
   is called
-- **THEN** the returned list MUST include at least the tools
+- **THEN** the returned list MUST include at least the specs
   `teams.list_chats`, `teams.list_channel_messages`,
   `teams.read_message`, `teams.post_chat_message`
 
@@ -133,10 +125,11 @@ write tool.
 
 The system SHALL replace the `sharepoint` stub at
 `src/assistant/extensions/sharepoint.py` with a real implementation
-exposing SharePoint search and document read tools. SharePoint
-write-side tools (list-item create, document upload) are explicitly
-deferred to a P5b follow-up. The `download_document` tool SHALL use
-the `CloudGraphClient.get_bytes()` method (50 MiB ceiling by default)
+exposing SharePoint search and document read tools, surfaced as
+`ToolSpec` instances via `tool_specs()`. SharePoint write-side tools
+(list-item create, document upload) are explicitly deferred to a P5b
+follow-up. The `download_document` tool SHALL use the
+`CloudGraphClient.get_bytes()` method (50 MiB ceiling by default)
 to retrieve binary content; the tool MUST return the result dict
 structure `{"path", "size_bytes", "content_type", "request_id"}`
 specified in the `graph-client` capability and MUST NOT return raw
@@ -144,11 +137,11 @@ bytes in memory.
 
 #### Scenario: Tool list contains only read tools
 
-- **WHEN** `create_extension({}, client=mock_client).as_langchain_tools()`
+- **WHEN** `create_extension({}, client=mock_client).tool_specs()`
   is called
 - **THEN** the returned list MUST include `sharepoint.search_sites`,
   `sharepoint.list_documents`, `sharepoint.download_document`
-- **AND** no tool name MUST start with `sharepoint.create` or
+- **AND** no spec name MUST start with `sharepoint.create` or
   `sharepoint.upload`
 
 #### Scenario: search_sites calls /sites with $search
@@ -199,29 +192,6 @@ extensions.
   is awaited
 - **THEN** the returned `HealthStatus.state` MUST equal
   `HealthState.UNAVAILABLE`
-
-### Requirement: Tool Format Parity Between LangChain and MSAF
-
-The system SHALL ensure that for each of the four real extensions,
-`as_langchain_tools()` and `as_ms_agent_tools()` return lists of
-equal length, and that for every index `i` the LangChain tool's
-`.name` equals the MSAF tool's `__name__` (after `@ai_function`
-decoration). This guarantees that swapping harnesses does not change
-the tool surface a role can call.
-
-#### Scenario: Tool counts match across formats
-
-- **WHEN** `ext.as_langchain_tools()` returns `N` tools
-- **AND** `ext.as_ms_agent_tools()` is called on the same instance
-- **THEN** the second call MUST return exactly `N` tools
-
-#### Scenario: Tool names match by index
-
-- **WHEN** the LangChain list contains a tool with `name="outlook.list_messages"`
-  at index `i`
-- **AND** the MSAF list is collected from the same extension instance
-- **THEN** the MSAF list's element at index `i` MUST have an
-  `@ai_function`-recorded name equal to `"outlook.list_messages"`
 
 ### Requirement: Tool Input URL-Encoding and Validation
 
@@ -320,18 +290,17 @@ reason ("breaker open due to recent consecutive failures").
 ### Requirement: Extension Tool Wrapping Preserves Existing Observability
 
 The system SHALL preserve the `extension-registry` requirement that
-extension `StructuredTool` invocations emit `trace_tool_call`
-observability spans. The four real extensions' LangChain tools SHALL
-flow through the same `wrap_extension_tools()` aggregation site
-referenced by `extension-registry` and `capability-resolver`. The
-real implementations SHALL NOT add tracing code at the extension
-level.
+extension tool invocations emit `trace_tool_call` observability
+spans. The four real extensions' `ToolSpec`s SHALL flow through the
+same `wrap_extension_tool_specs()` aggregation site referenced by
+`extension-registry` and `capability-resolver`. The real
+implementations SHALL NOT add tracing code at the extension level.
 
 #### Scenario: Real extension tool invocation still emits trace
 
-- **WHEN** an `outlook.list_messages` LangChain tool is obtained via
+- **WHEN** an `outlook.list_messages` ToolSpec is obtained via
   the capability-resolver aggregation site
-- **AND** the tool is invoked with persona `work` and role
+- **AND** its handler is awaited with persona `work` and role
   `assistant`
 - **THEN** `trace_tool_call` MUST be called exactly once
 - **AND** the emitted call's kwargs MUST include

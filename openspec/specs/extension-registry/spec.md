@@ -12,9 +12,12 @@ harness adapters that aggregate extension tools, and health checks.
 ## Requirements
 ### Requirement: Extension Protocol
 
-The `Extension` Protocol SHALL retain its existing `as_langchain_tools()`
-and `as_ms_agent_tools()` methods. Extensions become one tool source
-managed by `ToolPolicy` alongside HTTP tools and MCP servers.
+The `Extension` Protocol SHALL expose a single harness-neutral tool
+surface: `tool_specs() → list[ToolSpec]` (see the `tool-spec`
+capability). The legacy `as_langchain_tools()` and
+`as_ms_agent_tools()` methods are REMOVED from the Protocol (P17
+tool-spec migration exit criterion). Extensions remain one tool
+source managed by `ToolPolicy` alongside HTTP tools.
 
 The Protocol's **required** surface SHALL NOT grow lifecycle methods:
 the async lifecycle hooks `initialize()`, `shutdown()`, and
@@ -34,19 +37,24 @@ structurally.
 
 #### Scenario: Hook-less extension still satisfies the Protocol
 
-- **WHEN** an extension class defines only `name`,
-  `as_langchain_tools()`, `as_ms_agent_tools()`, and `health_check()`
-  (no lifecycle hooks)
+- **WHEN** an extension class defines only `name`, `tool_specs()`,
+  and `health_check()` (no lifecycle hooks)
 - **THEN** `isinstance(instance, Extension)` MUST be `True`
 - **AND** `PersonaRegistry.load_extensions()` MUST return the instance
+
+#### Scenario: Legacy dual-surface class no longer satisfies the Protocol
+
+- **WHEN** a class defines `as_langchain_tools()` and
+  `as_ms_agent_tools()` but no `tool_specs()`
+- **THEN** `isinstance(instance, Extension)` MUST be `False`
 
 ### Requirement: Stub Implementations for All Configured Extensions
 
 The system SHALL ship stub implementations for `gmail`, `gcal`, and
 `gdrive` in `src/assistant/extensions/`, each exposing a
 `create_extension(config: dict)` factory returning an
-`Extension`-compatible instance whose tool methods return empty
-lists. The extensions `ms_graph`, `teams`, `sharepoint`, and `outlook`
+`Extension`-compatible instance whose `tool_specs()` returns an empty
+list. The extensions `ms_graph`, `teams`, `sharepoint`, and `outlook`
 SHALL no longer ship as stubs — those four are real implementations
 delivered by the `ms-extensions` capability and import their
 domain-specific tooling rather than `StubExtension`.
@@ -59,17 +67,15 @@ domain-specific tooling rather than `StubExtension`.
 
 #### Scenario: Remaining stubs return empty tool lists
 
-- **WHEN** `create_extension({}).as_langchain_tools()` is called on
+- **WHEN** `create_extension({}).tool_specs()` is called on
   any of the three remaining stubs (`gmail`, `gcal`, `gdrive`)
 - **THEN** it MUST return `[]`
-- **AND** `as_ms_agent_tools()` MUST return `[]`
 
 #### Scenario: ms_graph/teams/sharepoint/outlook no longer return empty tool lists
 
-- **WHEN** `create_extension({}, client=mock_client).as_langchain_tools()`
+- **WHEN** `create_extension({}, client=mock_client).tool_specs()`
   is called on any of the four real extensions
 - **THEN** the returned list MUST be non-empty
-- **AND** the same MUST hold for `as_ms_agent_tools()`
 
 ### Requirement: Extension config is passed to constructor
 
@@ -90,28 +96,49 @@ underlying class constructor, and the resulting instance SHALL expose
 
 ### Requirement: Extension Tool Invocations Emit Observability Span
 
-The system SHALL ensure that every LangChain `StructuredTool` returned by any `Extension.as_langchain_tools()` emits a `trace_tool_call` observability span on each invocation. Because `Extension` is a `typing.Protocol` (not a base class that carries behavior for subclasses), the wrapping SHALL be performed at the aggregation sites that compose extension tool bundles — see the `capability-resolver` capability spec for the authoritative list of aggregation sites and the shared `wrap_extension_tools` helper. Individual extension implementations SHALL NOT add tracing code themselves.
+The system SHALL ensure that every `ToolSpec` returned by any
+`Extension.tool_specs()` emits a `trace_tool_call` observability span
+on each handler invocation. The wrapping SHALL be performed at the
+single aggregation site that composes extension tool bundles — the
+`DefaultToolPolicy.authorized_tools` loop (see the
+`capability-resolver` capability) — via the shared
+`wrap_extension_tool_specs` helper. Because the per-harness adapters
+are pure renderings that invoke `spec.handler`, one wrap at the
+ToolSpec layer survives every rendering (LangChain, MSAF, and direct
+MCP handler dispatch). Individual extension implementations SHALL NOT
+add tracing code themselves.
 
-The emitted call MUST include `tool_name` (the StructuredTool's `name`), `tool_kind="extension"`, `persona`, `role`, and `duration_ms`. When the tool's `_run` or `_arun` raises, the span MUST be emitted with `error=<exception type name>` before the exception propagates.
+The emitted call MUST include `tool_name` (the ToolSpec's `name`),
+`tool_kind="extension"`, `persona`, `role`, and `duration_ms`. When
+the handler raises, the span MUST be emitted with `error=<exception
+type name>` before the exception propagates.
 
-Wrapping SHALL preserve each tool's original `name`, `description`, and `args_schema` so that agents and tool-discovery consumers see no change in the tool's public contract.
+Wrapping SHALL preserve each spec's original `name`, `description`,
+`input_schema`, and `source` so that agents and tool-discovery
+consumers see no change in the tool's public contract.
 
 #### Scenario: Extension tool invocation emits trace_tool_call
 
-- **WHEN** an extension returns a `StructuredTool` named `gmail.search` and `gmail.search.invoke({"query": "foo"})` is called with persona `personal` and role `assistant`
+- **WHEN** an extension returns a `ToolSpec` named `gmail.search` and
+  its (wrapped) handler is awaited with `query="foo"` under persona
+  `personal` and role `assistant`
 - **THEN** `trace_tool_call` MUST be called exactly once
-- **AND** the emitted call's kwargs MUST include `tool_name="gmail.search"`, `tool_kind="extension"`, `persona="personal"`, and `role="assistant"`
+- **AND** the emitted call's kwargs MUST include
+  `tool_name="gmail.search"`, `tool_kind="extension"`,
+  `persona="personal"`, and `role="assistant"`
 
 #### Scenario: Tool exception emits trace before propagating
 
-- **WHEN** a wrapped tool's `_run` raises `ValueError("invalid query")`
+- **WHEN** a wrapped handler raises `ValueError("invalid query")`
 - **THEN** `trace_tool_call` MUST be called with `error="ValueError"`
 - **AND** the exception MUST propagate to the caller
 
 #### Scenario: Tool metadata passthrough is preserved
 
-- **WHEN** an extension returns a `StructuredTool` with `name="x"`, `description="y"`, and a specific `args_schema`
-- **THEN** the wrapped tool exposed by `as_langchain_tools()` MUST have the identical `name`, `description`, and `args_schema`
+- **WHEN** an extension returns a `ToolSpec` with `name="x"`,
+  `description="y"`, and a specific `input_schema`
+- **THEN** the wrapped spec exposed by the aggregation site MUST have
+  the identical `name`, `description`, and `input_schema`
 
 ### Requirement: Extension Health Check Returns HealthStatus
 
