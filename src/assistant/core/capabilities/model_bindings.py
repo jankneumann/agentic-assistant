@@ -26,11 +26,13 @@ from typing import Any
 
 import httpx
 
+from assistant.core.capabilities.audit import emit_guardrail_audit
 from assistant.core.capabilities.credentials import (
     CredentialProvider,
     EnvCredentialProvider,
 )
 from assistant.core.capabilities.guardrails import GuardrailProvider
+from assistant.core.capabilities.identity import AgentIdentity
 from assistant.core.capabilities.models import ModelRef
 from assistant.core.capabilities.types import ActionRequest
 
@@ -59,6 +61,7 @@ def check_model_call(
     persona: str = "",
     role: str = "",
     metadata: dict[str, Any] | None = None,
+    identity: AgentIdentity | None = None,
 ) -> None:
     """Budget hook: gate a model dispatch through the guardrail seam.
 
@@ -70,6 +73,11 @@ def check_model_call(
     which are not wired yet, so the deny-safe behavior is to refuse
     rather than silently proceed. ``AllowAllGuardrails`` returns
     ``allowed=True`` for everything, preserving current behavior.
+
+    P25 agent-iam: the request carries an :class:`AgentIdentity` —
+    the caller's, or one synthesized from ``persona``/``role`` when
+    not injected — so identity-aware policies can match and every
+    decision emits an audit record through the telemetry provider.
     """
     if guardrails is None:
         return
@@ -81,15 +89,18 @@ def check_model_call(
         request_metadata["pricing"] = ref.pricing
     if metadata:
         request_metadata.update(metadata)
-    decision = guardrails.check_action(
-        ActionRequest(
-            action_type="model_call",
-            resource=ref.name,
-            persona=persona,
-            role=role,
-            metadata=request_metadata,
-        )
+    if identity is None and (persona or role):
+        identity = AgentIdentity(persona=persona, role=role)
+    request = ActionRequest(
+        action_type="model_call",
+        resource=ref.name,
+        persona=persona,
+        role=role,
+        metadata=request_metadata,
+        identity=identity,
     )
+    decision = guardrails.check_action(request)
+    emit_guardrail_audit(request, decision)
     if not decision.allowed:
         raise ModelCallDeniedError(
             f"Model call to {ref.name!r} denied by guardrails: "

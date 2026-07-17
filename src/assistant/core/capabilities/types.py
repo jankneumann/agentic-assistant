@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from assistant.core.capabilities.context import ContextProvider
     from assistant.core.capabilities.guardrails import GuardrailProvider
+    from assistant.core.capabilities.identity import AgentIdentity
     from assistant.core.capabilities.memory import MemoryPolicy
     from assistant.core.capabilities.models import ModelProvider
     from assistant.core.capabilities.sandbox import SandboxProvider
@@ -34,6 +35,11 @@ class ActionRequest:
     persona: str
     role: str
     metadata: dict[str, Any] = field(default_factory=dict)
+    # P25 agent-iam: the acting principal, when the call site knows it.
+    # Optional with default None so every pre-P25 construction site
+    # keeps working unchanged. When present, guardrail decisions become
+    # attributable (identity-aware policies + audit records).
+    identity: AgentIdentity | None = None
 
 
 @dataclass

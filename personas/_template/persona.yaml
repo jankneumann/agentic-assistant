@@ -16,6 +16,16 @@ graphiti:
 auth:
   provider: custom                     # microsoft | google | custom
   config: {}
+  # Inbound auth for served surfaces (P25 — agent-iam). Optional:
+  # without it the A2A surface stays loopback-unauthenticated (the
+  # server logs a startup WARNING). `token_env` is a CredentialProvider
+  # ref (env-var name / vault path) — NEVER the token value. The agent
+  # card advertises the scheme under `securitySchemes`; clients send
+  # `Authorization: Bearer <token>`. MCP-surface auth arrives with the
+  # P17 integration follow-up.
+  # a2a:
+  #   type: bearer
+  #   token_env: TEMPLATE_A2A_TOKEN
 
 # ── Harnesses ──
 harnesses:
@@ -194,9 +204,17 @@ extensions: []
 #       resource: "expensive-*"     # glob against the action resource
 #       effect: deny                # allow | deny | require_confirmation
 #       reason: "use the local tier for bulk work"
+#   policies:                       # P25 identity-aware dimensions (optional,
+#     - action_type: model_call     #   additive to action_type/resource):
+#       role: "research*"           # glob on the ACTING role (identity.role)
+#       min_chain_depth: 2          # match only >= N delegation hops deep
+#       effect: deny
+#       reason: "deep sub-agents stay on the local tier"
 #   delegation:
 #     denied_sub_roles: []          # globs matched against sub-role names
 #     max_task_chars: 0             # 0 = unlimited
+#     max_chain_depth: 5            # P25: max delegation hops (0 = unlimited;
+#                                   #   default 5, enforced by the spawner)
 #
 # NOTE: require_confirmation on model_call DENIES until the approval
 # interrupt flow lands (needs durable sessions).
@@ -207,6 +225,23 @@ extensions: []
 # refs resolve against it FIRST, then fall back to the process
 # environment. Values are never exported into os.environ, so two
 # personas can hold different values for the same variable name.
+
+# ── Credential backend (P25 — agent-iam) ──
+# Optional. Omit (or `backend: env`) to keep the P13 env tiers.
+# `backend: openbao` reads credentials from an OpenBao (Vault-
+# compatible) server via AppRole auth: each ref is a KV v2 secret at
+# `<mount>/data/<persona>/<REF>` with the value under data key
+# `value` — the exact vault image of the persona .env namespace
+# (present wins, even empty; absent falls through to .env → process
+# env). The bootstrap refs below resolve through the env tiers.
+# Unconfigured or unreachable OpenBao degrades to env with a WARNING —
+# never fatal, so a fresh clone boots without a vault.
+# credentials:
+#   backend: openbao
+#   url_env: OPENBAO_ADDR            # e.g. https://bao.example.com
+#   role_id_env: OPENBAO_ROLE_ID     # AppRole credentials for THIS
+#   secret_id_env: OPENBAO_SECRET_ID #   persona's agent principal
+#   mount: secret                    # KV v2 mount (default: secret)
 
 # ── Extension integrity manifest (P13) ──
 # `assistant persona hash-extensions -p <name>` writes

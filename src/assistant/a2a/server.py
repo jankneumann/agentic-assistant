@@ -27,9 +27,11 @@ which the web lifespan constructs via ``build_a2a_state`` (mirroring the
 from __future__ import annotations
 
 import json
+import logging
+import secrets
 from collections.abc import AsyncIterator
 from contextlib import aclosing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -60,6 +62,8 @@ from assistant.a2a.types import (
 from assistant.core.persona import PersonaConfig
 from assistant.core.role import RoleConfig
 
+logger = logging.getLogger(__name__)
+
 WELL_KNOWN_AGENT_CARD_PATH = "/.well-known/agent-card.json"
 WELL_KNOWN_AGENT_JSON_PATH = "/.well-known/agent.json"  # legacy (< 0.3.0)
 A2A_RPC_PATH = "/a2a/v1"
@@ -73,11 +77,17 @@ _SSE_HEADERS = {
 
 @dataclass
 class A2AServerState:
-    """Everything the A2A routes need, hung on ``app.state.a2a``."""
+    """Everything the A2A routes need, hung on ``app.state.a2a``.
+
+    ``expected_token`` is the resolved inbound bearer token (P25
+    agent-iam); ``None`` keeps the pre-P25 loopback-unauthenticated
+    posture. Excluded from repr — it is a secret.
+    """
 
     card: AgentCard
     registry: SessionRegistry
     handler: A2ATaskHandler
+    expected_token: str | None = field(default=None, repr=False)
 
 
 def build_a2a_state(
@@ -89,16 +99,46 @@ def build_a2a_state(
     idle_ttl_seconds: float = DEFAULT_IDLE_TTL_SECONDS,
     version: str | None = None,
 ) -> A2AServerState:
-    """Assemble card + registry + handler for one persona binding."""
+    """Assemble card + registry + handler for one persona binding.
+
+    P25 agent-iam inbound auth: when the persona declares ``auth.a2a``
+    the expected bearer token resolves through the persona's
+    ``CredentialProvider`` (never raw ``os.environ``); a declared-but-
+    unresolvable token FAILS startup (declared auth must never
+    silently disable). Without a declaration the surface stays
+    unauthenticated — current loopback behavior — with a startup
+    WARNING so the posture is visible.
+    """
+    auth = getattr(persona, "a2a_auth", None)
+    expected_token: str | None = None
+    if auth is not None:
+        expected_token = persona.credentials.get_credential(auth.token_env)
+        if not expected_token:
+            raise ValueError(
+                f"Persona '{persona.name}' declares auth.a2a with "
+                f"token_env '{auth.token_env}', but the ref resolved "
+                f"empty. Set it in the persona .env, the process "
+                f"environment, or the vault backend — or remove the "
+                f"auth.a2a declaration to serve unauthenticated."
+            )
+    else:
+        logger.warning(
+            "A2A surface for persona '%s' is UNAUTHENTICATED (no "
+            "auth.a2a declared) — safe only behind the default "
+            "loopback binding. Declare auth.a2a: {type: bearer, "
+            "token_env: ...} before exposing it beyond localhost.",
+            persona.name,
+        )
     registry = SessionRegistry(
         session_factory, idle_ttl_seconds=idle_ttl_seconds
     )
     return A2AServerState(
         card=build_agent_card(
-            persona, roles, base_url=base_url, version=version
+            persona, roles, base_url=base_url, version=version, auth=auth
         ),
         registry=registry,
         handler=A2ATaskHandler(registry),
+        expected_token=expected_token,
     )
 
 
@@ -113,6 +153,41 @@ def _rpc_error(
         id=req_id, error=JSONRPCError(code=code, message=message)
     )
     return JSONResponse(status_code=200, content=_dump(body))
+
+
+def _auth_failure(state: A2AServerState, req: Request) -> JSONResponse | None:
+    """Verify the inbound bearer token; ``None`` means authorized.
+
+    P25 agent-iam: auth failures are HTTP-level (401 +
+    ``WWW-Authenticate: Bearer``), NOT JSON-RPC errors — per the A2A
+    spec, transport auth uses standard HTTP status codes and the
+    request never reaches protocol handling. Comparison is
+    constant-time (``secrets.compare_digest``). The agent card routes
+    are deliberately NOT gated: the card is how clients discover the
+    required scheme.
+    """
+    if state.expected_token is None:
+        return None
+    header = req.headers.get("authorization", "")
+    scheme, _, credential = header.partition(" ")
+    if scheme.lower() == "bearer" and secrets.compare_digest(
+        credential.strip().encode(), state.expected_token.encode()
+    ):
+        return None
+    return JSONResponse(
+        status_code=401,
+        content={
+            "type": "about:blank",
+            "title": "Unauthorized",
+            "status": 401,
+            "detail": (
+                "This A2A surface requires a bearer token; see the "
+                "agent card's securitySchemes."
+            ),
+        },
+        media_type="application/problem+json",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 def register_a2a_routes(app: FastAPI) -> None:
@@ -136,6 +211,10 @@ def register_a2a_routes(app: FastAPI) -> None:
     @app.post(A2A_RPC_PATH)
     async def a2a_rpc(req: Request):
         state = _state(req)
+
+        denied = _auth_failure(state, req)
+        if denied is not None:
+            return denied
 
         raw = await req.body()
         try:
@@ -198,11 +277,13 @@ def register_a2a_routes(app: FastAPI) -> None:
         return EventSourceResponse(_generate(), headers=dict(_SSE_HEADERS))
 
     @app.post(A2A_MESSAGE_STREAM_PATH)
-    async def a2a_message_stream_rest(
-        params: MessageSendParams, req: Request
-    ) -> EventSourceResponse:
+    async def a2a_message_stream_rest(params: MessageSendParams, req: Request):
         """REST-style alias (HTTP+JSON transport): bare A2A events."""
         state = _state(req)
+
+        denied = _auth_failure(state, req)
+        if denied is not None:
+            return denied
 
         async def _generate() -> AsyncIterator[str]:
             stream = state.handler.handle_message_stream(params)

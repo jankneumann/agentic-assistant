@@ -193,6 +193,21 @@ class AgentProvider(A2ABaseModel):
     url: str | None = None
 
 
+class HTTPAuthSecurityScheme(A2ABaseModel):
+    """OpenAPI-style HTTP auth security scheme (A2A card vocabulary).
+
+    P25 agent-iam models the single scheme this server enforces —
+    ``{"type": "http", "scheme": "bearer"}``. Other A2A scheme kinds
+    (apiKey, oauth2, openIdConnect, mutualTLS) arrive with future auth
+    types; inbound parsing stays tolerant via ``extra="ignore"``.
+    """
+
+    type: Literal["http"] = "http"
+    scheme: str = "bearer"
+    bearer_format: str | None = None
+    description: str | None = None
+
+
 class AgentCard(A2ABaseModel):
     protocol_version: str = A2A_PROTOCOL_VERSION
     name: str
@@ -205,6 +220,12 @@ class AgentCard(A2ABaseModel):
     default_output_modes: list[str] = Field(default_factory=lambda: ["text/plain"])
     skills: list[AgentSkill] = Field(default_factory=list)
     provider: AgentProvider | None = None
+    # P25 agent-iam: advertised auth. ``securitySchemes`` names the
+    # scheme objects; ``security`` lists the requirement sets (A2A
+    # follows the OpenAPI security-requirement shape). Both omitted
+    # (None → exclude_none) on an unauthenticated loopback server.
+    security_schemes: dict[str, HTTPAuthSecurityScheme] | None = None
+    security: list[dict[str, list[str]]] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +314,7 @@ __all__ = [
     "Artifact",
     "DataPart",
     "FilePart",
+    "HTTPAuthSecurityScheme",
     "JSONRPCError",
     "JSONRPCErrorResponse",
     "JSONRPCRequest",

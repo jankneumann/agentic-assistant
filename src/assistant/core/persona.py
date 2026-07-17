@@ -25,7 +25,6 @@ from assistant.core.capabilities.catalog import (
 from assistant.core.capabilities.credentials import (
     CredentialProvider,
     EnvCredentialProvider,
-    persona_credential_provider,
 )
 from assistant.core.capabilities.guardrails import (
     GuardrailConfig,
@@ -36,6 +35,11 @@ from assistant.core.capabilities.models import (
     ModelRegistry,
     ModelRegistryError,
     parse_model_registry,
+)
+from assistant.core.capabilities.openbao import (
+    CredentialsConfigError,
+    build_credential_provider,
+    parse_credentials_config,
 )
 from assistant.core.extension_integrity import (
     IntegrityVerdict,
@@ -48,6 +52,53 @@ from assistant.core.scheduler import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class A2AAuthConfig:
+    """Parsed ``auth.a2a`` served-surface auth declaration (P25 agent-iam).
+
+    ``token_env`` is a CredentialProvider ref (env-var name today,
+    vault path under the OpenBao backend) — never the token value
+    itself. The only supported ``type`` is ``bearer``.
+    """
+
+    type: str
+    token_env: str
+
+
+def parse_a2a_auth(raw: Any) -> A2AAuthConfig | None:
+    """Validate an ``auth.a2a`` mapping; ``None`` when undeclared.
+
+    Actionable-error posture: unknown keys, unsupported types, and a
+    missing/empty ``token_env`` fail with a ``ValueError`` naming the
+    offender so persona load surfaces it directly.
+    """
+    if not raw:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"auth.a2a: expected a mapping, got {type(raw).__name__}."
+        )
+    unknown = sorted(set(raw) - {"type", "token_env"})
+    if unknown:
+        raise ValueError(
+            f"auth.a2a: unknown keys {unknown}. Expected 'type: bearer' "
+            f"and 'token_env: <ref>'."
+        )
+    auth_type = raw.get("type", "bearer")
+    if auth_type != "bearer":
+        raise ValueError(
+            f"auth.a2a: type {auth_type!r} is not supported; only "
+            f"'bearer' exists today."
+        )
+    token_env = raw.get("token_env")
+    if not isinstance(token_env, str) or not token_env:
+        raise ValueError(
+            "auth.a2a: requires a non-empty 'token_env' naming the "
+            "credential ref that holds the expected bearer token."
+        )
+    return A2AAuthConfig(type=auth_type, token_env=token_env)
 
 
 @dataclass
@@ -94,10 +145,16 @@ class PersonaConfig:
     schedules: ScheduleConfig = field(default_factory=ScheduleConfig)
     # Persona-scoped credential provider (credential-provider spec /
     # P13): persona ``.env`` values first, process env fallback.
-    # ``repr=False`` — the scoped namespace holds secret values.
+    # Since P25 agent-iam a persona ``credentials: {backend: openbao}``
+    # section selects the OpenBao backend layered over the same env
+    # tiers. ``repr=False`` — the scoped namespace holds secret values.
     credentials: CredentialProvider = field(
         default_factory=EnvCredentialProvider, repr=False
     )
+    # Parsed ``auth.a2a`` served-surface auth (P25 agent-iam). ``None``
+    # keeps the pre-P25 loopback-unauthenticated posture (the A2A
+    # server warns at startup).
+    a2a_auth: A2AAuthConfig | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -220,14 +277,36 @@ class PersonaRegistry:
                 f"schedules: section — {exc}"
             ) from exc
 
+        try:
+            a2a_auth = parse_a2a_auth((raw.get("auth") or {}).get("a2a"))
+        except ValueError as exc:
+            raise ValueError(
+                f"Persona '{raw['name']}' ({config_path}): invalid "
+                f"auth.a2a: section — {exc}"
+            ) from exc
+
         # P13 security-hardening: every persona-config secret read goes
         # through the persona-scoped CredentialProvider (persona .env
         # values first, process env fallback) — never through a direct
-        # os.environ read.
+        # os.environ read. P25 agent-iam: an injected factory still
+        # wins; otherwise a persona ``credentials: {backend: openbao}``
+        # section selects the OpenBao backend layered over the env
+        # tiers (unconfigured/unreachable degrades to env, never fatal).
+        try:
+            credentials_config = parse_credentials_config(
+                raw.get("credentials")
+            )
+        except CredentialsConfigError as exc:
+            raise ValueError(
+                f"Persona '{raw['name']}' ({config_path}): invalid "
+                f"credentials: section — {exc}"
+            ) from exc
         credentials = (
             self._credential_provider_factory(raw["name"], persona_dir)
             if self._credential_provider_factory is not None
-            else persona_credential_provider(persona_dir)
+            else build_credential_provider(
+                raw["name"], persona_dir, credentials_config
+            )
         )
 
         def _cred(ref: Any) -> str:
@@ -259,6 +338,7 @@ class PersonaRegistry:
             guardrails=guardrails,
             schedules=schedules,
             credentials=credentials,
+            a2a_auth=a2a_auth,
             raw=raw,
         )
 

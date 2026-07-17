@@ -193,7 +193,55 @@ alongside AG-UI on the same loopback-default server:
   of the AG-UI mapper; AG-UI untouched).
 - **Deferred**: `tasks/get`/`tasks/cancel`, push notifications,
   multi-turn task continuation, file/data parts (rejected with
-  -32005), agent-card auth (P25).
+  -32005). Agent-card auth landed with P25 (see Agent IAM below).
+
+## Agent IAM (P25)
+
+`agent-iam` adds identity & access management with an explicit
+inbound/outbound split (AgentCore Identity lesson):
+
+- **`AgentIdentity` principal**
+  (`core/capabilities/identity.py`): frozen dataclass (persona, role,
+  `delegation_chain` tuple, session/thread id, issued_at) — a
+  SPIFFE-shaped placeholder. Optional `ActionRequest.identity` field
+  (default None; old call sites unchanged), populated by the
+  delegation spawner, `check_model_call` (synthesized from
+  persona/role when not injected), and both harnesses'
+  `spawn_sub_agent` delegate checks (DeepAgents gained the check,
+  mirroring MSAF).
+- **Delegation chains are attributable + bounded**: each hop derives
+  the child via `identity.delegate_to(sub_role)`; the spawner
+  enforces `guardrails.delegation.max_chain_depth` (default 5, 0 =
+  unlimited — applied even without a `guardrails:` section) and logs
+  the chain on every decision. `PolicyGuardrails` policies gained
+  identity dimensions: `role:` glob (acting role) and
+  `min_chain_depth:` (skips identity-less requests) — additive to
+  action_type/resource globs.
+- **Inbound A2A auth**: persona `auth.a2a: {type: bearer, token_env:
+  REF}` (ref resolved through the CredentialProvider seam, never raw
+  env). Missing/wrong token → HTTP 401 + `WWW-Authenticate: Bearer`
+  on `POST /a2a/v1` and the REST alias (HTTP-level, not JSON-RPC);
+  the card stays public and advertises `securitySchemes` +
+  `security`. No declaration → loopback-unauthenticated with a
+  startup WARNING; declared-but-unresolvable token → startup error.
+  MCP-surface auth is a recorded P17 integration follow-up.
+- **Outbound OpenBao backend**
+  (`core/capabilities/openbao.py`): thin httpx client (no hvac) for
+  the P24 CredentialProvider seam — persona `credentials: {backend:
+  openbao, url_env, role_id_env, secret_id_env, mount}`. KV v2 read
+  at `<mount>/data/<persona>/<ref>` (data key `value`) mirrors the
+  P13 `.env` namespace 1:1 (present wins even when empty; 404 falls
+  through to persona `.env` → process env); AppRole login with
+  proactive token re-acquisition before TTL expiry;
+  unconfigured/unreachable OpenBao degrades to the env tiers with one
+  WARNING — never fatal. Wired via the P13
+  `credential_provider_factory` injection point (an injected factory
+  still wins). No OpenBao server exists in dev/CI — tests are
+  `httpx.MockTransport`-mocked.
+- **Audit trail**: every identity-carrying guardrail decision emits a
+  `guardrail.decision` span (`core/capabilities/audit.py`) through
+  the telemetry `start_span` escape hatch — no new trace op, no
+  separate audit store (deferred with approval interrupt/resume).
 
 ## Local Inference & Fleet (P20)
 
@@ -340,7 +388,8 @@ See `openspec/roadmap.md` for the full sequence. Notable gaps:
   scoped namespace (persona values first, process env fallback, no
   `os.environ` pollution) consumed via `PersonaConfig.credentials`
   everywhere (persona load, http_tools auth, model bindings,
-  graphiti, MSAL); OpenBao becomes the production backend in P25.
+  graphiti, MSAL); the OpenBao production backend landed in P25 (see
+  the Agent IAM section).
   Private extensions are hash-verified against an optional
   `extensions/manifest.yaml` before execution (`assistant persona
   hash-extensions` generates it; mismatch disables that extension,
