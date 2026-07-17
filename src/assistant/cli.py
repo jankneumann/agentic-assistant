@@ -1235,6 +1235,171 @@ def check_health(persona: str) -> None:
         sys.exit(1)
 
 
+@main.group(name="cleanroom")
+def cleanroom_group() -> None:
+    """Clean-room knowledge sharing commands (P26 knowledge-clean-room)."""
+
+
+def _cleanroom_manager(pc):
+    """Build a MemoryManager for a clean-room command, or exit.
+
+    Split out so tests can patch one seam instead of the db/graphiti
+    factory stack (docs/gotchas.md G4: patch at the source module).
+    """
+    if not pc.database_url:
+        click.echo(
+            f"Error: persona '{pc.name}' has no database_url configured — "
+            "clean-room commands need the persona's memory database.",
+            err=True,
+        )
+        sys.exit(1)
+
+    from assistant.core.db import async_session_factory, create_async_engine
+    from assistant.core.graphiti import create_graphiti_client
+    from assistant.core.memory import MemoryManager
+
+    engine = create_async_engine(pc)
+    session_fac = async_session_factory(engine)
+    graphiti = create_graphiti_client(pc)
+    return MemoryManager(session_fac, graphiti_client=graphiti)
+
+
+def _cleanroom_identity(pc):
+    from assistant.core.capabilities.identity import AgentIdentity
+
+    return AgentIdentity(persona=pc.name, role=pc.default_role)
+
+
+@cleanroom_group.command("export")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.option(
+    "--to",
+    "audience",
+    type=str,
+    required=True,
+    help="Audience: a consuming persona name, or 'external'.",
+)
+def cleanroom_export(persona: str, audience: str) -> None:
+    """Declassify persona memory into a share bundle for an audience.
+
+    Applies the persona's clean_room share rules, sanitizes every item
+    under the rule's named profile, wraps the result in a provenance
+    envelope, and writes the bundle into the shared space directory
+    (default: .cleanroom/<audience>/, git-ignored). Refuses when the
+    persona declares no clean_room section — total isolation is the
+    default.
+    """
+    from assistant.core import cleanroom as cr
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    manager = _cleanroom_manager(pc)
+    set_assistant_ctx(pc.name, pc.default_role)
+
+    try:
+        result = asyncio.run(
+            cr.export_shared(
+                pc,
+                audience,
+                manager,
+                guardrails=cr.select_guardrails(pc),
+                identity=_cleanroom_identity(pc),
+            )
+        )
+    except cr.CleanRoomError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    click.echo(
+        f"Exported {result.item_count} item(s) to {result.path} "
+        f"(bundle {result.bundle_id}, profile {result.profile})."
+    )
+
+
+@cleanroom_group.command("import")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.argument("bundle", type=click.Path(exists=True, dir_okay=False))
+def cleanroom_import(persona: str, bundle: str) -> None:
+    """Ingest a share bundle into the consuming persona's memory.
+
+    Verifies the provenance envelope (hashes, exporter identity),
+    refuses revoked bundles, applies the persona's clean_room accept
+    rules, and stores accepted items as provenance-marked facts under
+    cleanroom/<bundle_id>/ keys.
+    """
+    from assistant.core import cleanroom as cr
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    manager = _cleanroom_manager(pc)
+    set_assistant_ctx(pc.name, pc.default_role)
+
+    try:
+        result = asyncio.run(
+            cr.import_shared(
+                pc,
+                Path(bundle),
+                manager,
+                guardrails=cr.select_guardrails(pc),
+                identity=_cleanroom_identity(pc),
+            )
+        )
+    except cr.CleanRoomError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    click.echo(
+        f"Imported {result.imported} item(s) from persona "
+        f"'{result.source_persona}' (bundle {result.bundle_id}; "
+        f"{result.skipped} skipped by accept rules)."
+    )
+
+
+@cleanroom_group.command("revoke")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.argument("bundle_id", type=str)
+def cleanroom_revoke(persona: str, bundle_id: str) -> None:
+    """Revoke a previously exported bundle (source persona only).
+
+    Writes a revocation record into the shared space: imports of the
+    bundle are refused from now on, and consumers drop already-imported
+    items on their next `assistant cleanroom sync`.
+    """
+    from assistant.core import cleanroom as cr
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    set_assistant_ctx(pc.name, pc.default_role)
+
+    try:
+        path = cr.revoke(pc, bundle_id, identity=_cleanroom_identity(pc))
+    except cr.CleanRoomError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    click.echo(f"Revoked bundle {bundle_id} ({path}).")
+
+
+@cleanroom_group.command("sync")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+def cleanroom_sync(persona: str) -> None:
+    """Purge imported items whose source bundle has been revoked."""
+    from assistant.core import cleanroom as cr
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    manager = _cleanroom_manager(pc)
+    set_assistant_ctx(pc.name, pc.default_role)
+
+    try:
+        deleted = asyncio.run(
+            cr.purge_revoked(
+                pc, manager, identity=_cleanroom_identity(pc)
+            )
+        )
+    except cr.CleanRoomError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    click.echo(f"Purged {deleted} imported item(s) from revoked bundles.")
+
+
 @main.group()
 def db() -> None:
     """Database migration commands."""

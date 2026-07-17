@@ -299,3 +299,29 @@ extensions: []
 # extensions are verified before execution: a hash mismatch disables
 # that extension (no manifest = allowed with a warning). Rerun the
 # command after every intentional extension edit.
+
+# ── Clean-room knowledge sharing (P26 — knowledge-clean-room) ──
+# Optional. Omit the section entirely to keep TOTAL persona isolation:
+# without it this persona can neither export nor import shared
+# knowledge. `share:` rules declassify memory OUT (first rule naming
+# the audience wins); `accept:` rules govern what comes IN (first rule
+# matching the source persona wins). Every exported item passes
+# through a named sanitization profile (telemetry secret-redaction
+# chain + PII patterns) and travels in a provenance envelope; bundles
+# land in the git-ignored shared space (default: .cleanroom/).
+# Export/import are guardrail actions (`cleanroom_export` /
+# `cleanroom_import`) — policies can deny or require_confirmation
+# (which DENIES until the approval interrupt flow exists).
+# clean_room:
+#   space_dir: .cleanroom           # shared-space root (git-ignored)
+#   share:
+#     - audience: [work, external]  # persona names and/or `external`
+#       kinds: [facts, preferences] # facts | preferences | interactions
+#       include: ["*"]              # globs on item key OR content
+#       exclude: ["*private*"]      # exclusions win over include
+#       categories: []              # preference categories (empty = all)
+#       profile: standard           # sanitization: standard | secrets
+#   accept:
+#     - from: [personal]            # source-persona globs
+#       kinds: [facts]              # kinds this persona ingests
+#       profiles: [standard]        # trusted profiles (empty = any)

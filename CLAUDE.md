@@ -64,6 +64,12 @@ evaluation/run-gate.sh                             # eval gate: gen-eval suites 
 uv run assistant models check-health -p personal   # probe health:-declaring registry entries
 uv run assistant models sync-catalog -p personal   # cache OpenRouter pricing metadata
 
+# Clean-room knowledge sharing (P26)
+uv run assistant cleanroom export -p personal --to work   # declassify memory into a share bundle
+uv run assistant cleanroom import -p work <bundle.json>   # ingest a verified bundle
+uv run assistant cleanroom revoke -p personal <bundle-id> # source-persona revocation
+uv run assistant cleanroom sync -p work                   # purge imports of revoked bundles
+
 # OpenSpec workflow
 openspec list                                      # in-progress changes
 openspec list --specs                              # current specs
@@ -287,6 +293,52 @@ inbound/outbound split (AgentCore Identity lesson):
   `guardrail.decision` span (`core/capabilities/audit.py`) through
   the telemetry `start_span` escape hatch — no new trace op, no
   separate audit store (deferred with approval interrupt/resume).
+
+## Knowledge Clean Room (P26)
+
+`knowledge-clean-room` adds the declassification gateway
+(`core/cleanroom.py`) — the RUNTIME analogue of the ADR-0004
+test-time privacy boundary. Policy-driven, audited flow: source
+persona memory → share rules → sanitization profile → provenance
+envelope (share bundle) → shared space → accept rules → consuming
+persona.
+
+- **No config, no sharing**: a persona without a `clean_room:`
+  section (see `personas/_template/persona.yaml`) can neither export
+  nor import — total isolation stays the default. `share:` rules
+  (first rule naming the audience wins) pick kinds
+  (facts/preferences/interactions), key/content globs (exclusions
+  win), preference categories, a sanitization profile, and an
+  audience (persona names and/or `external`). `accept:` rules (first
+  `from:` glob match wins) pick trusted sources, kinds, and profiles.
+- **Sanitization profiles** layer PII patterns (email/SSN/card/IP/
+  phone) ON TOP of the reused `telemetry/sanitize.py` secret chain:
+  `standard` (default) = secrets + PII; `secrets` = secret chain
+  only. The telemetry module is untouched (its 15-pattern list is
+  observability-spec-bound).
+- **Bundles** are self-contained JSON (`.cleanroom/<audience>/
+  <bundle_id>.json`, git-ignored; `space_dir:` overrides): per-item
+  content hashes + whole-bundle hash (tamper evidence, not
+  signatures), exporter `AgentIdentity`, profile, timestamps. The
+  bundle format IS the external-agent interop surface for now —
+  A2A/MCP transport is a recorded follow-up.
+- **Import quarantines everything as facts**: accepted items land as
+  provenance-wrapped facts under `cleanroom/<bundle_id>/<item_id>`
+  keys (foreign preferences never become native preferences).
+  **Revocation**: source persona only (`cleanroom revoke`); import
+  refuses revoked bundles; `cleanroom sync` purges already-imported
+  items via `MemoryManager.delete_facts_by_prefix`.
+- **Guardrails + audit**: export/import are guardrail actions
+  (`cleanroom_export`/`cleanroom_import`; `require_confirmation`
+  DENIES until the approval interrupt flow exists — P13 semantics).
+  Every op emits an identity-stamped `cleanroom.<op>` span via the
+  `start_span` escape hatch (P25 precedent). `MemoryManager` gained
+  `list_facts`/`list_preferences`/`delete_facts_by_prefix` and the
+  `trace_memory_op` vocabulary gained
+  `fact_list`/`preference_list`/`fact_delete`.
+- Tests run between the two fixture personas `cleanroom_alpha`/
+  `cleanroom_beta` (`tests/fixtures/personas/`) with an in-memory
+  `CleanRoomMemoryStore` fake — the public suite stays DB-free.
 
 ## Local Inference & Fleet (P20)
 
