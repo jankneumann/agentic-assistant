@@ -45,6 +45,11 @@ from assistant.core.extension_integrity import (
     IntegrityVerdict,
     check_extension_integrity,
 )
+from assistant.core.harness_routing import (
+    HarnessRoutingError,
+    HarnessRoutingRule,
+    parse_harness_routing,
+)
 from assistant.core.scheduler import (
     ScheduleConfig,
     ScheduleConfigError,
@@ -143,6 +148,12 @@ class PersonaConfig:
     # Falsy when the persona declares no scheduled jobs — the daemon
     # CLI refuses to start without them.
     schedules: ScheduleConfig = field(default_factory=ScheduleConfig)
+    # Parsed + validated ``harnesses.routing:`` rules (harness-adapter
+    # spec / P11 harness-routing). Ordered first-match rules consumed
+    # by ``select_harness`` for ``--harness auto``; the ``routing`` key
+    # is popped out of ``harnesses`` so that mapping stays strictly
+    # harness-name -> config. Empty when the persona declares no rules.
+    harness_routing: tuple[HarnessRoutingRule, ...] = ()
     # Persona-scoped credential provider (credential-provider spec /
     # P13): persona ``.env`` values first, process env fallback.
     # Since P25 agent-iam a persona ``credentials: {backend: openbao}``
@@ -277,6 +288,20 @@ class PersonaRegistry:
                 f"schedules: section — {exc}"
             ) from exc
 
+        # P11 harness-routing: ``harnesses.routing:`` is a rule list,
+        # not a harness config — pop it so ``PersonaConfig.harnesses``
+        # stays strictly harness-name -> config mapping.
+        harnesses_raw = dict(raw.get("harnesses", {}) or {})
+        try:
+            harness_routing = parse_harness_routing(
+                harnesses_raw.pop("routing", None)
+            )
+        except HarnessRoutingError as exc:
+            raise ValueError(
+                f"Persona '{raw['name']}' ({config_path}): invalid "
+                f"harnesses.routing: section — {exc}"
+            ) from exc
+
         try:
             a2a_auth = parse_a2a_auth((raw.get("auth") or {}).get("a2a"))
         except ValueError as exc:
@@ -319,7 +344,7 @@ class PersonaRegistry:
             graphiti_url=_cred((raw.get("graphiti") or {}).get("url_env", "")),
             auth_provider=(raw.get("auth") or {}).get("provider", "custom"),
             auth_config={k: _cred(v) for k, v in auth_cfg_raw.items()},
-            harnesses=raw.get("harnesses", {}) or {},
+            harnesses=harnesses_raw,
             tool_sources={
                 src_name: {
                     "base_url": _cred(src.get("base_url_env", "")),
@@ -337,6 +362,7 @@ class PersonaRegistry:
             models=models,
             guardrails=guardrails,
             schedules=schedules,
+            harness_routing=harness_routing,
             credentials=credentials,
             a2a_auth=a2a_auth,
             raw=raw,

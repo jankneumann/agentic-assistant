@@ -46,6 +46,24 @@ harnesses:
   codex:
     enabled: true
 
+  # Optional harness routing rules (P11 — harness-routing), consumed
+  # by `--harness auto` (the CLI default). Ordered, first match wins;
+  # each rule matches on a role-name glob (`role:`) and/or globs over
+  # the role's preferred_tools (`tools:` — patterns with ':' match the
+  # full source:operation string, bare patterns match the source
+  # prefix). Rules only ever select SDK harnesses: a rule naming a
+  # host harness (claude_code) fails — the host/subscription tier is
+  # explicit-only (-H claude_code + `assistant export`). A matching
+  # rule whose target harness is disabled is skipped with a warning.
+  # Without rules, built-in defaults apply: roles preferring MS-source
+  # tools (ms_graph/outlook/teams/sharepoint) route to
+  # ms_agent_framework when enabled; everything else to deep_agents.
+  # routing:
+  #   - tools: ["ms_graph:*", "outlook:*", "teams:*", "sharepoint:*"]
+  #     harness: ms_agent_framework
+  #   - role: "coder"
+  #     harness: deep_agents
+
 # ── Model registry (P19 — model-provider-routing) ──
 # The ONLY model-selection mechanism. Optional: when omitted, SDK
 # harnesses resolve against a registry synthesized from the built-in
@@ -166,6 +184,10 @@ extensions: []
 # its chat model under (default: scheduler). Bind `scheduler` to a
 # cheap/local entry so recurring background work never burns the
 # interactive tier (P19 routing).
+# `harness` (optional, P11 harness-routing) pins the job's runs to a
+# specific SDK harness name, or `auto` for deterministic routing
+# against the job's role; omit to inherit the daemon -H value
+# (default: auto).
 #
 # schedules:
 #   morning_briefing:
@@ -178,6 +200,7 @@ extensions: []
 #     trigger: {interval: 900}
 #     role: chief_of_staff
 #     prompt: "Triage new email: flag urgent items, draft suggested replies."
+#     harness: auto                 # optional (default: inherit daemon -H)
 #   pre_meeting_brief:
 #     trigger: {calendar: gcal, lead_minutes: 15}
 #     role: researcher
