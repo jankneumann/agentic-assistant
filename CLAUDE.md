@@ -48,6 +48,10 @@ uv run assistant serve -p personal -r coder        # AG-UI SSE server (loopback 
 uv run pytest tests/
 scripts/verify-public-tests-standalone.sh          # verifies privacy boundary
 
+# Scheduler daemon (P7)
+uv run assistant daemon -p personal               # run schedules: jobs until Ctrl-C
+uv run assistant daemon -p personal --serve       # + AG-UI SSE server in-process
+
 # Simulation + eval loop (P27)
 uv run assistant simulate                          # fixture-backed tool simulator (127.0.0.1:8901);
                                                    # prints the SIM_*_URL / ASSISTANT_PERSONAS_DIR exports
@@ -97,6 +101,35 @@ openspec show <change-id>
 2. Edit `roles/newrole/role.yaml` and `prompt.md`
 3. Optional: add persona-specific overrides in private repos at
    `personas/<persona>/roles/newrole.yaml`
+
+## Scheduler & Daemon Mode (P7)
+
+`core/scheduler.py` runs a persona's `schedules:` jobs (see
+`personas/_template/persona.yaml` for the annotated schema):
+
+- **Triggers**: `cron:` (5-field croniter, UTC), `interval:` (seconds,
+  first fire one period after start), `calendar:` (+ `lead_minutes`,
+  default 15 — fires ahead of upcoming events from a
+  `CalendarTriggerSource` extension; the protocol ships now, real
+  gcal/outlook sources land in later phases, so declared calendar
+  jobs are skipped with a warning until then). Missed fires are
+  skipped, never replayed.
+- **Execution**: each run spawns a fresh SDK harness (`create_harness`
+  → `create_agent` → `invoke`) with the job's `role`; results persist
+  through the harness's P21 post-turn memory capture. Per-job error
+  isolation — a failing job never kills the daemon.
+- **Model routing**: jobs resolve their chat model under the job's
+  `consumer` binding (default `scheduler`) via a consumer-rewriting
+  ModelProvider wrapper — bind `scheduler:` to a cheap/local entry in
+  `models:` so background work stays off the interactive tier (P19).
+- **CLI**: `assistant daemon -p <persona>` (options: `-H`, `--serve`
+  + `--host/--port` to co-host the AG-UI server). Validates jobs,
+  roles, and harness up front; SIGINT/SIGTERM shut down gracefully
+  (scheduler stop → extension `shutdown()` hooks).
+- **Daemons + budgets**: set
+  `guardrails.budgets.model_call.persist: file` — the default
+  in-memory spend ledger resets on every restart (the daemon warns
+  about this at startup).
 
 ## Simulation & Eval Loop (P27)
 

@@ -37,6 +37,11 @@ from assistant.core.extension_integrity import (
     IntegrityVerdict,
     check_extension_integrity,
 )
+from assistant.core.scheduler import (
+    ScheduleConfig,
+    ScheduleConfigError,
+    parse_schedule_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +84,10 @@ class PersonaConfig:
     # spec / P13 security-hardening). Falsy when the persona declares
     # no guardrails — the resolver then selects AllowAllGuardrails.
     guardrails: GuardrailConfig = field(default_factory=GuardrailConfig)
+    # Parsed + validated ``schedules:`` section (scheduler spec / P7).
+    # Falsy when the persona declares no scheduled jobs — the daemon
+    # CLI refuses to start without them.
+    schedules: ScheduleConfig = field(default_factory=ScheduleConfig)
     # Persona-scoped credential provider (credential-provider spec /
     # P13): persona ``.env`` values first, process env fallback.
     # ``repr=False`` — the scoped namespace holds secret values.
@@ -183,6 +192,14 @@ class PersonaRegistry:
                 f"guardrails: section — {exc}"
             ) from exc
 
+        try:
+            schedules = parse_schedule_config(raw.get("schedules") or {})
+        except ScheduleConfigError as exc:
+            raise ValueError(
+                f"Persona '{raw['name']}' ({config_path}): invalid "
+                f"schedules: section — {exc}"
+            ) from exc
+
         # P13 security-hardening: every persona-config secret read goes
         # through the persona-scoped CredentialProvider (persona .env
         # values first, process env fallback) — never through a direct
@@ -220,6 +237,7 @@ class PersonaRegistry:
             disabled_roles=raw.get("disabled_roles", []) or [],
             models=models,
             guardrails=guardrails,
+            schedules=schedules,
             credentials=credentials,
             raw=raw,
         )
