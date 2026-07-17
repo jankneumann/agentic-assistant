@@ -293,6 +293,62 @@ def export(persona: str, role: str | None, harness: str) -> None:
     click.echo(context.get("system_prompt", ""))
 
 
+@main.command("export-omnigent-agent")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.option(
+    "--base-url",
+    type=str,
+    default="http://127.0.0.1:8765",
+    show_default=True,
+    help=(
+        "Base URL where `assistant serve -p <persona> --a2a --mcp` is "
+        "reachable from the meta-harness; endpoint paths are appended."
+    ),
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(dir_okay=False, writable=True, path_type=Path),
+    default=None,
+    help="Write the YAML to this file instead of stdout.",
+)
+def export_omnigent_agent(
+    persona: str, base_url: str, output: Path | None
+) -> None:
+    """Export an Omnigent-shaped composable agent definition (P22).
+
+    Generates a YAML describing this assistant as an agent composable
+    UNDER the Omnigent meta-harness via its served A2A/MCP/AG-UI
+    endpoints (ADR 0007). The file header marks the schema as
+    Omnigent-shaped-but-unverified — check it against the canonical
+    omnigent-ai/omnigent schema on a connected machine before use.
+    """
+    from assistant.composition.omnigent import (
+        build_omnigent_agent_definition,
+        render_omnigent_agent_yaml,
+    )
+
+    persona_reg = PersonaRegistry()
+    role_reg = RoleRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    roles: list[RoleConfig] = []
+    for role_name in role_reg.available_for_persona(pc):
+        try:
+            roles.append(role_reg.load(role_name, pc))
+        except ValueError as e:  # pragma: no cover — defensive
+            logger.warning("Skipping unloadable role %r: %s", role_name, e)
+
+    definition = build_omnigent_agent_definition(
+        pc, roles, base_url=base_url
+    )
+    text = render_omnigent_agent_yaml(definition)
+    if output is not None:
+        output.write_text(text)
+        click.echo(f"Wrote Omnigent agent definition to {output}")
+    else:
+        click.echo(text, nl=False)
+
+
 @main.command()
 @click.option("--persona", "-p", type=str, required=True, help="Persona name.")
 @click.option("--role", "-r", type=str, default=None, help="Role name.")
