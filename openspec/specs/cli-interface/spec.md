@@ -98,23 +98,38 @@ personas when `-p/--persona` names a persona that does not exist.
 
 ### Requirement: Harness Selection via -h Flag
 
-The CLI SHALL accept `-H/--harness` to select the harness backend, dispatching
-to the harness factory, and SHALL surface the MS Agent Framework harness's
-`NotImplementedError` to the user as a clear error when selected before P5
-lands.
+The CLI SHALL accept `-H/--harness` to select the harness backend and
+SHALL default it to the `auto` sentinel on the `run`, `serve`, and
+`daemon` subcommands. `auto` SHALL be resolved through
+`select_harness(persona, role)` after the persona and role are
+loaded (explicit `-H` names bypass routing and dispatch directly to
+the harness factory), and the resolved concrete name SHALL be what
+reaches `create_harness` — the factory never receives `auto`. The
+CLI SHALL surface factory validation failures (unknown harness,
+harness not enabled, no enabled SDK harness under `auto`) as usage
+errors.
 
-#### Scenario: Default harness is deep_agents
+#### Scenario: Default harness resolves via auto routing
 
-- **WHEN** `-H/--harness` is omitted
-- **THEN** the harness passed to the factory MUST equal `"deep_agents"`
+- **WHEN** `-H/--harness` is omitted on `assistant run`
+- **AND** the persona enables only `deep_agents` among SDK harnesses
+  and declares no routing rules
+- **THEN** the harness passed to the factory MUST equal
+  `"deep_agents"` (the `auto` resolution result)
 
-#### Scenario: -h ms_agent_framework surfaces the stub error
+#### Scenario: Explicit harness bypasses routing
 
-- **WHEN** `assistant -p personal -h ms_agent_framework` is executed (with the
-  MS AF harness enabled in config)
+- **WHEN** `assistant run -p personal -H deep_agents` is executed
+- **THEN** the harness passed to the factory MUST equal
+  `"deep_agents"` regardless of any `harnesses.routing:` rules
+
+#### Scenario: -h ms_agent_framework surfaces the enablement error
+
+- **WHEN** `assistant -p personal -H ms_agent_framework` is executed
+  with the MS AF harness disabled in the persona config
 - **THEN** the CLI MUST exit non-zero
-- **AND** stderr or stdout MUST contain a message indicating the MS Agent
-  Framework harness is not yet implemented
+- **AND** stderr or stdout MUST contain a message indicating the
+  harness is not enabled for the persona
 
 ### Requirement: Interactive REPL Loop
 
@@ -540,14 +555,18 @@ operator flow for the persona registry's verify-before-execute check.
 
 The CLI SHALL provide a `daemon` subcommand that runs the persona's
 `schedules:` jobs until interrupted. It SHALL accept `-p/--persona`
-(required), `-H/--harness` (optional, default `deep_agents`, SDK
-harnesses only), and `--serve` with `--host`/`--port` (defaults
+(required), `-H/--harness` (optional, default `auto`, SDK harnesses
+only — `auto` resolves per job through `select_harness` against the
+job's role, and a job's `harness:` override takes precedence over the
+`-H` value), and `--serve` with `--host`/`--port` (defaults
 `127.0.0.1`/`8765`) to co-host the AG-UI SSE server in the same
-process. Before starting, the command SHALL validate that the persona
-declares at least one enabled scheduled job, that every enabled job's
-`role` loads, and that the selected harness is an enabled SDK harness
-— each failure exiting non-zero with an actionable message. The
-daemon SHALL load extensions via `load_extensions_async`, perform
+process (under `auto`, the served app's harness resolves against the
+persona's `default_role`). Before starting, the command SHALL
+validate that the persona declares at least one enabled scheduled
+job, that every enabled job's `role` loads, and that every enabled
+job's effective harness resolves to an enabled SDK harness — each
+failure exiting non-zero with an actionable message naming the job.
+The daemon SHALL load extensions via `load_extensions_async`, perform
 HTTP-tool discovery once, warn when a `model_call` budget uses the
 in-memory ledger (recommending `persist: file`), stop gracefully on
 SIGINT/SIGTERM, and run extension `shutdown()` hooks on teardown.
@@ -577,6 +596,13 @@ SIGINT/SIGTERM, and run extension `shutdown()` hooks on teardown.
 - **THEN** the exit code MUST be non-zero
 - **AND** the output MUST indicate that scheduled jobs require an SDK
   harness
+
+#### Scenario: Per-job harness override is validated at startup
+
+- **WHEN** an enabled job declares `harness: claude_code`
+- **AND** `assistant daemon -p <persona>` is executed
+- **THEN** the exit code MUST be non-zero
+- **AND** the error MUST name the offending job
 
 #### Scenario: In-memory budget ledger triggers a warning
 
@@ -636,4 +662,79 @@ and `1` when any entry is unhealthy.
 - **THEN** the command MUST print that no entries declare health
   checks
 - **AND** exit 0 without issuing any probe
+
+### Requirement: CLI export-omnigent-agent Command
+
+The system SHALL provide an `assistant export-omnigent-agent`
+command (joining the flat export family) that renders the
+Omnigent-shaped agent-definition YAML for a required `-p/--persona`,
+deriving endpoint URLs from `--base-url` (default
+`http://127.0.0.1:8765`), printing to stdout by default and writing
+to a file when `-o/--output` is given.
+
+#### Scenario: Definition prints to stdout
+
+- **WHEN** `assistant export-omnigent-agent -p personal --base-url
+  http://h:1` runs
+- **THEN** stdout MUST be parseable YAML whose A2A RPC endpoint is
+  `http://h:1/a2a/v1`
+
+#### Scenario: Output flag writes a file
+
+- **WHEN** the command runs with `-o agent.yaml`
+- **THEN** the file MUST be written containing the unverified-schema
+  header
+
+#### Scenario: Persona is required
+
+- **WHEN** the command runs without `-p`
+- **THEN** it MUST exit nonzero with a usage error naming the persona
+  option
+
+### Requirement: CLI cleanroom Command Group
+
+The system SHALL provide an `assistant cleanroom` command group with
+four subcommands driving the P26 declassification gateway:
+
+- `cleanroom export -p <persona> --to <audience>` — runs
+  `export_shared` and prints the bundle path, id, item count, and
+  profile.
+- `cleanroom import -p <persona> <bundle>` — runs `import_shared` on
+  a bundle file path and prints the imported/skipped counts and
+  source persona.
+- `cleanroom revoke -p <persona> <bundle-id>` — runs `revoke`
+  (source persona only) and prints the revocation record path.
+- `cleanroom sync -p <persona>` — runs `purge_revoked` and prints the
+  number of purged items.
+
+Commands needing the persona's memory database (`export`, `import`,
+`sync`) MUST fail with exit code 1 and an actionable message when the
+persona has no `database_url`. Guardrail selection MUST mirror the
+capability resolver (truthy `guardrails:` config selects
+`PolicyGuardrails`, else `AllowAllGuardrails`), and each command MUST
+act under a synthesized `AgentIdentity(persona, default_role)`. Every
+clean-room refusal (`CleanRoomError` and subclasses) MUST surface as
+an `Error:` message with exit code 1, never a traceback.
+
+#### Scenario: Export writes a bundle into the shared space
+
+- **WHEN** `assistant cleanroom export -p alpha --to beta` runs for a
+  persona with a matching share rule
+- **THEN** the command exits 0, prints the exported item count, and a
+  bundle file exists under the shared space's `beta/` directory
+
+#### Scenario: Import and sync complete the revocation loop
+
+- **WHEN** a consumer imports a bundle, the source persona revokes
+  it, and the consumer runs `cleanroom sync`
+- **THEN** the sync exits 0 and reports the purged item count
+- **AND** a subsequent import of the same bundle exits 1 naming the
+  revocation
+
+#### Scenario: Missing database_url fails actionably
+
+- **WHEN** `cleanroom export` runs for a persona without a
+  `database_url`
+- **THEN** the command exits 1 with a message naming the missing
+  configuration
 

@@ -14,3 +14,6 @@
 | P17 | review | Same official package, wire-identical; low-level accepts pre-built Tool entries  |
 | P20 | review | Health filtering runs after required-tag filtering and only removes candidates — |
 | P25 | review | <mount>/data/<persona>/<REF> with identical masking semantics; migrating a perso |
+| P11 | review | Explicit -H -> persona rules -> built-ins; disabled-target rules skip with warni |
+| P22 | review | Empty allow-list = --network=none (real); non-empty = proxy-honored env vars wit |
+| P26 | review | Foreign items never become native preferences; revocation = prefix delete; no cl |
