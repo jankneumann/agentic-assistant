@@ -383,9 +383,15 @@ application binding a single persona and role for the lifetime of the
 server process. The subcommand SHALL accept `-p/--persona` (required),
 `-r/--role` (optional, defaulting to the persona's `default_role`),
 `-H/--harness` (optional, defaulting to `deep_agents`), `--host`
-(optional, defaulting to `127.0.0.1`), and `--port` (optional,
-defaulting to `8765`). The server SHALL block until interrupted; the
-exit code on `Ctrl-C` SHALL be 0.
+(optional, defaulting to `127.0.0.1`), `--port` (optional,
+defaulting to `8765`), and `--a2a` (optional flag, default off). The
+server SHALL block until interrupted; the exit code on `Ctrl-C` SHALL
+be 0. When `--a2a` is passed, the app factory MUST be invoked with
+`enable_a2a=True` and `a2a_base_url="http://<host>:<port>"` so the A2A
+protocol surface (agent card + `POST /a2a/v1`) is mounted alongside
+the AG-UI routes on the same server; when the flag is absent the app
+factory MUST be called with the legacy
+`make_app(persona, role, harness)` shape and no A2A routes registered.
 
 #### Scenario: serve binds the supplied persona and role at startup
 
@@ -402,56 +408,21 @@ exit code on `Ctrl-C` SHALL be 0.
 - **THEN** the underlying uvicorn server MUST bind to `127.0.0.1`,
   not `0.0.0.0`
 
-#### Scenario: serve uses persona default_role when -r is omitted
+#### Scenario: serve --a2a mounts the A2A surface
 
-- **WHEN** `assistant serve -p personal` is executed without `-r`
-- **AND** the personal persona's `default_role` is `assistant`
-- **THEN** the constructed harness MUST be initialized with the
-  `assistant` role
+- **WHEN** `assistant serve -p personal --a2a --port 9001` is executed
+- **THEN** the app factory MUST receive `enable_a2a=True` and
+  `a2a_base_url="http://127.0.0.1:9001"`
+- **AND** the startup output MUST name the agent-card URL
 
-#### Scenario: serve rejects unknown personas with non-zero exit
+#### Scenario: serve without --a2a keeps the legacy surface
 
-- **WHEN** `assistant serve -p nonexistent` is executed
-- **THEN** the exit code MUST be non-zero
-- **AND** stderr or stdout MUST contain the string `"Available:"`
-
-#### Scenario: serve rejects host harness names
-
-- **WHEN** `assistant serve -p personal -H claude_code` is executed
-- **THEN** the exit code MUST be non-zero
-- **AND** the output MUST indicate that `claude_code` is a host
-  harness and cannot serve over SSE
-
-#### Scenario: Ctrl-C exits with status 0
-
-- **WHEN** the running server receives SIGINT
-- **THEN** the lifespan shutdown MUST run cleanly
-- **AND** the process MUST exit with status 0
-
-#### Scenario: serve rejects persona with no default_role when -r is omitted
-
-- **WHEN** `assistant serve -p some-persona` is executed without
-  `-r`
-- **AND** the persona's `default_role` field is missing or empty
-- **THEN** the exit code MUST be non-zero
-- **AND** stderr or stdout MUST identify the persona name and the
-  missing `default_role` field
-
-#### Scenario: serve rejects unknown harness names
-
-- **WHEN** `assistant serve -p personal -H nonexistent` is executed
-- **THEN** the exit code MUST be non-zero
-- **AND** the error MUST list the available harness names
-
-#### Scenario: serve warns when binding to a non-loopback host
-
-- **WHEN** `assistant serve -p personal --host 0.0.0.0` is executed
-  (or any non-`127.0.0.1`, non-`localhost` address)
-- **THEN** the CLI MUST emit a clearly-visible warning on stderr
-  before uvicorn starts, identifying that the server will be
-  network-accessible without authentication
-- **AND** the server MUST still start (the warning is informational,
-  not a refusal — single-user, local-trust-mode is the v1 contract)
+- **WHEN** `assistant serve -p personal -r coder` is executed without
+  `--a2a`
+- **THEN** the app factory MUST be called without A2A keyword
+  arguments
+- **AND** requests to `/.well-known/agent-card.json` and `/a2a/v1`
+  MUST return 404
 
 ### Requirement: Simulate Subcommand
 
@@ -547,4 +518,54 @@ operator flow for the persona registry's verify-before-execute check.
 - **WHEN** the persona has no extensions directory on disk
 - **THEN** the command MUST exit with a non-zero status
 - **AND** the error output MUST name the missing directory
+
+### Requirement: CLI daemon Subcommand
+
+The CLI SHALL provide a `daemon` subcommand that runs the persona's
+`schedules:` jobs until interrupted. It SHALL accept `-p/--persona`
+(required), `-H/--harness` (optional, default `deep_agents`, SDK
+harnesses only), and `--serve` with `--host`/`--port` (defaults
+`127.0.0.1`/`8765`) to co-host the AG-UI SSE server in the same
+process. Before starting, the command SHALL validate that the persona
+declares at least one enabled scheduled job, that every enabled job's
+`role` loads, and that the selected harness is an enabled SDK harness
+— each failure exiting non-zero with an actionable message. The
+daemon SHALL load extensions via `load_extensions_async`, perform
+HTTP-tool discovery once, warn when a `model_call` budget uses the
+in-memory ledger (recommending `persist: file`), stop gracefully on
+SIGINT/SIGTERM, and run extension `shutdown()` hooks on teardown.
+
+#### Scenario: Daemon is registered in the CLI group
+
+- **WHEN** `assistant daemon --help` is executed
+- **THEN** the exit code MUST be 0
+- **AND** the help text MUST mention scheduled jobs
+
+#### Scenario: Persona without schedules is a usage error
+
+- **WHEN** `assistant daemon -p <persona>` is executed for a persona
+  with no `schedules:` section
+- **THEN** the exit code MUST be non-zero
+- **AND** the output MUST mention the missing `schedules:` section
+
+#### Scenario: Unknown job role fails at startup
+
+- **WHEN** an enabled job names a role that does not exist
+- **THEN** the exit code MUST be non-zero
+- **AND** the error MUST name the offending job
+
+#### Scenario: Host harness is rejected
+
+- **WHEN** `assistant daemon -p <persona> -H claude_code` is executed
+- **THEN** the exit code MUST be non-zero
+- **AND** the output MUST indicate that scheduled jobs require an SDK
+  harness
+
+#### Scenario: In-memory budget ledger triggers a warning
+
+- **WHEN** the persona declares a `model_call` budget without
+  `persist: file`
+- **THEN** the daemon MUST emit a warning recommending `persist: file`
+  before starting
+- **AND** the daemon MUST still start
 

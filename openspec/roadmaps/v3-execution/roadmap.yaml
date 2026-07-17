@@ -86,7 +86,7 @@ items:
         rationale: Credential plane + CredentialProvider seam from P24
   - item_id: P20
     title: local-inference-node
-    status: candidate
+    status: in_progress
     priority: 8
     effort: M
     change_id: local-inference-node
@@ -96,21 +96,21 @@ items:
         rationale: Local endpoints are model-registry entries
   - item_id: P7
     title: scheduler
-    status: in_progress
+    status: completed
     priority: 9
     effort: L
     change_id: scheduler
     depends_on: []
   - item_id: P6
     title: a2a-server
-    status: in_progress
+    status: completed
     priority: 10
     effort: L
     change_id: a2a-server
     depends_on: []
   - item_id: P17
     title: mcp-server-exposure
-    status: candidate
+    status: in_progress
     priority: 11
     effort: M
     change_id: mcp-server-exposure
