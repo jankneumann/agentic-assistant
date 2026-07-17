@@ -1,8 +1,9 @@
 """CLI: persona-by-role-by-harness selection with REPL + /role + /delegate.
 
-Supports two modes:
+Supports three modes:
   - `run` (default): interactive REPL via SDK harness
   - `export`: generate host-harness integration artifacts
+  - `daemon`: run the persona's scheduled jobs (P7 scheduler)
 """
 
 from __future__ import annotations
@@ -362,6 +363,223 @@ def serve(
         uvicorn.run(app, host=host, port=port)
     except KeyboardInterrupt:
         pass
+
+
+@main.command()
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.option(
+    "--harness",
+    "-H",
+    type=str,
+    default="deep_agents",
+    help="SDK harness backend for scheduled jobs (default: deep_agents).",
+)
+@click.option(
+    "--serve",
+    "with_server",
+    is_flag=True,
+    help="Also start the AG-UI SSE server alongside the scheduler.",
+)
+@click.option("--host", type=str, default="127.0.0.1", help="AG-UI bind host (default: 127.0.0.1).")
+@click.option("--port", type=int, default=8765, help="AG-UI bind port (default: 8765).")
+def daemon(
+    persona: str,
+    harness: str,
+    with_server: bool,
+    host: str,
+    port: int,
+) -> None:
+    """Run the persona's scheduled jobs (schedules:) until interrupted.
+
+    Starts the P7 scheduler: one asyncio task per enabled job in the
+    persona's ``schedules:`` section (cron / interval / calendar
+    triggers), each run spawning a fresh SDK harness under the job's
+    ``consumer`` model binding (default ``scheduler`` — bind it to a
+    cheap/local entry in ``models:``). With ``--serve`` the AG-UI SSE
+    server runs in the same process. For long-running daemons,
+    configure ``guardrails.budgets.model_call.persist: file`` so
+    budget ceilings survive restarts.
+    """
+    persona_reg = PersonaRegistry()
+    role_reg = RoleRegistry()
+
+    pc = _load_persona_or_fail(persona_reg, persona)
+
+    if not pc.schedules:
+        raise click.UsageError(
+            f"Persona '{persona}' declares no schedules: section — "
+            "nothing to run. Add scheduled jobs to persona.yaml (see "
+            "personas/_template/persona.yaml)."
+        )
+    enabled = pc.schedules.enabled_jobs()
+    if not enabled:
+        raise click.UsageError(
+            f"Persona '{persona}' has schedules, but every job is "
+            "enabled: false — nothing to run."
+        )
+
+    # Validate every job's role and the harness selection up front —
+    # failures here are configuration errors and must not surface as
+    # mid-flight job failures at 7am.
+    for job in enabled:
+        try:
+            rc = role_reg.load(job.role, pc)
+        except ValueError as e:
+            raise click.UsageError(
+                f"Scheduled job '{job.name}': {e}"
+            ) from e
+    try:
+        adapter = _create_harness(pc, rc, harness)
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
+    if not isinstance(adapter, SdkHarnessAdapter):
+        click.echo(
+            f"Error: harness '{harness}' is a host harness, not an SDK "
+            "harness. Scheduled jobs require an SDK harness.",
+            err=True,
+        )
+        sys.exit(1)
+
+    # Daemons should persist budget state: a memory-only ledger resets
+    # every restart, silently re-arming daily/monthly ceilings.
+    budget = pc.guardrails.model_call_budget if pc.guardrails else None
+    if budget is not None and pc.guardrails.spend_file is None:
+        click.echo(
+            "Warning: guardrails.budgets.model_call uses the in-memory "
+            "ledger; for a long-running daemon set persist: file so "
+            "spend ceilings survive restarts.",
+            err=True,
+        )
+
+    set_assistant_ctx(pc.name, pc.default_role)
+
+    click.echo(f"Persona:  {pc.display_name}")
+    click.echo(f"Harness:  {harness}")
+    click.echo(f"Jobs:     {', '.join(job.name for job in enabled)}")
+
+    try:
+        asyncio.run(
+            _run_daemon(
+                persona_reg, role_reg, pc, harness, with_server, host, port
+            )
+        )
+    except KeyboardInterrupt:
+        pass
+
+
+async def _run_daemon(
+    persona_reg: PersonaRegistry,
+    role_reg: RoleRegistry,
+    pc,
+    harness_name: str,
+    with_server: bool,
+    host: str,
+    port: int,
+) -> None:
+    """Async body of the daemon command.
+
+    Mirrors ``_run_repl``'s structure: the HTTP-tool discovery client
+    stays open for the daemon's lifetime (registered tools hold it),
+    and extension ``shutdown()`` hooks run in the outer ``finally``
+    (P10 extension-lifecycle).
+    """
+    try:
+        if _has_configured_tool_sources(pc):
+            async with _make_discovery_client() as client:
+                registry = await discover_tools(
+                    pc.tool_sources,
+                    client=client,
+                    credentials=getattr(pc, "credentials", None),
+                )
+                await _run_daemon_with_registry(
+                    persona_reg, role_reg, pc, harness_name, registry,
+                    with_server, host, port,
+                )
+        else:
+            await _run_daemon_with_registry(
+                persona_reg, role_reg, pc, harness_name, HttpToolRegistry(),
+                with_server, host, port,
+            )
+    finally:
+        await persona_reg.shutdown_extensions()
+
+
+async def _run_daemon_with_registry(
+    persona_reg: PersonaRegistry,
+    role_reg: RoleRegistry,
+    pc,
+    harness_name: str,
+    registry: HttpToolRegistry,
+    with_server: bool,
+    host: str,
+    port: int,
+) -> None:
+    import signal as _signal
+
+    from assistant.core.scheduler import (
+        AssistantScheduler,
+        CalendarTriggerSource,
+        HarnessJobRunner,
+    )
+
+    extensions = await persona_reg.load_extensions_async(pc)
+    runner = HarnessJobRunner(
+        pc,
+        harness_name=harness_name,
+        role_registry=role_reg,
+        http_tool_registry=registry,
+        extensions=extensions,
+        create_harness_fn=_create_harness,
+    )
+    calendar_sources = [
+        ext for ext in extensions if isinstance(ext, CalendarTriggerSource)
+    ]
+    scheduler = AssistantScheduler(
+        pc,
+        pc.schedules,
+        job_runner=runner,
+        calendar_sources=calendar_sources,
+    )
+
+    server = None
+    server_task: asyncio.Task | None = None
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (_signal.SIGINT, _signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop.set)
+        except (NotImplementedError, RuntimeError):  # pragma: no cover
+            # Platforms/loops without signal handler support fall back
+            # to the KeyboardInterrupt path in the click command.
+            pass
+
+    try:
+        scheduler.start()
+        if with_server:
+            import uvicorn
+
+            from assistant.web.app import make_app
+
+            if host != "127.0.0.1" and not host.startswith("127."):
+                click.echo(
+                    f"Warning: binding to non-loopback host '{host}'. "
+                    "This exposes the server beyond localhost.",
+                    err=True,
+                )
+            app = make_app(pc.name, pc.default_role, harness_name)
+            server = uvicorn.Server(
+                uvicorn.Config(app, host=host, port=port)
+            )
+            server_task = loop.create_task(server.serve())
+            click.echo(f"AG-UI server: http://{host}:{port}")
+        click.echo("Scheduler running. Ctrl-C to stop.")
+        await stop.wait()
+    finally:
+        if server is not None:
+            server.should_exit = True
+        if server_task is not None:
+            await server_task
+        await scheduler.stop()
 
 
 def _load_persona_or_fail(
