@@ -8,3 +8,4 @@
 | P19 | review | Deleted harnesses.<h>.model + StaticModelProvider pre-users (Churn Rule: breakin |
 | P10 | review | hasattr-discovery + ExtensionBase no-op defaults preserves structural compat for |
 | P27 | review | Per-source FastAPI mock apps expose /openapi.json; existing http_tools discovery |
+| P13 | review | Never os.environ; empty value masks process env; ~30-line parser, no python-dote |

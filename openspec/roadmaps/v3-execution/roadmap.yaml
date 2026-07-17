@@ -73,7 +73,7 @@ items:
     depends_on: []
   - item_id: P13
     title: security-hardening
-    status: in_progress
+    status: completed
     priority: 7
     effort: L
     change_id: security-hardening
@@ -96,14 +96,14 @@ items:
         rationale: Local endpoints are model-registry entries
   - item_id: P7
     title: scheduler
-    status: candidate
+    status: in_progress
     priority: 9
     effort: L
     change_id: scheduler
     depends_on: []
   - item_id: P6
     title: a2a-server
-    status: candidate
+    status: in_progress
     priority: 10
     effort: L
     change_id: a2a-server
