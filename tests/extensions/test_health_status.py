@@ -76,10 +76,7 @@ def test_runtime_conformance_check_rejects_bool() -> None:
     class LegacyExtension:
         name = "legacy-private"
 
-        def as_langchain_tools(self) -> list[Any]:
-            return []
-
-        def as_ms_agent_tools(self) -> list[Any]:
+        def tool_specs(self) -> list[Any]:
             return []
 
         async def health_check(self) -> bool:
@@ -107,10 +104,7 @@ def test_runtime_conformance_guard_self_removes_after_success() -> None:
     class ConformingExtension:
         name = "conforming"
 
-        def as_langchain_tools(self) -> list[Any]:
-            return []
-
-        def as_ms_agent_tools(self) -> list[Any]:
+        def tool_specs(self) -> list[Any]:
             return []
 
         async def health_check(self) -> HealthStatus:
