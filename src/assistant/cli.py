@@ -21,6 +21,7 @@ from assistant.core.role import RoleConfig, RoleRegistry
 from assistant.delegation.spawner import DelegationSpawner
 from assistant.harnesses.base import HostHarnessAdapter, SdkHarnessAdapter
 from assistant.harnesses.factory import create_harness as _default_create_harness
+from assistant.harnesses.factory import select_harness as _default_select_harness
 from assistant.http_tools import HttpToolRegistry
 from assistant.http_tools.discovery import discover_tools
 from assistant.telemetry import set_assistant_ctx
@@ -28,6 +29,10 @@ from assistant.telemetry import set_assistant_ctx
 logger = logging.getLogger(__name__)
 
 _create_harness = _default_create_harness
+# Injectable seam mirroring ``_create_harness`` (tests stub it). P11
+# harness-routing: resolves the ``auto`` sentinel; explicit -H names
+# pass through unchanged.
+_select_harness = _default_select_harness
 
 def _list_role_skills(rc: RoleConfig) -> list[str]:
     """Return sorted skill names declared by the role's ``skills_dir``.
@@ -132,9 +137,16 @@ def main() -> None:
 @click.option(
     "--harness",
     "-H",
-    type=click.Choice(["deep_agents", "ms_agent_framework", "claude_code"]),
-    default="deep_agents",
-    help="Harness backend.",
+    type=click.Choice(
+        ["auto", "deep_agents", "ms_agent_framework", "claude_code"]
+    ),
+    default="auto",
+    help=(
+        "Harness backend. 'auto' (default) routes deterministically: "
+        "persona harnesses.routing: rules first, then M365-tool roles "
+        "to ms_agent_framework when enabled, else deep_agents. Host "
+        "harnesses are never auto-selected."
+    ),
 )
 @click.option(
     "--list-personas",
@@ -215,6 +227,14 @@ def run(
                 f"Unknown method '{method}'. "
                 f"Available: {', '.join(available) if available else '(none)'}."
             )
+
+    # P11 harness-routing: resolve the 'auto' sentinel (explicit names
+    # pass through). The session keeps this harness across /role
+    # switches — routing runs once at startup.
+    try:
+        harness = _select_harness(pc, rc, requested=harness)
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
 
     # Bind the assistant ContextVar (D4) so every span emitted during
     # this CLI run carries the right persona + role labels without
@@ -300,8 +320,11 @@ def export(persona: str, role: str | None, harness: str) -> None:
     "--harness",
     "-H",
     type=str,
-    default="deep_agents",
-    help="SDK harness backend (default: deep_agents).",
+    default="auto",
+    help=(
+        "SDK harness backend (default: auto — deterministic routing "
+        "via persona rules + role signals; explicit names bypass)."
+    ),
 )
 @click.option("--host", type=str, default="127.0.0.1", help="Bind host (default: 127.0.0.1).")
 @click.option("--port", type=int, default=8765, help="Bind port (default: 8765).")
@@ -362,6 +385,13 @@ def serve(
     except ValueError as e:
         raise click.UsageError(str(e)) from e
 
+    # P11 harness-routing: resolve 'auto' before validation so
+    # make_app only ever sees a concrete harness name.
+    try:
+        harness = _select_harness(pc, rc, requested=harness)
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
+
     # Validate harness before building the app.
     try:
         adapter = _create_harness(pc, rc, harness)
@@ -416,8 +446,12 @@ def serve(
     "--harness",
     "-H",
     type=str,
-    default="deep_agents",
-    help="SDK harness backend for scheduled jobs (default: deep_agents).",
+    default="auto",
+    help=(
+        "SDK harness backend for scheduled jobs (default: auto — "
+        "resolved per job against the job's role; a job's harness: "
+        "key overrides this value)."
+    ),
 )
 @click.option(
     "--serve",
@@ -463,9 +497,11 @@ def daemon(
             "enabled: false — nothing to run."
         )
 
-    # Validate every job's role and the harness selection up front —
+    # Validate every job's role and effective harness up front —
     # failures here are configuration errors and must not surface as
-    # mid-flight job failures at 7am.
+    # mid-flight job failures at 7am. P11 harness-routing: each job's
+    # effective harness is its own `harness:` key, falling back to the
+    # daemon -H value; 'auto' resolves against the job's role.
     for job in enabled:
         try:
             rc = role_reg.load(job.role, pc)
@@ -473,17 +509,23 @@ def daemon(
             raise click.UsageError(
                 f"Scheduled job '{job.name}': {e}"
             ) from e
-    try:
-        adapter = _create_harness(pc, rc, harness)
-    except ValueError as e:
-        raise click.UsageError(str(e)) from e
-    if not isinstance(adapter, SdkHarnessAdapter):
-        click.echo(
-            f"Error: harness '{harness}' is a host harness, not an SDK "
-            "harness. Scheduled jobs require an SDK harness.",
-            err=True,
-        )
-        sys.exit(1)
+        try:
+            resolved = _select_harness(
+                pc, rc, requested=job.harness or harness
+            )
+            adapter = _create_harness(pc, rc, resolved)
+        except ValueError as e:
+            raise click.UsageError(
+                f"Scheduled job '{job.name}': {e}"
+            ) from e
+        if not isinstance(adapter, SdkHarnessAdapter):
+            click.echo(
+                f"Error: scheduled job '{job.name}': harness "
+                f"'{resolved}' is a host harness, not an SDK harness. "
+                "Scheduled jobs require an SDK harness.",
+                err=True,
+            )
+            sys.exit(1)
 
     # Daemons should persist budget state: a memory-only ledger resets
     # every restart, silently re-arming daily/monthly ceilings.
@@ -633,7 +675,13 @@ async def _run_daemon_with_registry(
                     "This exposes the server beyond localhost.",
                     err=True,
                 )
-            app = make_app(pc.name, pc.default_role, harness_name)
+            # P11 harness-routing: make_app needs a concrete harness;
+            # resolve 'auto' against the persona's default role.
+            server_harness = harness_name
+            if server_harness == "auto":
+                rc_default = role_reg.load(pc.default_role, pc)
+                server_harness = _select_harness(pc, rc_default)
+            app = make_app(pc.name, pc.default_role, server_harness)
             server = uvicorn.Server(
                 uvicorn.Config(app, host=host, port=port)
             )
