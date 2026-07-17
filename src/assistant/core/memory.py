@@ -7,6 +7,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -214,6 +215,94 @@ class MemoryManager:
             for i in interactions
         ]
 
+    @trace_memory_op("fact_list")
+    async def list_facts(
+        self, persona: str, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Return the persona's stored facts as JSON-safe dicts.
+
+        Structured sibling of the formatted ``get_context`` read,
+        consumed by the P26 clean-room export gateway. Most recently
+        updated first; non-positive ``limit`` short-circuits to ``[]``.
+        """
+        if limit <= 0:
+            return []
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(MemoryEntry)
+                .where(MemoryEntry.persona == persona)
+                .order_by(MemoryEntry.updated_at.desc())
+                .limit(limit)
+            )
+            entries = result.scalars().all()
+        return [
+            {
+                "id": e.id,
+                "key": e.key,
+                "value": e.value,
+                "updated_at": _iso_or_none(e.updated_at),
+            }
+            for e in entries
+        ]
+
+    @trace_memory_op("preference_list")
+    async def list_preferences(
+        self, persona: str, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Return the persona's preferences as JSON-safe dicts.
+
+        Highest confidence first (mirrors ``get_recent_snippets``);
+        non-positive ``limit`` short-circuits to ``[]``. Consumed by
+        the P26 clean-room export gateway.
+        """
+        if limit <= 0:
+            return []
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(Preference)
+                .where(Preference.persona == persona)
+                .order_by(Preference.confidence.desc())
+                .limit(limit)
+            )
+            prefs = result.scalars().all()
+        return [
+            {
+                "id": p.id,
+                "category": p.category,
+                "key": p.key,
+                "value": p.value,
+                "confidence": p.confidence,
+                "updated_at": _iso_or_none(p.updated_at),
+            }
+            for p in prefs
+        ]
+
+    @trace_memory_op("fact_delete")
+    async def delete_facts_by_prefix(
+        self, persona: str, key_prefix: str
+    ) -> int:
+        """Delete the persona's facts whose key starts with ``key_prefix``.
+
+        Backs clean-room revocation purges (imported items live under
+        ``cleanroom/<bundle_id>/``). An empty prefix is refused — this
+        method must never be able to wipe a persona's whole memory
+        table by accident. Returns the number of deleted rows.
+        """
+        if not key_prefix:
+            raise ValueError(
+                "delete_facts_by_prefix requires a non-empty key_prefix."
+            )
+        async with self._session_factory() as session:
+            result = await session.execute(
+                sa_delete(MemoryEntry).where(
+                    MemoryEntry.persona == persona,
+                    MemoryEntry.key.startswith(key_prefix, autoescape=True),
+                )
+            )
+            await session.commit()
+        deleted = getattr(result, "rowcount", 0) or 0
+        return int(deleted)
+
     @trace_memory_op("episode_write")
     async def store_episode(
         self, persona: str, content: str, source: str
@@ -312,6 +401,12 @@ class MemoryManager:
                 )
 
         return "\n\n".join(sections) + "\n"
+
+
+def _iso_or_none(value: Any) -> str | None:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value) if value else None
 
 
 def _extract_content(result: Any) -> str:

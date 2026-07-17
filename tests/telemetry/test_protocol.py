@@ -53,6 +53,12 @@ def test_valid_ops_set() -> None:
             "context",
             "snippets",
             "fact_write",
+            # knowledge-clean-room (P26): structured fact/preference
+            # reads + revocation prefix delete for the clean-room
+            # declassification gateway.
+            "fact_list",
+            "preference_list",
+            "fact_delete",
             "interaction_write",
             # eval-simulation-loop (P27): MemoryManager.list_interactions
             # feeds `assistant export-eval-dataset`.
