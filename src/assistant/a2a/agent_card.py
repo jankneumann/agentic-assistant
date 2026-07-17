@@ -6,9 +6,12 @@ the role's display name, description straight from ``role.yaml``. The
 card advertises ``capabilities.streaming=true`` (message/stream is
 implemented) and JSONRPC as the preferred transport at ``{base_url}/a2a/v1``.
 
-Auth: no ``securitySchemes`` yet — the server binds loopback-only by
-default (web-server posture); agent-card auth declarations arrive with
-P25 ``agent-iam``.
+Auth (P25 agent-iam): when the persona declares ``auth.a2a`` the card
+advertises the scheme under ``securitySchemes`` (OpenAPI-style HTTP
+bearer object) plus a matching ``security`` requirement — per the A2A
+spec the card is how clients discover WHAT to present; the card itself
+stays publicly readable. Without a declaration the card omits both
+fields and the server keeps its loopback-unauthenticated posture.
 """
 
 from __future__ import annotations
@@ -19,9 +22,13 @@ from assistant.a2a.types import (
     AgentCapabilities,
     AgentCard,
     AgentSkill,
+    HTTPAuthSecurityScheme,
 )
-from assistant.core.persona import PersonaConfig
+from assistant.core.persona import A2AAuthConfig, PersonaConfig
 from assistant.core.role import RoleConfig
+
+#: Name under which the bearer scheme is advertised on the card.
+BEARER_SCHEME_NAME = "bearer"
 
 # JSON-RPC endpoint mount point, relative to the served base URL.
 A2A_RPC_MOUNT = "/a2a/v1"
@@ -41,6 +48,7 @@ def build_agent_card(
     base_url: str,
     version: str | None = None,
     streaming: bool = True,
+    auth: A2AAuthConfig | None = None,
 ) -> AgentCard:
     """Build the A2A agent card for a persona and its enabled roles.
 
@@ -52,8 +60,26 @@ def build_agent_card(
             JSON-RPC mount ``/a2a/v1``.
         version: Overrides the package version string when given.
         streaming: Advertised ``capabilities.streaming`` value.
+        auth: Served-surface auth declaration (P25 agent-iam). When
+            given, the card advertises the bearer scheme under
+            ``securitySchemes`` + ``security``. Only the scheme SHAPE
+            is advertised — never the token or its credential ref.
     """
     display = persona.display_name or persona.name
+    security_schemes: dict[str, HTTPAuthSecurityScheme] | None = None
+    security: list[dict[str, list[str]]] | None = None
+    if auth is not None:
+        security_schemes = {
+            BEARER_SCHEME_NAME: HTTPAuthSecurityScheme(
+                type="http",
+                scheme="bearer",
+                description=(
+                    "Static bearer token; present as "
+                    "'Authorization: Bearer <token>'."
+                ),
+            )
+        }
+        security = [{BEARER_SCHEME_NAME: []}]
     skills = [
         AgentSkill(
             id=role.name,
@@ -78,4 +104,6 @@ def build_agent_card(
             state_transition_history=False,
         ),
         skills=skills,
+        security_schemes=security_schemes,
+        security=security,
     )
