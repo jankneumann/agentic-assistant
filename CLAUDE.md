@@ -330,6 +330,46 @@ server:
   updates over MCP, transport auth (OAuth 2.1 / MCP authorization
   spec — P25; keep the default loopback bind until then).
 
+## Meta-Harness Compat & Sandbox (P22)
+
+`meta-harness-compat` implements ADR 0007 (compose UNDER
+meta-harnesses; docs/deployment/meta-harness.md):
+
+- **Omnigent export**: `assistant export-omnigent-agent -p <persona>
+  [--base-url ...] [-o file]` renders an Omnigent-SHAPED agent
+  definition (`src/assistant/composition/omnigent.py`) describing the
+  assistant as an external/custom agent composed via the served
+  A2A/MCP/AG-UI endpoints — never spawned as a CLI subprocess. The
+  YAML header + `schema_verified: false` mark it unverified against
+  the canonical omnigent-ai/omnigent schema (offline design; verify
+  on a connected machine before registering).
+- **First real SandboxProvider**: `ContainerSandboxProvider`
+  (`core/capabilities/sandbox.py`) compiles the sandbox-provider
+  spec's three planes into `docker run`/`podman run` argv (runtime
+  autodetected, `ProcessRunner` injectable — tests never execute a
+  real container; opt-in smoke via
+  `RUN_CONTAINER_SANDBOX_TESTS=1 pytest
+  tests/integration/test_container_sandbox_smoke.py`). Plane types
+  (`FilesystemPlane`/`NetworkPlane`/`CredentialsPlane`) live on
+  `SandboxConfig` (types.py); `PassthroughSandbox` carries declared
+  planes on context metadata without enforcing. LIMITATION: a
+  non-empty network allow-list compiles to `SANDBOX_NET_ALLOW`/proxy
+  env vars (plain container runtimes can't filter per-host egress —
+  pair with an egress proxy or NemoClaw/OpenShell policy); an empty
+  allow-list IS enforced (`--network=none`).
+- **Seam**: `SandboxedProcessRunner` is the
+  extension-subprocess-boundary enforcement point — extensions
+  spawning subprocesses should go through it, posture always from the
+  ExecutionContext. Tool-invocation-boundary container enforcement is
+  deferred until a workload needs it.
+- **Selection**: persona `sandbox:` section (annotated schema in
+  `personas/_template/persona.yaml`) → resolver picks
+  `ContainerSandboxProvider` only for `provider: container`;
+  personas without the section keep `PassthroughSandbox`. Requested-
+  but-unconstructible container sandbox FAILS (no silent passthrough
+  degrade). NemoClaw/OpenShell deployment on the GX10 is deferred to
+  P23 (ADR 0007 records what it requires from us).
+
 ## OpenSpec Workflow
 
 Spec-driven development via [OpenSpec](https://github.com/Fission-AI/OpenSpec).
