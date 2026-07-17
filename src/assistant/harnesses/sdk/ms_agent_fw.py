@@ -567,18 +567,27 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         any ``Agent`` construction. A denied decision raises
         ``PermissionError``.
         """
+        from assistant.core.capabilities.audit import emit_guardrail_audit
+        from assistant.core.capabilities.identity import AgentIdentity
         from assistant.core.capabilities.types import ActionRequest
 
         guardrails = self._resolve_guardrail_provider()
-        decision = guardrails.check_action(
-            ActionRequest(
-                action_type="delegate",
-                resource=role.name,
+        # P25 agent-iam: attach the acting principal so the decision is
+        # attributable (identity-aware policies + audit record).
+        request = ActionRequest(
+            action_type="delegate",
+            resource=role.name,
+            persona=self.persona.name,
+            role=self.role.name,
+            metadata={"task": task},
+            identity=AgentIdentity(
                 persona=self.persona.name,
                 role=self.role.name,
-                metadata={"task": task},
-            )
+                session_id=self.thread_id,
+            ),
         )
+        decision = guardrails.check_action(request)
+        emit_guardrail_audit(request, decision)
         if not decision.allowed:
             raise PermissionError(
                 f"Delegation to role {role.name!r} denied by guardrails: "

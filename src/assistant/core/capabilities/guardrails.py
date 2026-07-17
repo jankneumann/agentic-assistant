@@ -108,12 +108,29 @@ class GuardrailConfigError(ValueError):
 
 @dataclass
 class ActionPolicy:
-    """One allow/deny/require_confirmation rule."""
+    """One allow/deny/require_confirmation rule.
+
+    P25 agent-iam adds two OPTIONAL identity-aware dimensions,
+    additive to the existing ``action_type`` / ``resource`` globs:
+
+    - ``role``: glob matched against the acting role — the request's
+      ``identity.role`` when an :class:`AgentIdentity` is attached,
+      else the plain ``ActionRequest.role`` field. Default ``"*"``
+      (matches everything, pre-P25 behavior).
+    - ``min_chain_depth``: the policy only matches requests whose
+      identity has at least this many delegation hops behind it.
+      ``0`` (default) means no constraint. A non-zero value can never
+      match a request WITHOUT an identity — chain depth cannot be
+      established, so the policy is skipped (fail-open to the next
+      policy, not fail-match).
+    """
 
     action_type: str
     resource: str = "*"
     effect: str = "allow"
     reason: str = ""
+    role: str = "*"
+    min_chain_depth: int = 0
 
 
 @dataclass
@@ -133,10 +150,20 @@ class ModelCallBudget:
     estimate_output_tokens: int = 500
 
 
+#: Default delegation-chain depth ceiling (agent-iam). Small on
+#: purpose: runaway recursive delegation is a spend/loop hazard, and
+#: legitimate chains in this system are shallow (parent -> specialist).
+DEFAULT_MAX_CHAIN_DEPTH = 5
+
+
 @dataclass
 class DelegationConstraints:
     denied_sub_roles: list[str] = field(default_factory=list)
     max_task_chars: int = 0
+    #: P25 agent-iam: maximum delegation-chain depth (number of hops
+    #: behind the CHILD identity a new delegation would create). ``0``
+    #: means unlimited. Enforced by the DelegationSpawner.
+    max_chain_depth: int = DEFAULT_MAX_CHAIN_DEPTH
 
 
 @dataclass
@@ -225,12 +252,43 @@ def parse_guardrail_config(
                 f"guardrails: policies[{i}] effect {effect!r} is not one "
                 f"of {list(_VALID_EFFECTS)}."
             )
+        unknown_policy_keys = sorted(
+            set(entry)
+            - {
+                "action_type",
+                "resource",
+                "effect",
+                "reason",
+                "role",
+                "min_chain_depth",
+            }
+        )
+        if unknown_policy_keys:
+            raise GuardrailConfigError(
+                f"guardrails: policies[{i}] has unknown keys "
+                f"{unknown_policy_keys}. Allowed: ['action_type', "
+                f"'effect', 'min_chain_depth', 'reason', 'resource', "
+                f"'role']."
+            )
+        role = entry.get("role", "*")
+        if not isinstance(role, str) or not role:
+            raise GuardrailConfigError(
+                f"guardrails: policies[{i}] role must be a non-empty "
+                f"role-name glob (or '*')."
+            )
         policies.append(
             ActionPolicy(
                 action_type=action_type,
                 resource=str(entry.get("resource", "*") or "*"),
                 effect=effect,
                 reason=str(entry.get("reason", "") or ""),
+                role=role,
+                min_chain_depth=int(
+                    _require_number(
+                        entry.get("min_chain_depth", 0),
+                        f"policies[{i}].min_chain_depth",
+                    )
+                ),
             )
         )
 
@@ -316,7 +374,8 @@ def parse_guardrail_config(
             f"{type(raw_delegation).__name__}."
         )
     unknown_delegation = sorted(
-        set(raw_delegation) - {"denied_sub_roles", "max_task_chars"}
+        set(raw_delegation)
+        - {"denied_sub_roles", "max_task_chars", "max_chain_depth"}
     )
     if unknown_delegation:
         raise GuardrailConfigError(
@@ -336,6 +395,12 @@ def parse_guardrail_config(
             _require_number(
                 raw_delegation.get("max_task_chars", 0),
                 "guardrails: delegation.max_task_chars",
+            )
+        ),
+        max_chain_depth=int(
+            _require_number(
+                raw_delegation.get("max_chain_depth", DEFAULT_MAX_CHAIN_DEPTH),
+                "guardrails: delegation.max_chain_depth",
             )
         ),
     )
@@ -580,11 +645,30 @@ class PolicyGuardrails:
     # -- internals ---------------------------------------------------------
 
     def _match_policy(self, action: ActionRequest) -> ActionPolicy | None:
+        identity = action.identity
         for policy in self._config.policies:
             if policy.action_type not in ("*", action.action_type):
                 continue
-            if fnmatchcase(action.resource, policy.resource):
-                return policy
+            if not fnmatchcase(action.resource, policy.resource):
+                continue
+            # P25 agent-iam: identity-aware dimensions, additive to the
+            # action_type/resource globs above.
+            if policy.role != "*":
+                acting_role = (
+                    identity.role if identity is not None else action.role
+                )
+                if not fnmatchcase(acting_role, policy.role):
+                    continue
+            if policy.min_chain_depth > 0:
+                # Chain depth is only knowable with an identity; a
+                # depth-scoped policy never matches identity-less
+                # requests (skip to the next policy, don't deny).
+                if (
+                    identity is None
+                    or identity.chain_depth < policy.min_chain_depth
+                ):
+                    continue
+            return policy
         return None
 
     def _estimate_cost(

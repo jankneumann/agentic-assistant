@@ -437,6 +437,40 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         tools: list[Any],
         extensions: list[Any],
     ) -> str:
+        """Build a nested harness for ``role`` and invoke it on ``task``.
+
+        P25 agent-iam: mirrors the MSAF harness — the
+        ``GuardrailProvider`` is consulted via
+        ``check_action(ActionRequest(action_type="delegate", ...))``
+        with the acting :class:`AgentIdentity` attached BEFORE the
+        sub-harness is constructed; a denied decision raises
+        ``PermissionError``, and every decision emits an audit record.
+        """
+        from assistant.core.capabilities.audit import emit_guardrail_audit
+        from assistant.core.capabilities.identity import AgentIdentity
+        from assistant.core.capabilities.types import ActionRequest
+
+        guardrails = self._resolve_guardrail_provider()
+        request = ActionRequest(
+            action_type="delegate",
+            resource=role.name,
+            persona=self.persona.name,
+            role=self.role.name,
+            metadata={"task": task},
+            identity=AgentIdentity(
+                persona=self.persona.name,
+                role=self.role.name,
+                session_id=self.thread_id,
+            ),
+        )
+        decision = guardrails.check_action(request)
+        emit_guardrail_audit(request, decision)
+        if not decision.allowed:
+            raise PermissionError(
+                f"Delegation to role {role.name!r} denied by guardrails: "
+                f"{decision.reason or '<no reason given>'}"
+            )
+
         sub = DeepAgentsHarness(
             self.persona,
             role,
