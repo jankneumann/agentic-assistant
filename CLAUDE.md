@@ -112,7 +112,9 @@ openspec show <change-id>
   `load_extensions_async()` inside an event loop) runs `initialize()`
   post-load (a failure disables just that extension) and registers
   shutdown handling (`shutdown_extensions()` + atexit)
-- `src/assistant/delegation/` — sub-agent spawning
+- `src/assistant/delegation/` — sub-agent spawning: `spawner.py`
+  (DelegationSpawner), `context.py` (P12 `DelegationContext`),
+  `router.py` (P12 intent-classification for `delegate_auto`)
 - `src/assistant/cli.py` — `assistant` CLI entry point
 
 ## Adding a New Persona
@@ -293,6 +295,53 @@ inbound/outbound split (AgentCore Identity lesson):
   `guardrail.decision` span (`core/capabilities/audit.py`) through
   the telemetry `start_span` escape hatch — no new trace op, no
   separate audit store (deferred with approval interrupt/resume).
+
+## Rich Delegation (P12)
+
+`delegation-context` upgrades the bare task-string hand-off:
+
+- **`DelegationContext`** (`delegation/context.py`): frozen dataclass
+  (parent_role, CHILD `AgentIdentity` — the delegation chain lives on
+  the P25 identity, never duplicated — memory_snippets fetched under
+  the SUB-role, optional conversation_summary, constraints:
+  `max_depth_remaining` / `deadline_seconds` / `allowed_tools`).
+  Rendered as a `## Delegation context` prompt block (D27
+  `## Recent context` sibling; empty sections omitted) — the block
+  LEADS the sub-agent's prompt, ahead of recent context.
+  `spawn_sub_agent` gained an ADDITIVE `context=None` kwarg on both
+  SDK harnesses; the spawner signature-inspects and falls back to the
+  pre-P12 call shape (context dropped + WARNING) for old adapters.
+- **Cycle detection**: sub-role already in the chain (incl.
+  self-delegation) → `PermissionError` + audit, unless the parent
+  role sets `delegation.allow_recursive: true` (default off; the P25
+  `max_chain_depth` ceiling still bounds sanctioned recursion).
+  Check order: ACL → availability → cycle → depth → guardrail.
+- **`delegate_parallel(tasks)`**: semaphore-bounded fan-out
+  (parent `max_concurrent`, further narrowed by kwarg) with per-task
+  isolation — returns ordered `DelegationOutcome` markers
+  (success/error/cancelled); one failure never aborts siblings.
+- **Monitoring**: in-process `DelegationRecord` registry —
+  `list_active()` / `get_record()` / `cancel(id)` (cancels the
+  asyncio task; False for unknown/finished) / `analytics()`
+  (by-status/by-role counters + avg duration; finished retention
+  bounded at 256). `deadline_seconds` is enforced via
+  `asyncio.timeout` AND communicated in the constraints block.
+- **Analytics WITHOUT new tables** (recorded deviation from the old
+  roadmap text): outcomes ride the existing `trace_delegation` span
+  (unchanged vocabulary) + a best-effort `[delegation] parent -> sub`
+  one-liner via `record_interaction` under the PARENT role (no-op on
+  file memory, distinct from the sub-agent's own post-turn capture).
+- **Router** (`delegation/router.py`), used by
+  `spawner.delegate_auto(task)`: deterministic-first scoring (role
+  name x3 / preferred-tool tokens x2 / description x1; exact or
+  mutual-prefix ≥4 token match; ties → `allowed_sub_roles` order;
+  all-zero → `RoutingError`, never guesses). Model-assisted
+  classification runs ONLY under an explicit `router` consumer
+  binding in persona `models:` (the `default` binding never enables
+  it — P20 `embeddings` posture); transport via `bind_langchain`
+  (credential seam + budget gate); ANY model failure falls back to
+  deterministic. CLI commands for auto/parallel/cancel are a
+  recorded follow-up — the REPL keeps `/delegate <role> <task>`.
 
 ## Knowledge Clean Room (P26)
 
