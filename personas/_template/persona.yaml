@@ -300,6 +300,40 @@ extensions: []
 # that extension (no manifest = allowed with a warning). Rerun the
 # command after every intentional extension edit.
 
+# ── Continual learning (P28 — continual-learning) ──
+# Optional. Omit the section entirely to keep continual learning
+# DORMANT: without it the persona records no feedback, never reflects,
+# and neither writes nor applies improvement proposals (clean-room
+# posture — no config, no learning). With it, the FeedbackEvent →
+# ImprovementProposal pipeline activates:
+#   - `assistant feedback` / REPL `/feedback` store human feedback;
+#     `assistant learning collect` runs the machine collectors (eval
+#     gate output, guardrail spend pressure, circuit-breaker state,
+#     model-registry pricing gaps) on demand — no new daemons.
+#   - `assistant reflect` (or a `kind: reflect` schedules: job)
+#     consolidates recent interactions into provenance-stamped
+#     learning/reflection/* facts (+ Graphiti episodes where
+#     configured), summarizing under the `reflection.consumer` models
+#     binding (default: the reserved `memory` key; unbound consumers
+#     fall back to `default`).
+#   - `assistant learning propose` writes risk-tiered proposal FILES
+#     under proposals/ (preference=LOW, prompt_layer=MEDIUM,
+#     routing_config=HIGH) — the persona repo diff IS the approval
+#     workflow; `assistant learning apply` refuses unless the P27 eval
+#     gate passes (SKIP counts as pass with a warning) and the
+#     proposal is LOW risk or explicitly --approved.
+#   - ONLY preference proposals with risk LOW may auto-apply, and only
+#     when auto_apply_low_risk is true; every application is gated
+#     through check_action(action_type="learning_apply") — a
+#     require_confirmation policy DENIES until the approval interrupt
+#     flow lands (P30 durable-sessions).
+# learning:
+#   enabled: true                   # optional (default: true when present)
+#   auto_apply_low_risk: false      # opt-in auto-apply for LOW preferences
+#   reflection:
+#     consumer: memory              # models: bindings key for summarization
+#   proposals_dir: proposals        # optional (default: <persona>/proposals)
+
 # ── Clean-room knowledge sharing (P26 — knowledge-clean-room) ──
 # Optional. Omit the section entirely to keep TOTAL persona isolation:
 # without it this persona can neither export nor import shared
