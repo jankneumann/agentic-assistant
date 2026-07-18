@@ -176,14 +176,14 @@ items:
     depends_on: []
   - item_id: P12
     title: delegation-context
-    status: candidate
+    status: in_progress
     priority: 17
     effort: L
     change_id: delegation-context
     depends_on: []
   - item_id: P28
     title: continual-learning
-    status: candidate
+    status: in_progress
     priority: 18
     effort: L
     change_id: continual-learning
@@ -244,3 +244,15 @@ items:
       - id: P7
         source: explicit
         rationale: Always-on node runs the daemon
+  - item_id: P30
+    title: durable-sessions
+    status: candidate
+    priority: 24
+    effort: L
+    change_id: durable-sessions
+    depends_on: []
+    description: >-
+      Postgres-backed checkpointer + durable SessionRegistry; approval
+      interrupt/resume over durable checkpoints (replaces deny-on-
+      require_confirmation); A2A/MCP session re-binding + tasks/get;
+      PostgresBudgetLedger + durable audit store on the persona DB.
