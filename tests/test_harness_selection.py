@@ -458,7 +458,9 @@ def _runner_with_capture(
         async def invoke(self, agent, message) -> str:
             return "ok"
 
-        async def spawn_sub_agent(self, role, task, tools, extensions):
+        async def spawn_sub_agent(
+            self, role, task, tools, extensions, context=None
+        ):
             return "ok"
 
     def fake_create(pc, rc, name, **kwargs):

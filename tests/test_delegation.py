@@ -40,7 +40,7 @@ class FakeHarness(SdkHarnessAdapter):
         return self.response
 
     async def spawn_sub_agent(
-        self, role: RoleConfig, task: str, tools, extensions
+        self, role: RoleConfig, task: str, tools, extensions, context=None
     ) -> str:
         self.spawn_calls.append((role.name, task))
         if self.gate is not None:

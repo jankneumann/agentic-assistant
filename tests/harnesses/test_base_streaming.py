@@ -74,6 +74,7 @@ class _MinimalHarness(SdkHarnessAdapter):
         task: str,
         tools: list[Any],
         extensions: list[Any],
+        context: Any = None,
     ) -> str:
         return "done"
 
@@ -112,7 +113,12 @@ def test_astream_invoke_base_raises_not_implemented() -> None:
             return ""
 
         async def spawn_sub_agent(
-            self, role: Any, task: str, tools: list[Any], extensions: list[Any]
+            self,
+            role: Any,
+            task: str,
+            tools: list[Any],
+            extensions: list[Any],
+            context: Any = None,
         ) -> str:
             return ""
         # astream_invoke NOT overridden — base raises NotImplementedError
@@ -143,7 +149,12 @@ def test_thread_id_base_raises_not_implemented() -> None:
             return ""
 
         async def spawn_sub_agent(
-            self, role: Any, task: str, tools: list[Any], extensions: list[Any]
+            self,
+            role: Any,
+            task: str,
+            tools: list[Any],
+            extensions: list[Any],
+            context: Any = None,
         ) -> str:
             return ""
         # thread_id NOT overridden — base raises NotImplementedError

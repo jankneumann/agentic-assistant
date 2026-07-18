@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from assistant.core.capabilities.guardrails import GuardrailProvider
     from assistant.core.capabilities.memory import MemoryPolicy
     from assistant.core.capabilities.models import ModelProvider
+    from assistant.delegation.context import DelegationContext
 
 #: Memory snippet limit — mirrors the MSAF harness's D27 default of 10.
 #: Tests can override via the ``memory_snippet_limit`` constructor kwarg.
@@ -73,6 +74,7 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         model_provider: ModelProvider | None = None,
         credential_provider: CredentialProvider | None = None,
         guardrail_provider: GuardrailProvider | None = None,
+        delegation_context: DelegationContext | None = None,
     ) -> None:
         super().__init__(persona, role)
         self._memory_policy = memory_policy
@@ -80,6 +82,9 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         self._model_provider = model_provider
         self._credential_provider = credential_provider
         self._guardrail_provider = guardrail_provider
+        # P12 delegation-context: set only on sub-harnesses built by
+        # spawn_sub_agent; rendered ahead of the composed system prompt.
+        self._delegation_context = delegation_context
         self._active_model: str = self._DEFAULT_MODEL
         # Resolved ModelRef backing ``_active_model`` — read by
         # ``@traced_harness`` for cost attribution (P19: pricing
@@ -207,10 +212,18 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         snippets = await self._resolve_memory_policy().get_recent_snippets(
             self.persona, self.role, limit=self._memory_snippet_limit
         )
-        if not snippets:
-            return base
-        snippet_block = "\n\n".join(snippets)
-        return f"{_MEMORY_SECTION_HEADING}\n\n{snippet_block}\n\n{base}"
+        prompt = base
+        if snippets:
+            snippet_block = "\n\n".join(snippets)
+            prompt = f"{_MEMORY_SECTION_HEADING}\n\n{snippet_block}\n\n{base}"
+        # P12 delegation-context: the delegation block leads the whole
+        # prompt (identity + constraints before recent context) so a
+        # sub-agent reads who delegated and under what bounds first.
+        # Absent context (the non-delegated case) leaves the prompt
+        # byte-identical to pre-P12 output.
+        if self._delegation_context is not None:
+            prompt = f"{self._delegation_context.render()}\n\n{prompt}"
+        return prompt
 
     @property
     def thread_id(self) -> str:
@@ -439,6 +452,7 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         task: str,
         tools: list[Any],
         extensions: list[Any],
+        context: DelegationContext | None = None,
     ) -> str:
         """Build a nested harness for ``role`` and invoke it on ``task``.
 
@@ -448,6 +462,11 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         with the acting :class:`AgentIdentity` attached BEFORE the
         sub-harness is constructed; a denied decision raises
         ``PermissionError``, and every decision emits an audit record.
+
+        P12 delegation-context: an optional ``context`` (constructed by
+        the ``DelegationSpawner``) is threaded to the sub-harness, whose
+        prompt composition renders it as a ``## Delegation context``
+        block. ``None`` preserves pre-P12 behavior exactly.
         """
         from assistant.core.capabilities.audit import emit_guardrail_audit
         from assistant.core.capabilities.identity import AgentIdentity
@@ -482,6 +501,7 @@ class DeepAgentsHarness(SdkHarnessAdapter):
             model_provider=self._model_provider,
             credential_provider=self._credential_provider,
             guardrail_provider=self._guardrail_provider,
+            delegation_context=context,
         )
         agent = await sub.create_agent(tools, extensions)
         return await sub.invoke(agent, task)

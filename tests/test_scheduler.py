@@ -586,7 +586,9 @@ class CapturingHarness(SdkHarnessAdapter):
         self.invocations.append(message)
         return "job done"
 
-    async def spawn_sub_agent(self, role, task, tools, extensions) -> str:
+    async def spawn_sub_agent(
+        self, role, task, tools, extensions, context=None
+    ) -> str:
         return "n/a"
 
 
