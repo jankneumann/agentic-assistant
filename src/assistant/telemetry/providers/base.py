@@ -41,6 +41,10 @@ _VALID_OPS: frozenset[str] = frozenset(
         "fact_list",
         "preference_list",
         "fact_delete",
+        # continual-learning (P28): preference upsert backing applied
+        # `preference` proposals (distillation). Same precedent as the
+        # P26 additions above.
+        "preference_write",
         "interaction_write",
         "interaction_list",
         "episode_write",

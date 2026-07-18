@@ -67,6 +67,7 @@ def _build_help_line(rc: RoleConfig) -> str:
         "/roles",
         "/role <name>",
         "/delegate <role> <task>",
+        "/feedback <text>",
         "/quit",
     ]
     if rc.name == "teacher":
@@ -559,6 +560,25 @@ def daemon(
     # effective harness is its own `harness:` key, falling back to the
     # daemon -H value; 'auto' resolves against the job's role.
     for job in enabled:
+        # P28 continual-learning: reflect jobs run the learning
+        # pipeline, not a harness — validate their prerequisites
+        # (enabled learning + persona DB) instead of role/harness.
+        if job.kind == "reflect":
+            from assistant.core.learning import LearningDenied, require_learning
+
+            try:
+                require_learning(pc)
+            except LearningDenied as e:
+                raise click.UsageError(
+                    f"Scheduled job '{job.name}': {e}"
+                ) from e
+            if not pc.database_url:
+                raise click.UsageError(
+                    f"Scheduled job '{job.name}': persona '{persona}' has "
+                    "no database_url configured — reflection needs the "
+                    "persona's memory database."
+                )
+            continue
         try:
             rc = role_reg.load(job.role, pc)
         except ValueError as e:
@@ -1058,6 +1078,32 @@ async def _run_repl_with_registry(
             click.echo(f"→ {rc.display_name}\n")
             continue
 
+        if user_input.startswith("/feedback"):
+            # P28 continual-learning: explicit human feedback capture.
+            from assistant.core import learning as lrn
+
+            feedback_text = user_input[len("/feedback"):].strip()
+            if not feedback_text:
+                click.echo("Usage: /feedback <text>\n")
+                continue
+            try:
+                lrn.require_learning(pc)
+                manager = lrn._learning_memory_manager(pc)
+                await lrn.record_feedback(
+                    pc,
+                    manager,
+                    lrn.FeedbackEvent(
+                        source="human",
+                        subject=f"role:{rc.name}",
+                        signal=feedback_text,
+                        context="repl",
+                    ),
+                )
+                click.echo("Feedback recorded.\n")
+            except lrn.LearningError as e:
+                click.echo(f"Error: {e}\n")
+            continue
+
         if user_input.startswith("/delegate"):
             parts = user_input.split(" ", 2)
             if len(parts) < 3:
@@ -1398,6 +1444,395 @@ def cleanroom_sync(persona: str) -> None:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
     click.echo(f"Purged {deleted} imported item(s) from revoked bundles.")
+
+
+# ── Continual learning (P28) ──────────────────────────────────────────
+
+
+def _learning_manager(pc):
+    """Build a MemoryManager for a learning command, or exit.
+
+    Same single-seam pattern as ``_cleanroom_manager`` (docs/gotchas.md
+    G4: tests patch this one symbol instead of the db/graphiti stack).
+    """
+    from assistant.core import learning as lrn
+
+    try:
+        return lrn._learning_memory_manager(pc)
+    except lrn.LearningError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+def _learning_identity(pc):
+    from assistant.core.capabilities.identity import AgentIdentity
+
+    return AgentIdentity(persona=pc.name, role=pc.default_role)
+
+
+def _parse_prefer(prefer: str) -> dict:
+    """Parse ``[category:]key=value`` into a preference payload."""
+    head, sep, value = prefer.partition("=")
+    if not sep or not head:
+        raise click.UsageError(
+            "--prefer expects [category:]key=value (e.g. "
+            "style:tone=concise)."
+        )
+    category, csep, key = head.partition(":")
+    if not csep:
+        category, key = "general", head
+    if not key:
+        raise click.UsageError("--prefer key must be non-empty.")
+    return {"category": category, "key": key, "value": value}
+
+
+@main.command()
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.option("--role", "-r", type=str, default=None, help="Role the feedback is about.")
+@click.option(
+    "--prefer",
+    type=str,
+    default=None,
+    help=(
+        "Distill a preference: [category:]key=value. Becomes a LOW-risk "
+        "preference proposal on the next `assistant learning propose`."
+    ),
+)
+@click.argument("text", required=False)
+def feedback(persona: str, role: str | None, prefer: str | None, text: str | None) -> None:
+    """Record explicit human feedback (P28 continual-learning).
+
+    Stores one feedback event in the persona's memory (interactions
+    table, metadata source=feedback). Requires an enabled learning:
+    section — continual learning is dormant by default.
+    """
+    from assistant.core import learning as lrn
+
+    if not text and not prefer:
+        raise click.UsageError("Provide feedback TEXT and/or --prefer.")
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    set_assistant_ctx(pc.name, role or pc.default_role)
+
+    data: dict = {}
+    if prefer is not None:
+        data["preference"] = _parse_prefer(prefer)
+    event = lrn.FeedbackEvent(
+        source="human",
+        subject=f"role:{role}" if role else pc.name,
+        signal=text or f"prefer {prefer}",
+        context="cli",
+        data=data,
+    )
+    try:
+        lrn.require_learning(pc)
+    except lrn.LearningError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    manager = _learning_manager(pc)
+    try:
+        asyncio.run(
+            lrn.record_feedback(
+                pc, manager, event, identity=_learning_identity(pc)
+            )
+        )
+    except lrn.LearningError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    click.echo(f"Recorded feedback event {event.event_id}.")
+
+
+@main.command()
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+def reflect(persona: str) -> None:
+    """Run one reflection/consolidation pass (P28 continual-learning).
+
+    Summarizes recent interactions into a provenance-stamped
+    learning/reflection/* fact (source=reflection) plus a Graphiti
+    episode where configured. Schedulable via a `kind: reflect` job in
+    the persona's schedules: section.
+    """
+    from assistant.core import cleanroom as cr
+    from assistant.core import learning as lrn
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    set_assistant_ctx(pc.name, pc.default_role)
+
+    try:
+        lrn.require_learning(pc)
+    except lrn.LearningError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    manager = _learning_manager(pc)
+    try:
+        result = asyncio.run(
+            lrn.run_reflection(
+                pc,
+                manager,
+                guardrails=cr.select_guardrails(pc),
+                identity=_learning_identity(pc),
+            )
+        )
+    except lrn.LearningError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    if result is None:
+        click.echo("Nothing new to consolidate.")
+        return
+    click.echo(
+        f"Consolidated {result.interaction_count} interaction(s) into "
+        f"{result.fact_key} "
+        f"({'model-backed' if result.used_model else 'heuristic digest'})."
+    )
+
+
+@main.group(name="learning")
+def learning_group() -> None:
+    """Continual-learning commands (P28 continual-learning)."""
+
+
+@learning_group.command("collect")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.option(
+    "--gate-log",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="A saved evaluation/run-gate.sh output log to mine for eval feedback.",
+)
+@click.option(
+    "--store",
+    is_flag=True,
+    help="Also record the collected events as stored feedback (needs the persona DB).",
+)
+def learning_collect(persona: str, gate_log: str | None, store: bool) -> None:
+    """Run the machine feedback collectors on demand.
+
+    Reads what already exists — eval-gate output, the guardrail spend
+    ledger, circuit-breaker state, model-registry pricing gaps — and
+    prints one feedback event per finding. No new daemons.
+    """
+    from assistant.core import learning as lrn
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    set_assistant_ctx(pc.name, pc.default_role)
+
+    gate_output = (
+        Path(gate_log).read_text(encoding="utf-8") if gate_log else None
+    )
+    try:
+        events = lrn.collect_machine_feedback(pc, gate_output=gate_output)
+    except lrn.LearningError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    if not events:
+        click.echo("No machine feedback signals found.")
+        return
+    for event in events:
+        click.echo(f"[{event.source}] {event.subject}: {event.signal}")
+    if store:
+        manager = _learning_manager(pc)
+
+        async def _store_all() -> None:
+            for event in events:
+                await lrn.record_feedback(
+                    pc, manager, event, identity=_learning_identity(pc)
+                )
+
+        asyncio.run(_store_all())
+        click.echo(f"Stored {len(events)} feedback event(s).")
+
+
+@learning_group.command("propose")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.option(
+    "--gate-log",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="A saved evaluation/run-gate.sh output log to mine for eval feedback.",
+)
+@click.option(
+    "--limit",
+    type=int,
+    default=100,
+    show_default=True,
+    help="Maximum stored feedback events to consider (newest first).",
+)
+def learning_propose(persona: str, gate_log: str | None, limit: int) -> None:
+    """Derive improvement proposals from feedback and write them as files.
+
+    Proposals land under the persona's proposals/ directory as
+    reviewable JSON files — the persona submodule is the approval
+    workflow. Only kind=preference proposals with risk=LOW may
+    auto-apply, and only when learning.auto_apply_low_risk is true
+    (each auto-application still runs the guardrail + eval gate).
+    """
+    from assistant.core import cleanroom as cr
+    from assistant.core import learning as lrn
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    set_assistant_ctx(pc.name, pc.default_role)
+
+    try:
+        lrn.require_learning(pc)
+        proposals_dir = lrn.resolve_proposals_dir(pc)
+    except lrn.LearningError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    events: list = []
+    manager = None
+    if pc.database_url:
+        manager = _learning_manager(pc)
+        events.extend(
+            asyncio.run(lrn.list_feedback(pc, manager, limit=limit))
+        )
+    else:
+        click.echo(
+            "Warning: persona has no database_url — using machine "
+            "feedback only (stored human feedback unavailable).",
+            err=True,
+        )
+    gate_output = (
+        Path(gate_log).read_text(encoding="utf-8") if gate_log else None
+    )
+    events.extend(lrn.collect_machine_feedback(pc, gate_output=gate_output))
+
+    if not events:
+        click.echo("No feedback events — nothing to propose.")
+        return
+
+    proposals = lrn.derive_proposals(
+        pc, events, identity=_learning_identity(pc)
+    )
+    if not proposals:
+        click.echo("Feedback yielded no actionable proposals.")
+        return
+    for proposal in proposals:
+        path = lrn.write_proposal(proposals_dir, proposal)
+        click.echo(
+            f"  wrote {path}  [{proposal.kind}, {proposal.risk}] "
+            f"→ {proposal.target}"
+        )
+
+    applied = asyncio.run(
+        lrn.maybe_auto_apply(
+            pc,
+            proposals,
+            manager,
+            guardrails=cr.select_guardrails(pc),
+            identity=_learning_identity(pc),
+        )
+    )
+    for proposal in proposals:
+        if proposal.proposal_id in applied:
+            lrn.write_proposal(proposals_dir, proposal)
+    if applied:
+        click.echo(f"Auto-applied {len(applied)} LOW-risk preference proposal(s).")
+    click.echo(
+        f"\n{len(proposals)} proposal(s) written to {proposals_dir}. "
+        "Review the diffs; apply with `assistant learning apply`."
+    )
+
+
+@learning_group.command("apply")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.option(
+    "--approved",
+    is_flag=True,
+    help=(
+        "Operator approval for MEDIUM/HIGH-risk proposals (the interim "
+        "human seam until the P30 approval interrupt flow)."
+    ),
+)
+@click.argument("proposal_ref", type=str)
+def learning_apply(persona: str, approved: bool, proposal_ref: str) -> None:
+    """Apply one proposal — eval-gated, guardrail-gated, risk-tiered.
+
+    PROPOSAL_REF is a proposal file path or a proposal id in the
+    persona's proposals/ directory. Refuses unless the P27 eval gate
+    passes (SKIP counts as pass with a warning) and the proposal is
+    LOW risk or --approved is given. routing_config proposals are
+    review-only and always refuse machine application.
+    """
+    from assistant.core import cleanroom as cr
+    from assistant.core import learning as lrn
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    set_assistant_ctx(pc.name, pc.default_role)
+
+    try:
+        lrn.require_learning(pc)
+        proposals_dir = lrn.resolve_proposals_dir(pc)
+    except lrn.LearningError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    path = Path(proposal_ref)
+    if not path.is_file():
+        path = lrn.proposal_path(proposals_dir, proposal_ref)
+    if not path.is_file():
+        click.echo(
+            f"Error: no proposal at {proposal_ref!r} (also tried {path}).",
+            err=True,
+        )
+        sys.exit(1)
+
+    try:
+        proposal = lrn.load_proposal(path)
+    except lrn.LearningError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    manager = (
+        _learning_manager(pc) if proposal.kind == "preference" else None
+    )
+    try:
+        description = asyncio.run(
+            lrn.apply_proposal(
+                pc,
+                proposal,
+                manager,
+                guardrails=cr.select_guardrails(pc),
+                identity=_learning_identity(pc),
+                approved=approved,
+            )
+        )
+    except lrn.LearningError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    lrn.write_proposal(path.parent, proposal)
+    click.echo(f"Applied proposal {proposal.proposal_id}: {description}")
+
+
+@learning_group.command("list")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+def learning_list(persona: str) -> None:
+    """List the persona's improvement proposals and their status."""
+    from assistant.core import learning as lrn
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+
+    try:
+        lrn.require_learning(pc)
+        proposals_dir = lrn.resolve_proposals_dir(pc)
+    except lrn.LearningError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    proposals = lrn.list_proposals(proposals_dir)
+    if not proposals:
+        click.echo(f"No proposals in {proposals_dir}.")
+        return
+    for p in proposals:
+        click.echo(
+            f"{p.proposal_id}  [{p.kind}, {p.risk}, {p.status}] "
+            f"→ {p.target}"
+        )
 
 
 @main.group()

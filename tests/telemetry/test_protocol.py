@@ -59,6 +59,9 @@ def test_valid_ops_set() -> None:
             "fact_list",
             "preference_list",
             "fact_delete",
+            # continual-learning (P28): MemoryManager.store_preference
+            # backs applied `preference` proposals (distillation).
+            "preference_write",
             "interaction_write",
             # eval-simulation-loop (P27): MemoryManager.list_interactions
             # feeds `assistant export-eval-dataset`.

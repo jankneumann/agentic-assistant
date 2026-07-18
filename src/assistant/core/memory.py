@@ -159,6 +159,50 @@ class MemoryManager:
             await session.execute(stmt)
             await session.commit()
 
+    @trace_memory_op("preference_write")
+    async def store_preference(
+        self,
+        persona: str,
+        category: str,
+        key: str,
+        value: Any,
+        confidence: float = 0.5,
+    ) -> None:
+        """Upsert one preference row (persona, category, key unique).
+
+        Added by continual-learning (P28): the pipeline's apply step
+        writes distilled ``preference`` proposals here. Follows the
+        ``store_fact`` upsert pattern; ``value`` must be
+        JSON-serializable and ``confidence`` must be within [0, 1].
+        """
+        try:
+            json.dumps(value)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"Value is not JSON-serializable: {e}") from e
+        if not 0.0 <= confidence <= 1.0:
+            raise ValueError(
+                f"confidence must be within [0, 1], got {confidence}."
+            )
+
+        async with self._session_factory() as session:
+            stmt = pg_insert(Preference).values(
+                persona=persona,
+                category=category,
+                key=key,
+                value=value,
+                confidence=confidence,
+            )
+            stmt = stmt.on_conflict_do_update(
+                constraint="uq_preferences_persona_category_key",
+                set_={
+                    "value": value,
+                    "confidence": confidence,
+                    "updated_at": datetime.now(UTC),
+                },
+            )
+            await session.execute(stmt)
+            await session.commit()
+
     @trace_memory_op("interaction_write")
     async def store_interaction(
         self,

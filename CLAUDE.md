@@ -70,6 +70,13 @@ uv run assistant cleanroom import -p work <bundle.json>   # ingest a verified bu
 uv run assistant cleanroom revoke -p personal <bundle-id> # source-persona revocation
 uv run assistant cleanroom sync -p work                   # purge imports of revoked bundles
 
+# Continual learning (P28) — needs a persona `learning:` section
+uv run assistant feedback -p personal "too wordy"         # store human feedback (also: REPL /feedback)
+uv run assistant reflect -p personal                      # consolidate interactions into memory
+uv run assistant learning collect -p personal             # machine collectors (eval/budget/breaker/cost)
+uv run assistant learning propose -p personal             # feedback -> proposal files (reviewable diffs)
+uv run assistant learning apply -p personal <id> [--approved]  # eval-gated, guardrail-gated apply
+
 # OpenSpec workflow
 openspec list                                      # in-progress changes
 openspec list --specs                              # current specs
@@ -388,6 +395,53 @@ persona.
 - Tests run between the two fixture personas `cleanroom_alpha`/
   `cleanroom_beta` (`tests/fixtures/personas/`) with an in-memory
   `CleanRoomMemoryStore` fake — the public suite stays DB-free.
+
+## Continual Learning (P28)
+
+`continual-learning` adds the FeedbackEvent → ImprovementProposal
+pipeline (`core/learning.py`) — memory that grows, behind the roadmap
+constraint **propose → eval → human-approved diff, NEVER self-merge**:
+
+- **No config, no learning**: a persona without a truthy `learning:`
+  section (see `personas/_template/persona.yaml`) refuses every entry
+  point — feedback, collectors, reflection, propose, apply (clean-room
+  posture). Keys: `enabled`, `auto_apply_low_risk` (default false),
+  `reflection.consumer` (models binding, default the reserved
+  `memory` key), `proposals_dir` (default `<persona>/proposals`).
+- **FeedbackEvent** (closed sources `human|eval|guardrail|resilience|
+  cost|critique`): human capture via `assistant feedback` (`--prefer
+  cat:key=value` distills preferences) + REPL `/feedback`; stored as
+  interactions with `metadata.source=feedback`. **Machine collectors
+  read what already exists** — run-gate output (FAIL/SKIP/PASS
+  lines), budget-ledger utilization ≥ 80%, the new read-only
+  `CircuitBreakerRegistry.breakers()` snapshot, unpriced cloud
+  registry entries under a budget — on demand (`assistant learning
+  collect`) or as scheduler jobs; no new daemons.
+- **Reflection** (`assistant reflect`, or a `kind: reflect`
+  `schedules:` job — role/prompt optional, daemon validates learning
+  + database_url up front): watermark-filtered interactions →
+  summary (model-backed via `OpenAICompatibleClient` under the
+  reflection consumer binding when an openai-compatible endpoint
+  resolves, deterministic digest otherwise) → provenance-stamped
+  `learning/reflection/<ts>` fact + Graphiti episode write-back via
+  `store_episode` (closes the deferred P21 follow-up).
+- **Proposals are FILES** under the persona `proposals/` dir (the
+  submodule diff IS the approval workflow). Risk tiers by kind:
+  preference=LOW, prompt_layer=MEDIUM, routing_config=HIGH.
+  `assistant learning apply` gates in order: `learning_apply`
+  guardrail action (deny AND require_confirmation refuse — P13
+  semantics until P30), the P27 eval gate (SKIP counts as pass with a
+  warning; nonzero refuses), then LOW-or-`--approved`. preference →
+  `MemoryManager.store_preference` (new; `trace_memory_op` gained
+  `preference_write`); prompt_layer → appended suggestion block
+  (path-escape refused); routing_config → review-only, always
+  human-applied. ONLY preference+LOW may auto-apply, only under
+  `auto_apply_low_risk: true`, through the same full gate chain.
+- **Audit**: `learning.<feedback|reflect|propose|apply>` spans via the
+  `start_span` escape hatch, identity-stamped (P25/P26 precedent).
+- Tests: fixture persona `learning_lab` + in-memory
+  `FakeLearningStore`; the memory-manager seam for CLI/scheduler is
+  `assistant.core.learning._learning_memory_manager` (patch there, G4).
 
 ## Local Inference & Fleet (P20)
 

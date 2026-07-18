@@ -330,6 +330,16 @@ class CircuitBreakerRegistry:
         # the registry is in-process, so we don't need to await the lock.
         return self._breakers.setdefault(key, CircuitBreaker(key=key))
 
+    def breakers(self) -> dict[str, CircuitBreaker]:
+        """Snapshot of all registered breakers, keyed by canonical key.
+
+        Read-only observer surface (P28 continual-learning: the
+        resilience feedback collector reads breaker state on demand —
+        no new stores, no polling daemon). Returns a shallow copy so
+        callers cannot mutate the registry.
+        """
+        return dict(self._breakers)
+
 
 _REGISTRY: CircuitBreakerRegistry | None = None
 

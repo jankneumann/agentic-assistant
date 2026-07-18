@@ -64,8 +64,14 @@ DEFAULT_CALENDAR_LEAD_MINUTES: int = 15
 DEFAULT_CALENDAR_POLL_SECONDS: float = 300.0
 
 _TRIGGER_KINDS = ("cron", "interval", "calendar")
+#: Job kinds (P28 continual-learning): ``agent`` (default) spawns a
+#: fresh SDK harness with the job's role + prompt; ``reflect`` runs the
+#: learning reflection/consolidation pass instead — no harness, no
+#: role/prompt required, but the persona must declare a truthy
+#: ``learning:`` section.
+_JOB_KINDS = ("agent", "reflect")
 _JOB_KEYS = frozenset(
-    {"trigger", "role", "prompt", "consumer", "enabled", "harness"}
+    {"trigger", "role", "prompt", "consumer", "enabled", "harness", "kind"}
 )
 _TRIGGER_KEYS = frozenset({*_TRIGGER_KINDS, "lead_minutes"})
 
@@ -101,6 +107,11 @@ class ScheduledJob:
     ``harness`` (P11 harness-routing) optionally pins this job's runs
     to a specific SDK harness (or the ``auto`` sentinel). Empty means
     inherit the runner's configured harness (the daemon ``-H`` value).
+
+    ``kind`` (P28 continual-learning) selects the execution path:
+    ``agent`` (default) is the P7 harness run; ``reflect`` runs the
+    learning reflection/consolidation pass — ``role`` and ``prompt``
+    are then optional (unused).
     """
 
     name: str
@@ -110,6 +121,7 @@ class ScheduledJob:
     consumer: str = DEFAULT_SCHEDULER_CONSUMER
     harness: str = ""
     enabled: bool = True
+    kind: str = "agent"
 
 
 @dataclass
@@ -244,14 +256,23 @@ def parse_schedule_config(raw: dict[str, Any] | None) -> ScheduleConfig:
             )
         trigger = _parse_trigger(name, spec["trigger"])
 
+        kind = spec.get("kind", "agent")
+        if kind not in _JOB_KINDS:
+            raise ScheduleConfigError(
+                f"schedules job {name!r}: 'kind' must be one of "
+                f"{list(_JOB_KINDS)}, got {kind!r}."
+            )
+
         role = spec.get("role", "")
-        if not isinstance(role, str) or not role:
+        if not isinstance(role, str) or (kind == "agent" and not role):
             raise ScheduleConfigError(
                 f"schedules job {name!r}: 'role' must be a non-empty "
                 f"role name."
             )
         prompt = spec.get("prompt", "")
-        if not isinstance(prompt, str) or not prompt.strip():
+        if not isinstance(prompt, str) or (
+            kind == "agent" and not prompt.strip()
+        ):
             raise ScheduleConfigError(
                 f"schedules job {name!r}: 'prompt' must be non-empty "
                 f"task text."
@@ -284,6 +305,7 @@ def parse_schedule_config(raw: dict[str, Any] | None) -> ScheduleConfig:
             consumer=consumer,
             harness=harness,
             enabled=enabled,
+            kind=kind,
         )
     return ScheduleConfig(jobs=jobs)
 
@@ -434,6 +456,17 @@ class HarnessJobRunner:
         )
 
     async def run(self, job: ScheduledJob, *, context: str = "") -> str:
+        # P28 continual-learning: `kind: reflect` jobs bypass the
+        # harness entirely — one reflection/consolidation pass through
+        # the learning pipeline (lazy import keeps the schema half of
+        # this module import-light for persona.py).
+        if job.kind == "reflect":
+            from assistant.core.learning import run_reflection_for_persona
+
+            result = await run_reflection_for_persona(self._persona)
+            logger.info("scheduled job %r (kind=reflect): %s", job.name, result)
+            return result
+
         from assistant.harnesses.base import SdkHarnessAdapter
         from assistant.harnesses.factory import (
             create_harness as default_create_harness,
