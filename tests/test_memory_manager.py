@@ -199,6 +199,40 @@ class TestStoreFact:
             await mgr.store_fact("test", "bad", object())
 
 
+class TestStorePreference:
+    @pytest.mark.asyncio
+    async def test_persists_to_postgres(self):
+        session = AsyncMock()
+        factory = _make_session_factory(session)
+        mgr = MemoryManager(factory)
+
+        await mgr.store_preference(
+            "test", "style", "tone", "concise", confidence=0.7
+        )
+        session.execute.assert_called_once()
+        session.commit.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_rejects_non_serializable(self):
+        session = AsyncMock()
+        factory = _make_session_factory(session)
+        mgr = MemoryManager(factory)
+
+        with pytest.raises(ValueError, match="not JSON-serializable"):
+            await mgr.store_preference("test", "style", "bad", object())
+
+    @pytest.mark.asyncio
+    async def test_rejects_out_of_range_confidence(self):
+        session = AsyncMock()
+        factory = _make_session_factory(session)
+        mgr = MemoryManager(factory)
+
+        with pytest.raises(ValueError, match="confidence"):
+            await mgr.store_preference(
+                "test", "style", "tone", "x", confidence=1.5
+            )
+
+
 class TestStoreInteraction:
     @pytest.mark.asyncio
     async def test_persists_with_metadata(self):
