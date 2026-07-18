@@ -146,6 +146,12 @@ harnesses:
 #                                        # locally (explicit binding only —
 #                                        # `default` never spills into
 #                                        # embeddings)
+#     router: gx10-chat                  # P12 delegation router: enables
+#                                        # model-assisted sub-role
+#                                        # classification (explicit binding
+#                                        # only — `default` never enables
+#                                        # it; unbound = deterministic
+#                                        # keyword scoring only)
 
 # ── Default role ──
 default_role: chief_of_staff
