@@ -454,6 +454,9 @@ def trace_memory_op[R](
             if op == "fact_write":
                 # store_fact(persona, key, value): target = key
                 target_raw = args[1] if len(args) > 1 else kwargs.get("key")
+            elif op == "preference_write":
+                # store_preference(persona, category, key, ...): target = key
+                target_raw = args[2] if len(args) > 2 else kwargs.get("key")
             elif op == "search":
                 # search(persona, query, ...): target = query
                 target_raw = args[1] if len(args) > 1 else kwargs.get("query")

@@ -60,6 +60,11 @@ from assistant.core.harness_routing import (
     HarnessRoutingRule,
     parse_harness_routing,
 )
+from assistant.core.learning import (
+    LearningConfig,
+    LearningConfigError,
+    parse_learning_config,
+)
 from assistant.core.scheduler import (
     ScheduleConfig,
     ScheduleConfigError,
@@ -186,6 +191,12 @@ class PersonaConfig:
     # clean-room rules — the declassification gateway then refuses
     # every export AND import (total persona isolation, the default).
     clean_room: CleanRoomConfig = field(default_factory=CleanRoomConfig)
+    # Parsed + validated ``learning:`` section (learning spec / P28
+    # continual-learning). Falsy when the persona declares no learning
+    # section (or ``enabled: false``) — every learning entry point
+    # (feedback, reflection, proposals, apply) then refuses; continual
+    # learning is dormant by default.
+    learning: LearningConfig = field(default_factory=LearningConfig)
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -346,6 +357,16 @@ class PersonaRegistry:
                 f"clean_room: section — {exc}"
             ) from exc
 
+        try:
+            learning = parse_learning_config(
+                raw.get("learning"), persona_dir=persona_dir
+            )
+        except LearningConfigError as exc:
+            raise ValueError(
+                f"Persona '{raw['name']}' ({config_path}): invalid "
+                f"learning: section — {exc}"
+            ) from exc
+
         # P13 security-hardening: every persona-config secret read goes
         # through the persona-scoped CredentialProvider (persona .env
         # values first, process env fallback) — never through a direct
@@ -403,6 +424,7 @@ class PersonaRegistry:
             a2a_auth=a2a_auth,
             sandbox=sandbox,
             clean_room=clean_room,
+            learning=learning,
             raw=raw,
         )
 
