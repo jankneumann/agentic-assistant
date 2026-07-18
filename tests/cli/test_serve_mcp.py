@@ -36,7 +36,9 @@ class _FakeHarness(SdkHarnessAdapter):
     async def invoke(self, agent, message) -> str:
         return "ok"
 
-    async def spawn_sub_agent(self, role, task, tools, extensions) -> str:
+    async def spawn_sub_agent(
+        self, role, task, tools, extensions, context=None
+    ) -> str:
         return "ok"
 
 

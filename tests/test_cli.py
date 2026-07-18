@@ -51,7 +51,7 @@ class StubHarness(SdkHarnessAdapter):
         return self.invoke_response
 
     async def spawn_sub_agent(
-        self, role: RoleConfig, task: str, tools, extensions
+        self, role: RoleConfig, task: str, tools, extensions, context=None
     ) -> str:
         return self.spawn_response
 

@@ -65,6 +65,7 @@ if TYPE_CHECKING:
     from assistant.core.capabilities.memory import MemoryPolicy
     from assistant.core.capabilities.models import ModelProvider
     from assistant.core.capabilities.tools import ToolPolicy
+    from assistant.delegation.context import DelegationContext
 
 #: Memory snippet limit — D27 sets this at 10. Tests can override via
 #: the ``memory_snippet_limit`` constructor kwarg.
@@ -105,8 +106,12 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         memory_snippet_limit: int = DEFAULT_MEMORY_SNIPPET_LIMIT,
         model_provider: ModelProvider | None = None,
         credential_provider: CredentialProvider | None = None,
+        delegation_context: DelegationContext | None = None,
     ) -> None:
         super().__init__(persona, role)
+        # P12 delegation-context: set only on sub-harnesses built by
+        # spawn_sub_agent; rendered ahead of the composed instructions.
+        self._delegation_context = delegation_context
         self._tool_policy = tool_policy
         self._memory_policy = memory_policy
         self._guardrail_provider = guardrail_provider
@@ -314,13 +319,20 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         snippets = await memory_policy.get_recent_snippets(
             self.persona, self.role, limit=self._memory_snippet_limit
         )
-        if not snippets:
-            return base
-
-        snippet_block = "\n\n".join(snippets)
-        return (
-            f"{_MEMORY_SECTION_HEADING}\n\n{snippet_block}\n\n{base}"
-        )
+        instructions = base
+        if snippets:
+            snippet_block = "\n\n".join(snippets)
+            instructions = (
+                f"{_MEMORY_SECTION_HEADING}\n\n{snippet_block}\n\n{base}"
+            )
+        # P12 delegation-context: the delegation block leads the whole
+        # prompt (identity + constraints before recent context). Absent
+        # context leaves the instructions byte-identical to pre-P12.
+        if self._delegation_context is not None:
+            instructions = (
+                f"{self._delegation_context.render()}\n\n{instructions}"
+            )
+        return instructions
 
     # ── SdkHarnessAdapter contract ────────────────────────────────
 
@@ -558,6 +570,7 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         task: str,
         tools: list[Any],
         extensions: list[Any],
+        context: DelegationContext | None = None,
     ) -> str:
         """Build a nested harness for ``role`` and invoke it on ``task``.
 
@@ -566,6 +579,11 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         ``check_action(ActionRequest(kind="delegate", ...))`` BEFORE
         any ``Agent`` construction. A denied decision raises
         ``PermissionError``.
+
+        P12 delegation-context: an optional ``context`` (constructed by
+        the ``DelegationSpawner``) is threaded to the sub-harness, whose
+        instruction composition renders it as a ``## Delegation
+        context`` block. ``None`` preserves pre-P12 behavior exactly.
         """
         from assistant.core.capabilities.audit import emit_guardrail_audit
         from assistant.core.capabilities.identity import AgentIdentity
@@ -605,6 +623,7 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
             memory_snippet_limit=self._memory_snippet_limit,
             model_provider=self._model_provider,
             credential_provider=self._credential_provider,
+            delegation_context=context,
         )
         agent = await sub.create_agent(tools, extensions)
         return await sub.invoke(agent, task)

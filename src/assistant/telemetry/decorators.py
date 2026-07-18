@@ -390,14 +390,20 @@ def traced_delegation[R](
     """
 
     @functools.wraps(fn)
-    async def wrapper(self_obj: Any, sub_role_name: str, task: str) -> R:
+    async def wrapper(
+        self_obj: Any, sub_role_name: str, task: str, **kwargs: Any
+    ) -> R:
+        # P12 delegation-context: pass-through keyword arguments
+        # (conversation_summary / deadline_seconds / allowed_tools) —
+        # the span vocabulary is unchanged; only (sub_role, task) are
+        # emitted, with the same 256-char hashing rule for task.
         persona, parent_role = _resolve_persona_role(self_obj)
         provider = get_observability_provider()
         emitted_task = _hash_task(task)
         start = time.perf_counter()
         try:
             with assistant_ctx(persona, sub_role_name):
-                result = await fn(self_obj, sub_role_name, task)
+                result = await fn(self_obj, sub_role_name, task, **kwargs)
         except BaseException as exc:
             duration_ms = (time.perf_counter() - start) * 1000.0
             provider.trace_delegation(

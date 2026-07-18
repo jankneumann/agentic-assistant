@@ -11,6 +11,7 @@ from assistant.core.persona import PersonaConfig
 from assistant.core.role import RoleConfig
 
 if TYPE_CHECKING:
+    from assistant.delegation.context import DelegationContext
     from assistant.harnesses.sdk.events import HarnessEvent
 
 logger = logging.getLogger(__name__)
@@ -103,7 +104,18 @@ class SdkHarnessAdapter(HarnessAdapter):
         task: str,
         tools: list[Any],
         extensions: list[Any],
-    ) -> str: ...
+        context: DelegationContext | None = None,
+    ) -> str:
+        """Spawn a nested sub-agent for ``role`` and run it on ``task``.
+
+        ``context`` (P12 delegation-context) is an ADDITIVE keyword
+        parameter: ``None`` preserves the pre-P12 behavior exactly.
+        When provided, concrete harnesses MUST render
+        ``context.render()`` as a ``## Delegation context`` block ahead
+        of the sub-agent's composed system prompt (mirroring the D27
+        ``## Recent context`` prepend).
+        """
+        ...
 
     async def _capture_interaction(
         self, user_message: str, response: str
