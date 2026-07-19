@@ -60,6 +60,12 @@ dependencies = [
     "ag-ui-protocol>=0.1,<1.0",
     "croniter>=2.0",
     "mcp>=1.27.2",
+    # P30 durable-sessions (roadmap-sanctioned): Postgres-backed
+    # LangGraph checkpointer for the DeepAgents harness. Ships the
+    # sync + async savers (PostgresSaver / AsyncPostgresSaver) and
+    # pulls in psycopg (v3), which the sync durable stores also use
+    # via SQLAlchemy's postgresql+psycopg dialect.
+    "langgraph-checkpoint-postgres>=2.0,<3.0",
 ]
 
 [project.optional-dependencies]
