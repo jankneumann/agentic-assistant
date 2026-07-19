@@ -73,6 +73,23 @@ async def _build_durable_saver(database_url: str) -> Any:
     return saver
 
 
+async def setup_durable_schema(database_url: str) -> None:
+    """One-shot provisioning of the checkpointer's OWN schema.
+
+    Called by ``assistant db upgrade -p <persona>`` so operators get a
+    single idempotent provisioning command (alembic tables + this) —
+    while schema OWNERSHIP stays with langgraph-checkpoint-postgres
+    (see module docstring; owner review 2026-07-19). Reuses the
+    ``_build_durable_saver`` patch point that tests already stub, and
+    closes the connection immediately: the short-lived CLI process
+    never caches a saver.
+    """
+    await _build_durable_saver(database_url)
+    stack = _SAVER_STACKS.pop(database_url, None)
+    if stack is not None:
+        await stack.aclose()
+
+
 async def resolve_checkpointer(persona: Any) -> Any:
     """Resolve the checkpointer for a persona per the P30 contract.
 

@@ -52,3 +52,39 @@ operation (the decision is consumed exactly once by the retry).
   without durable sessions
 - **THEN** the command MUST exit 1 naming the `sessions: {durable:
   true}` requirement
+
+### Requirement: db upgrade Provisions the Durable Checkpointer Schema
+
+The system SHALL extend `assistant db upgrade` with an optional
+`--persona/-p` option: after alembic migrations succeed, when the
+named persona declares `sessions: {durable: true}`, the command SHALL
+run the langgraph-checkpoint-postgres `setup()` against the persona's
+database so one idempotent operator command provisions both schema
+owners (alembic owns the assistant's tables; the checkpointer package
+owns and versions its own — ownership is deliberately NOT merged into
+alembic; owner review 2026-07-19). A non-durable persona SHALL be
+reported as not requiring the checkpointer schema; a durable persona
+without a resolvable database url SHALL fail with an actionable error.
+
+#### Scenario: Durable persona provisions both schema owners
+
+- **WHEN** `assistant db upgrade -p <persona>` runs for a persona with
+  `sessions: {durable: true}` and a resolved database url
+- **THEN** alembic migrations run to head
+- **AND** the checkpointer package's `setup()` is invoked against the
+  persona database exactly once for the command
+
+#### Scenario: Non-durable persona skips checkpointer provisioning
+
+- **WHEN** `assistant db upgrade -p <persona>` runs for a persona
+  without a truthy `sessions:` section
+- **THEN** alembic migrations still run
+- **AND** the command reports the checkpointer schema is not required
+  without contacting the database for it
+
+#### Scenario: Durable persona without database url fails actionably
+
+- **WHEN** `assistant db upgrade -p <persona>` runs for a persona
+  declaring `sessions.durable` with no resolvable database url
+- **THEN** the command exits nonzero naming the persona and the
+  missing database url

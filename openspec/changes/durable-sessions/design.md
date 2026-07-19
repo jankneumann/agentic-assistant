@@ -150,3 +150,19 @@ approval flow work identically), but durable CONVERSATION persistence
 for MSAF is deferred — agent-framework 1.10 exposes no checkpointer
 injection point (same posture as the P21 mid-turn retrieval
 deferral, recorded in the harness docstring).
+
+## D-review addendum (owner review 2026-07-19) — schema ownership vs operator alignment
+
+Question raised: why not fold the checkpointer schema into alembic for
+alignment/idempotency? Resolution kept as designed — the checkpointer
+tables are langgraph-checkpoint-postgres's private, versioned storage
+format with its OWN migration system (`checkpoint_migrations`);
+copying its DDL into alembic guarantees drift on library upgrade and
+couples us to private internals. Idempotency is preserved (both
+owners are idempotent). The legitimate gap was operator experience:
+schema materialized on first use, not at provision time. Amendment:
+`assistant db upgrade -p <persona>` now also runs the checkpointer
+`setup()` for durable personas — one operator command, two schema
+owners. Flip condition recorded: if checkpoint data is ever treated
+as ours (relational queries, added indexes/columns, retention), the
+schema moves into alembic as a deliberate ownership transfer.

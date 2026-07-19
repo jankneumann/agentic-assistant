@@ -2028,8 +2028,24 @@ def db() -> None:
 
 
 @db.command()
-def upgrade() -> None:
-    """Run all pending Alembic migrations to head."""
+@click.option(
+    "--persona",
+    "-p",
+    "persona_name",
+    type=str,
+    default=None,
+    help="Also provision the durable checkpointer schema for this "
+    "persona (no-op unless the persona declares sessions: durable).",
+)
+def upgrade(persona_name: str | None) -> None:
+    """Run all pending Alembic migrations to head.
+
+    With -p and a durable-sessions persona, additionally runs the
+    langgraph-checkpoint-postgres ``setup()`` so a single idempotent
+    command provisions BOTH schema owners (alembic owns the
+    assistant's tables; the checkpointer package owns its own — see
+    harnesses/sdk/checkpointer.py).
+    """
     from pathlib import Path
 
     from alembic import command
@@ -2045,6 +2061,37 @@ def upgrade() -> None:
         click.echo("Migrations applied successfully.")
     except Exception as e:
         click.echo(f"Error running migrations: {e}", err=True)
+        sys.exit(1)
+
+    if persona_name is None:
+        return
+    persona_reg = PersonaRegistry()
+    persona = _load_persona_or_fail(persona_reg, persona_name)
+    if not persona.sessions:
+        click.echo(
+            f"Persona '{persona_name}' has no durable sessions: section — "
+            "checkpointer schema not required."
+        )
+        return
+    if not persona.database_url:
+        click.echo(
+            f"Error: persona '{persona_name}' declares sessions.durable "
+            "but resolves no database url.",
+            err=True,
+        )
+        sys.exit(1)
+    from assistant.harnesses.sdk.checkpointer import setup_durable_schema
+
+    try:
+        asyncio.run(setup_durable_schema(persona.database_url))
+        click.echo(
+            "Durable checkpointer schema provisioned "
+            "(langgraph-checkpoint-postgres setup())."
+        )
+    except Exception as e:
+        click.echo(
+            f"Error provisioning checkpointer schema: {e}", err=True
+        )
         sys.exit(1)
 
 

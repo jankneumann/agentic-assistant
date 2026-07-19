@@ -103,3 +103,7 @@
       template persona.yaml annotations
 - [x] 6.7 Gates: `uv run pytest tests/ -q`, `ruff check src tests`,
       `mypy src tests`, `openspec validate durable-sessions --strict`
+
+- [x] R1 (owner review 2026-07-19): `db upgrade -p` provisions the
+      checkpointer schema (setup_durable_schema + CLI hook + 4 tests +
+      cli-interface delta + design addendum)
