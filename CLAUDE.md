@@ -70,6 +70,12 @@ uv run assistant cleanroom import -p work <bundle.json>   # ingest a verified bu
 uv run assistant cleanroom revoke -p personal <bundle-id> # source-persona revocation
 uv run assistant cleanroom sync -p work                   # purge imports of revoked bundles
 
+# Durable sessions & approvals (P30) — needs `sessions: {durable: true}` + database url
+uv run assistant db upgrade                        # apply migrations (002 adds the durable tier)
+uv run assistant approvals list -p personal        # pending approval requests
+uv run assistant approvals approve <id> -p personal  # decide, then RETRY the suspended op
+uv run assistant approvals deny <id> -p personal
+
 # Continual learning (P28) — needs a persona `learning:` section
 uv run assistant feedback -p personal "too wordy"         # store human feedback (also: REPL /feedback)
 uv run assistant reflect -p personal                      # consolidate interactions into memory
@@ -236,16 +242,22 @@ alongside AG-UI on the same loopback-default server:
   JSON-RPC envelope wrapping one A2A event). REST-style alias:
   `POST /a2a/v1/message:stream` (bare MessageSendParams in, bare
   events out).
-- **Sessions**: A2A `contextId` ≡ session `thread_id`; the in-memory
-  `SessionRegistry` (`src/assistant/a2a/task_handler.py` — first
-  consumer of the harness-adapter Session Registry requirement)
-  creates a FRESH harness+agent per context, reuses known contextIds,
-  and REJECTS unknown ones (durable/resumable sessions wait on the
-  Postgres checkpointer).
-- **Approval bridge**: a guardrail approval denial
-  (`ModelCallDeniedError`, P13 deny-until-interrupt) surfaces as task
-  state `input-required` before the final `failed` update —
-  observational only until interrupt/resume lands.
+- **Sessions**: A2A `contextId` ≡ session `thread_id`; the
+  `SessionRegistry` (moved to `src/assistant/harnesses/sessions.py`
+  in P30 — `a2a.task_handler` keeps compat re-exports) creates a
+  FRESH harness+agent per context and reuses known contextIds. Since
+  P30 durable-sessions, a persona with `sessions: {durable: true}`
+  re-binds in-process-expired/restart-lost contextIds through the
+  session-metadata store + the Postgres checkpointer; only truly
+  unknown/lapsed ids are rejected. Non-durable personas keep the
+  reject-unknown behavior.
+- **Approval bridge**: with durable sessions, a suspension
+  (`PendingApprovalError`) maps to a REAL non-terminal
+  `input-required` task state (final stream event, NO `failed`
+  update) — resume by deciding via `assistant approvals` and sending
+  a follow-up on the same contextId. Without durable sessions the
+  P13 deny fallback (`ModelCallDeniedError`) keeps the observational
+  input-required → failed sequence.
 - **Types are hand-rolled** in `src/assistant/a2a/types.py`
   (spec-shaped, camelCase wire aliases); adopt the official `a2a-sdk`
   later — migration is a mechanical import swap. The HarnessEvent→A2A
@@ -300,8 +312,10 @@ inbound/outbound split (AgentCore Identity lesson):
   `httpx.MockTransport`-mocked.
 - **Audit trail**: every identity-carrying guardrail decision emits a
   `guardrail.decision` span (`core/capabilities/audit.py`) through
-  the telemetry `start_span` escape hatch — no new trace op, no
-  separate audit store (deferred with approval interrupt/resume).
+  the telemetry `start_span` escape hatch — no new trace op. Since
+  P30, durable-session personas ALSO append the same decisions (plus
+  `approval.decision` records) to the `audit_log` table on the
+  persona DB; spans continue regardless.
 
 ## Rich Delegation (P12)
 
@@ -385,8 +399,10 @@ persona.
   refuses revoked bundles; `cleanroom sync` purges already-imported
   items via `MemoryManager.delete_facts_by_prefix`.
 - **Guardrails + audit**: export/import are guardrail actions
-  (`cleanroom_export`/`cleanroom_import`; `require_confirmation`
-  DENIES until the approval interrupt flow exists — P13 semantics).
+  (`cleanroom_export`/`cleanroom_import`; since P30,
+  `require_confirmation` SUSPENDS into the approval flow on
+  durable-session personas — `assistant approvals approve <id>` then
+  retry — and keeps the P13 DENY fallback otherwise).
   Every op emits an identity-stamped `cleanroom.<op>` span via the
   `start_span` escape hatch (P25 precedent). `MemoryManager` gained
   `list_facts`/`list_preferences`/`delete_facts_by_prefix` and the
@@ -429,8 +445,9 @@ constraint **propose → eval → human-approved diff, NEVER self-merge**:
   submodule diff IS the approval workflow). Risk tiers by kind:
   preference=LOW, prompt_layer=MEDIUM, routing_config=HIGH.
   `assistant learning apply` gates in order: `learning_apply`
-  guardrail action (deny AND require_confirmation refuse — P13
-  semantics until P30), the P27 eval gate (SKIP counts as pass with a
+  guardrail action (deny refuses; since P30 `require_confirmation`
+  suspends into the approval flow on durable-session personas and
+  refuses otherwise), the P27 eval gate (SKIP counts as pass with a
   warning; nonzero refuses), then LOW-or-`--approved`. preference →
   `MemoryManager.store_preference` (new; `trace_memory_op` gained
   `preference_write`); prompt_layer → appended suggestion block
@@ -505,14 +522,74 @@ server:
 - **Sessions**: tool argument `context_id` ≡ session `thread_id`
   (mirrors A2A `contextId`). Missing → fresh session (same
   `create_harness` + agent pipeline as `/chat` and A2A, one per-role
-  `SessionRegistry`); known → reuse (per-session lock serializes
-  turns); unknown/expired → rejected as a tool error (in-memory
-  registry; durable sessions still deferred).
+  `SessionRegistry` from `harnesses/sessions.py`); known → reuse
+  (per-session lock serializes turns). Since P30, durable-session
+  personas re-bind released/restart-lost context_ids (same-role rows
+  only); truly unknown/lapsed ids → rejected as a tool error.
 - **Every result** carries `{response, context_id}` as structured
   content — pass `context_id` back to continue the conversation.
 - **Deferred**: MCP resources/prompts/elicitation, streaming task
   updates over MCP, transport auth (OAuth 2.1 / MCP authorization
   spec — P25; keep the default loopback bind until then).
+
+## Durable Sessions & Approvals (P30)
+
+`durable-sessions` consolidates the cross-phase deferrals that all
+needed the persona DB. One persona flag gates the whole tier —
+`sessions: {durable: true}` (+ optional `session_ttl_seconds` /
+`approval_ttl_seconds`; annotated schema in
+`personas/_template/persona.yaml`); **no section = every in-memory
+default unchanged**. Durable declared without a `database_url` fails
+actionably everywhere the tier is built (never silently degrades).
+
+- **Durable checkpointer**: `DeepAgentsHarness` accepts injectable
+  `checkpointer` / `approval_store` / explicit `thread_id` kwargs;
+  un-injected harnesses resolve via
+  `harnesses/sdk/checkpointer.py` — `InMemorySaver` by default, a
+  process-cached `AsyncPostgresSaver`
+  (`langgraph-checkpoint-postgres`) for durable personas. The saver's
+  own `setup()` owns the checkpointer schema — deliberately SEPARATE
+  from alembic (`assistant db upgrade` owns only migration 002's four
+  tables: `sessions`, `approvals`, `guardrail_spend`, `audit_log`).
+  MSAF has the `thread_id`/`approval_store` seams but durable
+  conversation persistence is deferred (no SDK checkpointer
+  injection point).
+- **Session registry** moved to `harnesses/sessions.py` (P17 D7
+  relocation; `a2a.task_handler` re-exports). Durable personas get a
+  session-metadata store + rebind factories wired by the web
+  lifespan: `registry.resolve(thread_id)` = live session → durable
+  re-bind (`create_harness(..., thread_id=...)`; checkpointer
+  restores the conversation) → reject only truly unknown/lapsed/
+  foreign-role ids. In-process idle expiry never deletes durable
+  state.
+- **Approval interrupt/resume**
+  (`core/capabilities/approvals.py` + stores in `core/durable.py`):
+  `require_confirmation` with a durable store SUSPENDS — a persisted
+  MCP-elicitation-shaped `ApprovalRequest` + typed
+  `PendingApprovalError` (A2A: real non-terminal `input-required`;
+  AG-UI: `RunErrorEvent` class name; CLI/REPL: printed instructions).
+  Resume is retry-shaped v1: `assistant approvals list/approve/deny`
+  records the decision (first-decision-wins, audited), the retried
+  operation consults resolved approvals FIRST — approve is consumed
+  exactly once, a human deny surfaces as `ApprovalDeniedError`. The
+  P26 cleanroom gateway and P28 learning-apply flow through the same
+  helper (`consume_or_suspend`); without durable sessions every site
+  keeps the P13 deny fallback. Sync `ApprovalStore` protocol (mirrors
+  `BudgetLedger`) over `core/db.py::create_sync_engine`
+  (psycopg-normalized urls).
+- **Testing**: no Postgres in dev/CI — the Postgres store classes run
+  their real SQL against sqlite engines
+  (`durable.metadata.create_all`); in-memory twins
+  (`InMemoryApprovalStore`/`InMemorySessionStore`/
+  `InMemoryAuditStore`) back injection sites; checkpointer builds are
+  patched (`_build_durable_saver`). Test hooks:
+  `durable._clear_durable_state()`,
+  `checkpointer._clear_checkpointer_cache()`.
+- **Deferred (recorded)**: checkpoint-level mid-run interrupt/resume
+  (v1 resume is retry-shaped), email/messaging approval channels
+  (P29 channel adapters), MSAF durable conversations,
+  escalation-with-justification submission surface, A2A multi-turn
+  task continuation.
 
 ## Meta-Harness Compat & Sandbox (P22)
 
@@ -654,9 +731,11 @@ See `openspec/roadmap.md` for the full sequence. Notable gaps:
   without the section keep `AllowAllGuardrails`. Model-call budgets
   enforce per-persona daily/monthly USD ceilings from P19 cost
   metadata (in-memory ledger by default; `persist: file` writes
-  `.cache/guardrails/spend.json`; a persona-DB ledger is deferred).
-  `require_confirmation` on `model_call` still DENIES until the
-  approval interrupt flow exists (needs durable sessions). Credential
+  `.cache/guardrails/spend.json`; `persist: db` — P30 — writes the
+  `guardrail_spend` table on the persona DB).
+  `require_confirmation` on `model_call` SUSPENDS into the P30
+  approval flow on durable-session personas and DENIES otherwise
+  (P13 fallback). Credential
   reads are persona-scoped: a git-ignored persona `.env` loads into a
   scoped namespace (persona values first, process env fallback, no
   `os.environ` pollution) consumed via `PersonaConfig.credentials`
@@ -681,8 +760,8 @@ See `openspec/roadmap.md` for the full sequence. Notable gaps:
   conversation). Still deferred: mid-turn retrieval / structured
   memory items in MSAF (blocked on an `agent-framework` SDK injection
   point — see the `ms-agent-framework-harness` spec "Follow-up scope"
-  note), Graphiti episode write-back on capture, and durable session
-  persistence (owned by `capability-protocols-v2`).
+  note) and Graphiti episode write-back on capture. Durable session
+  persistence landed in P30 (see Durable Sessions & Approvals).
 - **`agent-framework` packaging — RESOLVED (X3 repo-hygiene,
   2026-07-16)**: the repo now pins `agent-framework-core` +
   `agent-framework-openai` (1.10.x) instead of the `agent-framework`
