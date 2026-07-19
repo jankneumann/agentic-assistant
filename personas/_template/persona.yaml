@@ -228,6 +228,9 @@ extensions: []
 #       estimate_input_tokens: 2000 # feed compute_cost() when only per-token
 #       estimate_output_tokens: 500 #   pricing is known at check time
 #       persist: memory             # "file" → .cache/guardrails/spend.json
+#                                   # "db"   → guardrail_spend table on the
+#                                   #   persona DB (P30; needs database: url;
+#                                   #   restart- AND fleet-safe)
 #   policies:                       # first match wins, declaration order
 #     - action_type: model_call     # exact action type, or "*"
 #       resource: "expensive-*"     # glob against the action resource
@@ -245,8 +248,31 @@ extensions: []
 #     max_chain_depth: 5            # P25: max delegation hops (0 = unlimited;
 #                                   #   default 5, enforced by the spawner)
 #
-# NOTE: require_confirmation on model_call DENIES until the approval
-# interrupt flow lands (needs durable sessions).
+# NOTE: with durable sessions configured (see the `sessions:` section
+# below), a require_confirmation decision SUSPENDS the operation into
+# the P30 approval flow (`assistant approvals list/approve/deny`,
+# retry to resume). Without durable sessions it keeps the P13
+# behavior: DENY.
+
+# ── Durable sessions & approvals (P30 — durable-sessions) ──
+# Optional. Omit the section entirely to keep every in-memory default:
+# InMemorySaver conversations, in-process-only session registries, and
+# deny-on-require_confirmation guardrails. `durable: true` requires a
+# database: {url_env: ...} url and switches on, all at once:
+#   - the Postgres LangGraph checkpointer for DeepAgents conversations
+#     (thread_ids survive restarts; the checkpointer manages its OWN
+#     schema via setup() — separate from `assistant db upgrade`, which
+#     owns the four durable-tier tables from migration 002);
+#   - durable session metadata: A2A contextIds / MCP context_ids are
+#     re-bindable after in-process expiry or a restart;
+#   - the approval interrupt/resume flow (suspend instead of deny);
+#   - the durable guardrail/approval audit log (audit_log table).
+# sessions:
+#   durable: true
+#   session_ttl_seconds: 0          # durable re-bind window from last use
+#                                   #   (0 = never lapses)
+#   approval_ttl_seconds: 0         # pending-approval validity window
+#                                   #   (0 = never lapses)
 
 # ── Per-persona credentials (.env — P13) ──
 # This directory may contain a git-ignored `.env` (see .gitignore).
@@ -331,8 +357,8 @@ extensions: []
 #   - ONLY preference proposals with risk LOW may auto-apply, and only
 #     when auto_apply_low_risk is true; every application is gated
 #     through check_action(action_type="learning_apply") — a
-#     require_confirmation policy DENIES until the approval interrupt
-#     flow lands (P30 durable-sessions).
+#     require_confirmation policy suspends into the P30 approval flow
+#     when durable sessions are configured, and DENIES otherwise.
 # learning:
 #   enabled: true                   # optional (default: true when present)
 #   auto_apply_low_risk: false      # opt-in auto-apply for LOW preferences

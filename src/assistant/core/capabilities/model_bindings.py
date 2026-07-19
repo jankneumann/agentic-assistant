@@ -62,17 +62,29 @@ def check_model_call(
     role: str = "",
     metadata: dict[str, Any] | None = None,
     identity: AgentIdentity | None = None,
+    approvals: Any | None = None,
+    thread_id: str = "",
+    approval_expiry_seconds: float = 0.0,
 ) -> None:
     """Budget hook: gate a model dispatch through the guardrail seam.
 
     Raises :class:`ModelCallDeniedError` when the decision is
     ``allowed=False`` — the wire call (or client construction) never
-    happens, and the caller receives the guardrail reason. A
-    ``require_confirmation=True`` decision also raises: the approval
-    interrupt flow (guardrail-provider spec) rides on durable sessions
-    which are not wired yet, so the deny-safe behavior is to refuse
-    rather than silently proceed. ``AllowAllGuardrails`` returns
-    ``allowed=True`` for everything, preserving current behavior.
+    happens, and the caller receives the guardrail reason.
+    ``AllowAllGuardrails`` returns ``allowed=True`` for everything,
+    preserving current behavior.
+
+    ``require_confirmation=True`` (P30 durable-sessions): when an
+    ``approvals`` store is supplied (the persona has ``sessions:
+    {durable: true}``), the decision SUSPENDS the dispatch instead of
+    denying — resolved approvals are consulted first (an approve
+    decision is consumed exactly once and the dispatch proceeds; a
+    human deny surfaces as ``ApprovalDeniedError``), otherwise a
+    persisted ``ApprovalRequest`` is created and the typed
+    :class:`~assistant.core.capabilities.approvals.PendingApprovalError`
+    propagates to the serving layer. WITHOUT a store the pre-P30
+    deny-until-interrupt behavior is preserved: approvals need the
+    persona DB.
 
     P25 agent-iam: the request carries an :class:`AgentIdentity` —
     the caller's, or one synthesized from ``persona``/``role`` when
@@ -107,10 +119,25 @@ def check_model_call(
             f"{decision.reason or '<no reason given>'}"
         )
     if decision.require_confirmation:
-        raise ModelCallDeniedError(
-            f"Model call to {ref.name!r} requires confirmation, but the "
-            "approval interrupt flow is not wired yet (deferred to the "
-            "durable-session work from capability-protocols-v2); denying."
+        if approvals is None:
+            raise ModelCallDeniedError(
+                f"Model call to {ref.name!r} requires confirmation, and "
+                "this persona has no durable approval store (sessions: "
+                "{durable: true} + a database url); denying (P13 "
+                "fallback semantics)."
+            )
+        from assistant.core.capabilities.approvals import consume_or_suspend
+
+        # Approved → returns (consumed once) and the dispatch proceeds;
+        # pending/new → PendingApprovalError; human-denied →
+        # ApprovalDeniedError. All typed in core.capabilities.approvals.
+        consume_or_suspend(
+            approvals,
+            request,
+            decision,
+            risk=guardrails.declare_risk(request),
+            thread_id=thread_id,
+            expiry_seconds=approval_expiry_seconds,
         )
 
 
@@ -138,6 +165,8 @@ def bind_langchain(
     persona: str = "",
     role: str = "",
     init_fn: Callable[..., Any] | None = None,
+    approvals: Any | None = None,
+    thread_id: str = "",
 ) -> Any:
     """Adapt a ModelRef via LangChain's ``init_chat_model``.
 
@@ -149,7 +178,14 @@ def bind_langchain(
     module-level ``init_chat_model`` import (keeps the established
     patch point for tests); the default imports from ``langchain``.
     """
-    check_model_call(guardrails, ref, persona=persona, role=role)
+    check_model_call(
+        guardrails,
+        ref,
+        persona=persona,
+        role=role,
+        approvals=approvals,
+        thread_id=thread_id,
+    )
 
     if init_fn is None:
         from langchain.chat_models import init_chat_model
@@ -184,6 +220,8 @@ def bind_msaf_chat_client(
     guardrails: GuardrailProvider | None = None,
     persona: str = "",
     role: str = "",
+    approvals: Any | None = None,
+    thread_id: str = "",
 ) -> Any:
     """Adapt a ModelRef to an ``agent-framework`` ``OpenAIChatClient``.
 
@@ -194,7 +232,14 @@ def bind_msaf_chat_client(
     ``api_key``, and ``base_url`` kwargs are passed only when
     non-empty so env-var-driven configuration keeps working.
     """
-    check_model_call(guardrails, ref, persona=persona, role=role)
+    check_model_call(
+        guardrails,
+        ref,
+        persona=persona,
+        role=role,
+        approvals=approvals,
+        thread_id=thread_id,
+    )
 
     if ref.dialect != "openai-compatible":
         raise ModelBindingError(
@@ -250,6 +295,8 @@ class OpenAICompatibleClient:
         role: str = "",
         http_client: httpx.AsyncClient | None = None,
         timeout: float = 60.0,
+        approvals: Any | None = None,
+        thread_id: str = "",
     ) -> None:
         if ref.dialect != "openai-compatible":
             raise ModelBindingError(
@@ -268,6 +315,8 @@ class OpenAICompatibleClient:
         self._role = role
         self._http_client = http_client
         self._timeout = timeout
+        self._approvals = approvals
+        self._thread_id = thread_id
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -305,6 +354,8 @@ class OpenAICompatibleClient:
             persona=self._persona,
             role=self._role,
             metadata={"consumer": "chat"},
+            approvals=self._approvals,
+            thread_id=self._thread_id,
         )
         payload = {
             "model": _bare_model_id(self._ref),
@@ -323,6 +374,8 @@ class OpenAICompatibleClient:
             persona=self._persona,
             role=self._role,
             metadata={"consumer": "embedding"},
+            approvals=self._approvals,
+            thread_id=self._thread_id,
         )
         payload = {
             "model": _bare_model_id(self._ref),

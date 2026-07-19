@@ -51,6 +51,11 @@ from assistant.core.cleanroom import (
     CleanRoomConfigError,
     parse_clean_room_config,
 )
+from assistant.core.durable import (
+    SessionsConfig,
+    SessionsConfigError,
+    parse_sessions_config,
+)
 from assistant.core.extension_integrity import (
     IntegrityVerdict,
     check_extension_integrity,
@@ -197,6 +202,13 @@ class PersonaConfig:
     # (feedback, reflection, proposals, apply) then refuses; continual
     # learning is dormant by default.
     learning: LearningConfig = field(default_factory=LearningConfig)
+    # Parsed + validated ``sessions:`` section (P30 durable-sessions).
+    # Falsy when the persona declares no durable sessions — the
+    # DeepAgents checkpointer stays InMemorySaver, serving-surface
+    # session registries stay purely in-memory, and every
+    # require_confirmation guardrail decision keeps its P13 deny
+    # behavior (approvals need the persona DB).
+    sessions: SessionsConfig = field(default_factory=SessionsConfig)
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -367,6 +379,14 @@ class PersonaRegistry:
                 f"learning: section — {exc}"
             ) from exc
 
+        try:
+            sessions = parse_sessions_config(raw.get("sessions"))
+        except SessionsConfigError as exc:
+            raise ValueError(
+                f"Persona '{raw['name']}' ({config_path}): invalid "
+                f"sessions: section — {exc}"
+            ) from exc
+
         # P13 security-hardening: every persona-config secret read goes
         # through the persona-scoped CredentialProvider (persona .env
         # values first, process env fallback) — never through a direct
@@ -425,6 +445,7 @@ class PersonaRegistry:
             sandbox=sandbox,
             clean_room=clean_room,
             learning=learning,
+            sessions=sessions,
             raw=raw,
         )
 
