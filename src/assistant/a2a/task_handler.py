@@ -1,18 +1,5 @@
 """A2A task lifecycle over ``SdkHarnessAdapter.astream_invoke``.
 
-Two pieces live here:
-
-``SessionRegistry`` — the first consumer of the harness-adapter spec's
-SESSION REGISTRY requirement (added by capability-protocols-v2):
-create / lookup / expire sessions keyed by ``thread_id`` so serving
-surfaces can multiplex concurrent tasks instead of binding one global
-harness at startup. This implementation is in-memory; expiry releases
-in-process resources only. The durable Postgres checkpointer (which
-would make expired thread_ids re-creatable with history) remains
-deferred to the harness-adapter Durable Session Persistence work — an
-expired/unknown ``contextId`` is therefore rejected rather than
-resumed.
-
 ``A2ATaskHandler`` — task lifecycle (submitted → working →
 completed/failed, with the input-required approval bridge handled by
 the transports/a2a mapper): resolves the session from the incoming
@@ -20,18 +7,23 @@ message's ``contextId`` (A2A contextId ≡ session ``thread_id``), runs
 the harness stream through ``map_harness_to_a2a``, and maintains an
 in-memory task store so ``message/send`` can return the terminal Task
 snapshot.
+
+``SessionRegistry`` moved to ``assistant.harnesses.sessions`` in P30
+durable-sessions (the recorded P17 D7 relocation — the registry is
+shared with the MCP surface and now optionally durable). This module
+re-exports the session names so existing imports keep working.
+Unknown-``contextId`` handling upgraded with it: the handler resolves
+through ``SessionRegistry.resolve`` — live session, else durable
+re-bind (the checkpointer restores conversation state), and only a
+truly unknown/expired id is rejected.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import time
 import uuid
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator
 from contextlib import aclosing
-from dataclasses import dataclass, field
-from typing import Any
 
 from assistant.a2a.types import (
     CONTENT_TYPE_NOT_SUPPORTED,
@@ -49,111 +41,15 @@ from assistant.a2a.types import (
     TaskStatusUpdateEvent,
     TextPart,
 )
+from assistant.harnesses.sessions import (
+    DEFAULT_IDLE_TTL_SECONDS,
+    Session,
+    SessionFactory,
+    SessionRegistry,
+)
 from assistant.transports.a2a.mapper import map_harness_to_a2a
 
 logger = logging.getLogger(__name__)
-
-# Builds a fresh (harness, agent) pair per session — the same
-# persona/role/harness pipeline the web lifespan runs, packaged as an
-# injectable factory so tests can supply fakes.
-SessionFactory = Callable[[], Awaitable[tuple[Any, Any]]]
-
-DEFAULT_IDLE_TTL_SECONDS = 3600.0
-
-
-@dataclass
-class Session:
-    """One live conversation: a harness instance plus its agent."""
-
-    thread_id: str
-    harness: Any
-    agent: Any
-    created_at: float
-    last_used: float
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-
-
-class SessionRegistry:
-    """In-memory create/lookup/expire session registry keyed by thread_id.
-
-    Semantics per the harness-adapter Session Registry requirement:
-    ``create`` builds a new session (fresh harness + agent via the
-    injected factory) and keys it by the harness's own ``thread_id``;
-    ``lookup`` returns the live session or ``None`` (never silently
-    creates); ``expire`` releases in-process resources by thread_id, and
-    an idle-TTL sweep (run opportunistically on create/lookup) expires
-    sessions unused for ``idle_ttl_seconds``. Durably checkpointed state
-    is NOT deleted by expiry — but re-creating a session bound to the
-    same thread_id requires the deferred Postgres checkpointer, so v1
-    treats expired ids as unknown.
-    """
-
-    def __init__(
-        self,
-        session_factory: SessionFactory,
-        *,
-        idle_ttl_seconds: float = DEFAULT_IDLE_TTL_SECONDS,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        self._factory = session_factory
-        self._idle_ttl = idle_ttl_seconds
-        self._clock = clock
-        self._sessions: dict[str, Session] = {}
-
-    def __len__(self) -> int:
-        return len(self._sessions)
-
-    async def create(self) -> Session:
-        """Build a new session and register it under its thread_id."""
-        self.expire_idle()
-        harness, agent = await self._factory()
-        thread_id = str(harness.thread_id)
-        if not thread_id:
-            raise ValueError("session factory produced an empty thread_id")
-        if thread_id in self._sessions:
-            raise ValueError(
-                f"duplicate thread_id '{thread_id}' from session factory"
-            )
-        now = self._clock()
-        session = Session(
-            thread_id=thread_id,
-            harness=harness,
-            agent=agent,
-            created_at=now,
-            last_used=now,
-        )
-        self._sessions[thread_id] = session
-        return session
-
-    def lookup(self, thread_id: str) -> Session | None:
-        """Return the live session for ``thread_id`` or ``None``.
-
-        Unknown ids are signaled distinctly (``None``) — the registry
-        never silently creates. A successful lookup refreshes the
-        session's idle clock.
-        """
-        self.expire_idle()
-        session = self._sessions.get(thread_id)
-        if session is not None:
-            session.last_used = self._clock()
-        return session
-
-    def expire(self, thread_id: str) -> bool:
-        """Release the in-process session; True if one was registered."""
-        return self._sessions.pop(thread_id, None) is not None
-
-    def expire_idle(self) -> list[str]:
-        """Expire sessions idle longer than the TTL; returns expired ids."""
-        now = self._clock()
-        expired = [
-            tid
-            for tid, s in self._sessions.items()
-            if now - s.last_used > self._idle_ttl
-        ]
-        for tid in expired:
-            del self._sessions[tid]
-            logger.info("A2A session '%s' expired after idle TTL", tid)
-        return expired
 
 
 def _now_ts() -> str:
@@ -229,12 +125,15 @@ class A2ATaskHandler:
                 TASK_NOT_FOUND, f"unknown task '{message.task_id}'"
             )
         if message.context_id is not None:
-            session = self._registry.lookup(message.context_id)
+            # P30 durable-sessions: live session first, then durable
+            # re-bind (checkpointer restores conversation state); only a
+            # truly unknown/expired contextId is rejected.
+            session = await self._registry.resolve(message.context_id)
             if session is None:
                 raise A2AProtocolError(
                     INVALID_PARAMS,
                     f"unknown contextId '{message.context_id}' "
-                    "(sessions are in-memory; expired or never created)",
+                    "(never created, expired, or not durably resumable)",
                 )
             return session
         return await self._registry.create()

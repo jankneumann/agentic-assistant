@@ -198,6 +198,16 @@ def make_app(
             app.state.role = role
             app.state.harness_name = harness_name
             app.state.http_client = http_client
+            # P30 durable-sessions: personas with sessions: {durable:
+            # true} get a session-metadata store + re-bind factories so
+            # A2A/MCP contextIds survive in-process expiry and restarts
+            # (the DeepAgents checkpointer restores the conversation).
+            # Personas without the section keep None everywhere — pure
+            # in-memory behavior.
+            from assistant.core.durable import durable_stores_for
+
+            durable = durable_stores_for(pc)
+            session_store = durable.sessions if durable is not None else None
             if enable_a2a:
                 # P6 a2a-server: sessions are created lazily per A2A
                 # context through the same create_harness + agent
@@ -213,6 +223,17 @@ def make_app(
                     )
                     return session_harness, session_agent
 
+                async def _rebind_factory(thread_id: str):
+                    # Durable re-bind: same pipeline, explicit thread_id
+                    # so the checkpointer restores that conversation.
+                    session_harness = create_harness(
+                        pc, rc, harness_name, thread_id=thread_id
+                    )
+                    session_agent = await _agent_factory(
+                        session_harness, pc, rc, persona_reg, http_client,
+                    )
+                    return session_harness, session_agent
+
                 role_names = role_reg.available_for_persona(pc)
                 role_cfgs = [role_reg.load(n, pc) for n in role_names]
                 app.state.a2a = build_a2a_state(
@@ -220,6 +241,12 @@ def make_app(
                     role_cfgs,
                     session_factory=_session_factory,
                     base_url=a2a_base_url,
+                    session_store=session_store,
+                    rebind_factory=(
+                        _rebind_factory if session_store is not None else None
+                    ),
+                    serving_role=role,
+                    harness_name=harness_name,
                 )
             async with AsyncExitStack() as stack:
                 if enable_mcp:
@@ -240,6 +267,16 @@ def make_app(
                         )
                         return session_harness, session_agent
 
+                    async def _mcp_rebind_factory(role_cfg, thread_id: str):
+                        session_harness = create_harness(
+                            pc, role_cfg, harness_name, thread_id=thread_id
+                        )
+                        session_agent = await _agent_factory(
+                            session_harness, pc, role_cfg,
+                            persona_reg, http_client,
+                        )
+                        return session_harness, session_agent
+
                     mcp_role_names = role_reg.available_for_persona(pc)
                     mcp_role_cfgs = [
                         role_reg.load(n, pc) for n in mcp_role_names
@@ -249,6 +286,13 @@ def make_app(
                         mcp_role_cfgs,
                         session_factory=_mcp_session_factory,
                         default_role=role,
+                        session_store=session_store,
+                        rebind_factory=(
+                            _mcp_rebind_factory
+                            if session_store is not None
+                            else None
+                        ),
+                        harness_name=harness_name,
                     )
                     app.state.mcp = mcp_state
                     await stack.enter_async_context(

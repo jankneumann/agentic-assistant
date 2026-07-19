@@ -39,13 +39,13 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
-from assistant.a2a.task_handler import (
-    DEFAULT_IDLE_TTL_SECONDS,
-    SessionRegistry,
-)
 from assistant.core.persona import PersonaConfig
 from assistant.core.role import RoleConfig
 from assistant.core.toolspec import ToolSpec
+from assistant.harnesses.sessions import (
+    DEFAULT_IDLE_TTL_SECONDS,
+    SessionRegistry,
+)
 from assistant.harnesses.tool_adapters import render_mcp_tools
 
 if TYPE_CHECKING:
@@ -64,6 +64,11 @@ MCP_SERVER_NAME = "agentic-assistant"
 # persona/role/harness pipeline the web lifespan runs, parameterized by
 # role so each ask_<role> tool gets role-true sessions.
 RoleSessionFactory = Callable[[RoleConfig], Awaitable[tuple[Any, Any]]]
+
+# P30 durable-sessions: rebuilds a (harness, agent) pair for a given
+# role BOUND to an existing thread_id (durable re-bind — the LangGraph
+# checkpointer restores the conversation state for that id).
+RoleRebindFactory = Callable[[RoleConfig, str], Awaitable[tuple[Any, Any]]]
 
 _ASK_INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -111,11 +116,13 @@ def _make_ask_handler(
         message: str, context_id: str | None = None
     ) -> dict[str, Any]:
         if context_id is not None:
-            session = registry.lookup(context_id)
+            # P30 durable-sessions: live session first, then durable
+            # re-bind; only truly unknown/expired ids are rejected.
+            session = await registry.resolve(context_id)
             if session is None:
                 raise ValueError(
                     f"unknown context_id '{context_id}' "
-                    "(sessions are in-memory; expired or never created)"
+                    "(never created, expired, or not durably resumable)"
                 )
         else:
             session = await registry.create()
@@ -212,6 +219,9 @@ def build_mcp_state(
     session_factory: RoleSessionFactory,
     default_role: str,
     idle_ttl_seconds: float = DEFAULT_IDLE_TTL_SECONDS,
+    session_store: Any | None = None,
+    rebind_factory: RoleRebindFactory | None = None,
+    harness_name: str = "",
 ) -> MCPServerState:
     """Assemble registries + ask tools + SDK server for one persona.
 
@@ -219,18 +229,43 @@ def build_mcp_state(
     ``state.session_manager.run()`` for the app's lifetime and route
     HTTP requests under :data:`MCP_PATH` to
     ``state.session_manager.handle_request``.
+
+    P30 durable-sessions: ``session_store`` + ``rebind_factory`` make
+    known-but-released ``context_id`` values resumable (per-role
+    registries re-bind through the same pipeline with the recorded
+    thread_id). Omitting them keeps the pure in-memory behavior.
     """
     from mcp.server.streamable_http_manager import (
         StreamableHTTPSessionManager,
     )
 
+    durable_ttl = float(
+        getattr(getattr(persona, "sessions", None), "session_ttl_seconds", 0.0)
+        or 0.0
+    )
     registries: dict[str, SessionRegistry] = {}
     for rc in roles:
         async def _factory(rc: RoleConfig = rc) -> tuple[Any, Any]:
             return await session_factory(rc)
 
+        rebind = None
+        if rebind_factory is not None:
+            async def _rebind(
+                thread_id: str, rc: RoleConfig = rc
+            ) -> tuple[Any, Any]:
+                return await rebind_factory(rc, thread_id)
+
+            rebind = _rebind
+
         registries[rc.name] = SessionRegistry(
-            partial(_factory), idle_ttl_seconds=idle_ttl_seconds
+            partial(_factory),
+            idle_ttl_seconds=idle_ttl_seconds,
+            store=session_store,
+            rebind_factory=rebind,
+            persona=persona.name,
+            role=rc.name,
+            harness=harness_name,
+            durable_ttl_seconds=durable_ttl,
         )
 
     tool_specs = build_ask_tool_specs(
@@ -259,6 +294,7 @@ __all__ = [
     "MCP_PATH",
     "MCP_SERVER_NAME",
     "MCPServerState",
+    "RoleRebindFactory",
     "RoleSessionFactory",
     "build_ask_tool_specs",
     "build_mcp_state",

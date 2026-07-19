@@ -40,12 +40,7 @@ from pydantic import ValidationError
 from sse_starlette.sse import EventSourceResponse
 
 from assistant.a2a.agent_card import build_agent_card
-from assistant.a2a.task_handler import (
-    DEFAULT_IDLE_TTL_SECONDS,
-    A2ATaskHandler,
-    SessionFactory,
-    SessionRegistry,
-)
+from assistant.a2a.task_handler import A2ATaskHandler
 from assistant.a2a.types import (
     INVALID_PARAMS,
     INVALID_REQUEST,
@@ -61,6 +56,12 @@ from assistant.a2a.types import (
 )
 from assistant.core.persona import PersonaConfig
 from assistant.core.role import RoleConfig
+from assistant.harnesses.sessions import (
+    DEFAULT_IDLE_TTL_SECONDS,
+    RebindFactory,
+    SessionFactory,
+    SessionRegistry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -98,8 +99,18 @@ def build_a2a_state(
     base_url: str,
     idle_ttl_seconds: float = DEFAULT_IDLE_TTL_SECONDS,
     version: str | None = None,
+    session_store: Any | None = None,
+    rebind_factory: RebindFactory | None = None,
+    serving_role: str = "",
+    harness_name: str = "",
 ) -> A2AServerState:
     """Assemble card + registry + handler for one persona binding.
+
+    P30 durable-sessions: ``session_store`` + ``rebind_factory`` make
+    known-but-released ``contextId`` values resumable (the registry
+    re-binds a fresh harness with the recorded thread_id; the durable
+    checkpointer restores the conversation). Omitted → pure in-memory
+    behavior, exactly as before.
 
     P25 agent-iam inbound auth: when the persona declares ``auth.a2a``
     the expected bearer token resolves through the persona's
@@ -130,7 +141,21 @@ def build_a2a_state(
             persona.name,
         )
     registry = SessionRegistry(
-        session_factory, idle_ttl_seconds=idle_ttl_seconds
+        session_factory,
+        idle_ttl_seconds=idle_ttl_seconds,
+        store=session_store,
+        rebind_factory=rebind_factory,
+        persona=persona.name,
+        role=serving_role,
+        harness=harness_name,
+        durable_ttl_seconds=float(
+            getattr(
+                getattr(persona, "sessions", None),
+                "session_ttl_seconds",
+                0.0,
+            )
+            or 0.0
+        ),
     )
     return A2AServerState(
         card=build_agent_card(
