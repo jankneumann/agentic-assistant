@@ -17,3 +17,5 @@
 | P11 | review | Explicit -H -> persona rules -> built-ins; disabled-target rules skip with warni |
 | P22 | review | Empty allow-list = --network=none (real); non-empty = proxy-honored env vars wit |
 | P26 | review | Foreign items never become native preferences; revocation = prefix delete; no cl |
+| P12 | review | Outcomes ride trace_delegation + parent-side interaction record; DelegationConte |
+| P28 | review | Proposals are persona-dir files; routing_config review-only forever; auto-apply  |

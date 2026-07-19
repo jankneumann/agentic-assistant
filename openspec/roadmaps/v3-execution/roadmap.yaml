@@ -176,14 +176,14 @@ items:
     depends_on: []
   - item_id: P12
     title: delegation-context
-    status: in_progress
+    status: completed
     priority: 17
     effort: L
     change_id: delegation-context
     depends_on: []
   - item_id: P28
     title: continual-learning
-    status: in_progress
+    status: completed
     priority: 18
     effort: L
     change_id: continual-learning
@@ -246,7 +246,7 @@ items:
         rationale: Always-on node runs the daemon
   - item_id: P30
     title: durable-sessions
-    status: candidate
+    status: in_progress
     priority: 24
     effort: L
     change_id: durable-sessions

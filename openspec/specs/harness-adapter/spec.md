@@ -89,7 +89,8 @@ the methods `create_agent(tools: list, extensions: list) → Any`,
 `invoke(agent: Any, message: str) → str`,
 `astream_invoke(agent: Any, message: str) → AsyncIterator[HarnessEvent]`,
 and `spawn_sub_agent(role: RoleConfig, task: str, tools: list,
-extensions: list) → str`. The `tools` parameter of `create_agent` (and
+extensions: list, context: DelegationContext | None = None) → str`.
+The `tools` parameter of `create_agent` (and
 `spawn_sub_agent`) is the complete, already-aggregated tool list
 produced by `ToolPolicy.authorized_tools()` — the tool policy is the
 sole tool aggregator. Harness implementations MUST NOT re-aggregate,
@@ -101,6 +102,16 @@ touching any harness. The `astream_invoke` method is an additive
 streaming variant of `invoke`; it MUST NOT replace or alter the
 contract of the existing blocking `invoke` method, which remains
 callable by the CLI REPL.
+
+The `context` parameter of `spawn_sub_agent` (P12 delegation-context)
+is ADDITIVE: `None` — including every pre-P12 call shape — MUST
+preserve the prior behavior exactly, with the sub-agent's composed
+prompt byte-identical to pre-P12 output. When a `DelegationContext`
+is provided, the concrete harness MUST thread it to the sub-harness
+and render `context.render()` as a `## Delegation context` block
+prepended AHEAD of the D27 `## Recent context` section (when present)
+and the composed system prompt, so the sub-agent reads its delegation
+identity and constraints first.
 
 #### Scenario: SdkHarnessAdapter.create_agent consumes the aggregated tool list as-is
 
@@ -142,6 +153,22 @@ callable by the CLI REPL.
   generates a UUID at construction) or derive it from an existing
   internal field (e.g., Deep Agents reuses `self._thread_id` already
   wired by the conversation-memory requirement)
+
+#### Scenario: spawn_sub_agent renders the delegation context block
+
+- **WHEN** `spawn_sub_agent(role, task, tools, extensions,
+  context=<DelegationContext>)` is awaited on either SDK harness
+- **THEN** the sub-agent's composed system prompt MUST contain the
+  `## Delegation context` block
+- **AND** the block MUST appear before the `## Recent context`
+  section (when snippets exist) and before the composed role prompt
+
+#### Scenario: spawn_sub_agent without context preserves pre-P12 output
+
+- **WHEN** `spawn_sub_agent(role, task, tools, extensions)` is
+  awaited with no context
+- **THEN** the sub-agent's composed system prompt MUST NOT contain
+  `## Delegation context` and MUST equal the pre-P12 composition
 
 ### Requirement: Host Harness Adapter
 
