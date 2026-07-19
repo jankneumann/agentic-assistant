@@ -561,7 +561,11 @@ def select_guardrails(persona: PersonaConfig) -> GuardrailProvider:
     """
     config = getattr(persona, "guardrails", None)
     if isinstance(config, GuardrailConfig) and config:
-        return PolicyGuardrails(config, persona=getattr(persona, "name", ""))
+        return PolicyGuardrails(
+            config,
+            persona=getattr(persona, "name", ""),
+            database_url=getattr(persona, "database_url", "") or "",
+        )
     return AllowAllGuardrails()
 
 
@@ -609,11 +613,18 @@ def _check_gateway_action(
     resource: str,
     persona_name: str,
     identity: AgentIdentity | None,
+    approvals: Any | None = None,
 ) -> None:
     """Run the guardrail hook for an export/import; deny raises.
 
-    ``require_confirmation`` DENIES until the approval interrupt flow
-    exists — identical to the P13 ``model_call`` posture.
+    ``require_confirmation`` (P30 durable-sessions): with an
+    ``approvals`` store (persona ``sessions: {durable: true}``) the
+    operation SUSPENDS — a persisted ApprovalRequest is created and
+    ``PendingApprovalError`` propagates to the CLI, which prints the
+    resume instructions; after ``assistant approvals approve <id>``
+    the retried export/import consumes the approval exactly once.
+    WITHOUT a store the P13 deny fallback is preserved (approvals need
+    the persona DB).
     """
     action = ActionRequest(
         action_type=action_type,
@@ -630,10 +641,20 @@ def _check_gateway_action(
             f"{decision.reason or 'no reason given'}"
         )
     if decision.require_confirmation:
-        raise CleanRoomDenied(
-            f"{action_type} to {resource!r} requires confirmation, which "
-            f"DENIES until the approval interrupt flow exists (P13 "
-            f"semantics): {decision.reason or 'no reason given'}"
+        if approvals is None:
+            raise CleanRoomDenied(
+                f"{action_type} to {resource!r} requires confirmation, "
+                f"which DENIES without a durable approval store "
+                f"(sessions: {{durable: true}} + database url — P13 "
+                f"fallback semantics): {decision.reason or 'no reason given'}"
+            )
+        from assistant.core.capabilities.approvals import consume_or_suspend
+
+        consume_or_suspend(
+            approvals,
+            action,
+            decision,
+            risk=guardrails.declare_risk(action),
         )
 
 
@@ -752,6 +773,7 @@ async def export_shared(
     identity: AgentIdentity | None = None,
     space_dir: Path | str | None = None,
     now: datetime | None = None,
+    approvals: Any | None = None,
 ) -> ExportResult:
     """Declassify persona memory into a share bundle for ``audience``.
 
@@ -783,7 +805,12 @@ async def export_shared(
             persona=persona.name, role=getattr(persona, "default_role", "")
         )
     _check_gateway_action(
-        guardrails, "cleanroom_export", audience, persona.name, identity
+        guardrails,
+        "cleanroom_export",
+        audience,
+        persona.name,
+        identity,
+        approvals=approvals,
     )
 
     items = await _collect_items(manager, persona.name, rule)
@@ -873,6 +900,7 @@ async def import_shared(
     guardrails: GuardrailProvider,
     identity: AgentIdentity | None = None,
     space_dir: Path | str | None = None,
+    approvals: Any | None = None,
 ) -> ImportResult:
     """Ingest a verified share bundle into the consuming persona.
 
@@ -952,7 +980,12 @@ async def import_shared(
             persona=persona.name, role=getattr(persona, "default_role", "")
         )
     _check_gateway_action(
-        guardrails, "cleanroom_import", source_persona, persona.name, identity
+        guardrails,
+        "cleanroom_import",
+        source_persona,
+        persona.name,
+        identity,
+        approvals=approvals,
     )
 
     accepted_kinds = {_SINGULAR_KIND[k] for k in rule.kinds}

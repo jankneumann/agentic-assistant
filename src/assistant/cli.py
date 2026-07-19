@@ -951,10 +951,20 @@ async def _run_repl_with_registry(
         pc, rc, loaded_extensions=extensions,
     )
 
+    from assistant.core.capabilities.approvals import (
+        ApprovalDeniedError,
+        PendingApprovalError,
+    )
+
     try:
         agent = await adapter.create_agent(tools=authorized, extensions=extensions)
     except NotImplementedError as e:
         click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    except PendingApprovalError as e:
+        # P30 durable-sessions: the model-call guardrail suspended agent
+        # construction awaiting a human decision.
+        click.echo(f"Suspended: {e}", err=True)
         sys.exit(1)
 
     # Teacher-role-only state. ``active_method`` tracks the currently
@@ -1136,6 +1146,15 @@ async def _run_repl_with_registry(
         except NotImplementedError as e:
             click.echo(f"Error: {e}\n", err=True)
             break
+        except PendingApprovalError as e:
+            # P30 durable-sessions: suspended awaiting approval — keep
+            # the REPL alive; the operator decides in another shell and
+            # retries the turn.
+            click.echo(f"\nSuspended: {e}\n")
+            continue
+        except ApprovalDeniedError as e:
+            click.echo(f"\nDenied: {e}\n")
+            continue
 
         if rc.name == "teacher" and active_method is not None:
             prefix = f"{rc.display_name}:{active_method}"
@@ -1350,6 +1369,7 @@ def cleanroom_export(persona: str, audience: str) -> None:
                 manager,
                 guardrails=cr.select_guardrails(pc),
                 identity=_cleanroom_identity(pc),
+                approvals=_approval_store_or_none(pc),
             )
         )
     except cr.CleanRoomError as e:
@@ -1387,6 +1407,7 @@ def cleanroom_import(persona: str, bundle: str) -> None:
                 manager,
                 guardrails=cr.select_guardrails(pc),
                 identity=_cleanroom_identity(pc),
+                approvals=_approval_store_or_none(pc),
             )
         )
     except cr.CleanRoomError as e:
@@ -1800,6 +1821,7 @@ def learning_apply(persona: str, approved: bool, proposal_ref: str) -> None:
                 guardrails=cr.select_guardrails(pc),
                 identity=_learning_identity(pc),
                 approved=approved,
+                approvals=_approval_store_or_none(pc),
             )
         )
     except lrn.LearningError as e:
@@ -1833,6 +1855,171 @@ def learning_list(persona: str) -> None:
             f"{p.proposal_id}  [{p.kind}, {p.risk}, {p.status}] "
             f"→ {p.target}"
         )
+
+
+# ── Approvals (P30 durable-sessions) ──────────────────────────────────
+
+
+def _approval_store_or_none(pc):
+    """The persona's durable ApprovalStore, or None (deny fallback).
+
+    A durable declaration without a database url is a config error and
+    exits 1 (declared durability must never silently degrade).
+    """
+    from assistant.core.durable import durable_stores_for
+
+    try:
+        stores = durable_stores_for(pc)
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    return stores.approvals if stores is not None else None
+
+
+def _approval_store_or_fail(pc):
+    store = _approval_store_or_none(pc)
+    if store is None:
+        click.echo(
+            f"Error: persona '{pc.name}' has no durable sessions — "
+            "approvals need `sessions: {durable: true}` plus a "
+            "database: {url_env: ...} in the persona config.",
+            err=True,
+        )
+        sys.exit(1)
+    return store
+
+
+def _emit_approval_decision_audit(pc, record, decision: str) -> None:
+    """Identity-stamped span + durable audit row for one CLI decision."""
+    import logging as _logging
+
+    attributes = {
+        "approval_id": record.approval_id,
+        "action_type": record.action.action_type,
+        "resource": record.action.resource,
+        "persona": pc.name,
+        "role": pc.default_role,
+        "decision": decision,
+        "decided_by": record.decided_by,
+        "justification": record.justification,
+    }
+    try:
+        from assistant.telemetry import get_observability_provider
+
+        with get_observability_provider().start_span(
+            "approval.decision", attributes=attributes
+        ):
+            pass
+    except Exception as exc:  # pragma: no cover — defensive
+        _logging.getLogger(__name__).warning(
+            "approval decision span not emitted (%s)", type(exc).__name__
+        )
+    from assistant.core.durable import record_durable_audit
+
+    record_durable_audit(
+        pc.name,
+        "approval.decision",
+        action_type=record.action.action_type,
+        resource=record.action.resource,
+        role=pc.default_role,
+        decision=decision,
+        reason=record.justification,
+        attributes={"approval_id": record.approval_id},
+    )
+
+
+def _decide_approval(
+    persona: str, approval_id: str, *, approve: bool, justification: str
+) -> None:
+    from assistant.core.capabilities.approvals import ApprovalError
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    set_assistant_ctx(pc.name, pc.default_role)
+    store = _approval_store_or_fail(pc)
+    try:
+        record = store.decide(
+            approval_id,
+            approved=approve,
+            decided_by=f"cli:{pc.name}",
+            justification=justification,
+        )
+    except ApprovalError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    decision = "approved" if approve else "denied"
+    _emit_approval_decision_audit(pc, record, decision)
+    click.echo(
+        f"Approval {approval_id} {decision}. Retry the suspended "
+        f"operation to {'execute it' if approve else 'surface the denial'} "
+        f"(the decision is consumed exactly once)."
+    )
+
+
+@main.group(name="approvals")
+def approvals_group() -> None:
+    """Approval interrupt/resume commands (P30 durable-sessions).
+
+    A guardrail `require_confirmation` decision on a persona with
+    durable sessions SUSPENDS the operation and files a pending
+    approval. `list` shows them; `approve`/`deny` record the human
+    decision (first decision wins; audited); retrying the operation
+    consumes the decision exactly once.
+    """
+
+
+@approvals_group.command("list")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.option(
+    "--all",
+    "show_all",
+    is_flag=True,
+    help="Include decided/consumed/expired approvals (default: pending only).",
+)
+def approvals_list(persona: str, show_all: bool) -> None:
+    """List approval requests for a persona."""
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    store = _approval_store_or_fail(pc)
+    records = store.list_requests(
+        pc.name, status=None if show_all else "pending"
+    )
+    if not records:
+        click.echo("No pending approvals." if not show_all else "No approvals.")
+        return
+    for r in records:
+        click.echo(
+            f"{r.approval_id}  [{r.status}, risk={r.risk.name}] "
+            f"{r.action.action_type} on {r.action.resource!r} "
+            f"(requested {r.created_at.isoformat()})"
+        )
+        click.echo(f"    {r.message}")
+
+
+@approvals_group.command("approve")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.option(
+    "--justification", type=str, default="", help="Optional free-text note."
+)
+@click.argument("approval_id", type=str)
+def approvals_approve(persona: str, justification: str, approval_id: str) -> None:
+    """Approve a pending approval (idempotent; first decision wins)."""
+    _decide_approval(
+        persona, approval_id, approve=True, justification=justification
+    )
+
+
+@approvals_group.command("deny")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.option(
+    "--justification", type=str, default="", help="Optional free-text note."
+)
+@click.argument("approval_id", type=str)
+def approvals_deny(persona: str, justification: str, approval_id: str) -> None:
+    """Deny a pending approval (idempotent; first decision wins)."""
+    _decide_approval(
+        persona, approval_id, approve=False, justification=justification
+    )
 
 
 @main.group()

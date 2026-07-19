@@ -1255,12 +1255,17 @@ def _check_apply_action(
     proposal: ImprovementProposal,
     persona_name: str,
     identity: AgentIdentity | None,
+    approvals: Any | None = None,
 ) -> None:
     """Guardrail hook for proposal application; deny raises.
 
-    ``require_confirmation`` DENIES until the approval interrupt flow
-    exists (P13 semantics; real approvals arrive with P30
-    durable-sessions).
+    ``require_confirmation`` (P30 durable-sessions): with an
+    ``approvals`` store (persona ``sessions: {durable: true}``) the
+    apply SUSPENDS — a persisted ApprovalRequest is created and
+    ``PendingApprovalError`` propagates; after ``assistant approvals
+    approve <id>`` the retried apply consumes the approval exactly
+    once. WITHOUT a store the P13 deny fallback is preserved
+    (approvals need the persona DB).
     """
     action = ActionRequest(
         action_type="learning_apply",
@@ -1278,11 +1283,21 @@ def _check_apply_action(
             f"guardrails: {decision.reason or 'no reason given'}"
         )
     if decision.require_confirmation:
-        raise LearningDenied(
-            f"learning_apply of proposal {proposal.proposal_id} requires "
-            f"confirmation, which DENIES until the approval interrupt "
-            f"flow exists (P13 semantics; unlocked by P30 "
-            f"durable-sessions): {decision.reason or 'no reason given'}"
+        if approvals is None:
+            raise LearningDenied(
+                f"learning_apply of proposal {proposal.proposal_id} "
+                f"requires confirmation, which DENIES without a durable "
+                f"approval store (sessions: {{durable: true}} + database "
+                f"url — P13 fallback semantics): "
+                f"{decision.reason or 'no reason given'}"
+            )
+        from assistant.core.capabilities.approvals import consume_or_suspend
+
+        consume_or_suspend(
+            approvals,
+            action,
+            decision,
+            risk=guardrails.declare_risk(action),
         )
 
 
@@ -1327,6 +1342,7 @@ async def apply_proposal(
     approved: bool = False,
     gate_runner: Any | None = None,
     now: datetime | None = None,
+    approvals: Any | None = None,
 ) -> str:
     """Apply one proposal, fully gated. Returns a description of what
     was done and stamps the proposal ``applied``.
@@ -1335,8 +1351,10 @@ async def apply_proposal(
 
     1. learning enabled (dormant persona refuses);
     2. proposal not already applied;
-    3. ``learning_apply`` guardrail action (deny /
-       require_confirmation both refuse — P13 semantics);
+    3. ``learning_apply`` guardrail action (deny refuses;
+       ``require_confirmation`` suspends into the P30 approval flow
+       when an ``approvals`` store is supplied, else refuses — P13
+       fallback);
     4. the P27 eval gate MUST pass (SKIP counts as pass with a
        warning);
     5. risk tier: LOW proposals apply as-is; MEDIUM/HIGH require the
@@ -1362,7 +1380,9 @@ async def apply_proposal(
             f"(at {proposal.applied_at})."
         )
 
-    _check_apply_action(guardrails, proposal, persona.name, identity)
+    _check_apply_action(
+        guardrails, proposal, persona.name, identity, approvals=approvals
+    )
 
     gate = (gate_runner or run_eval_gate)()
     if not gate.passed:

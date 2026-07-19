@@ -29,15 +29,19 @@ Event mapping (one HarnessEvent vocabulary, second protocol mapping):
                               final=True); class-name-only redaction is
                               preserved end-to-end (D8 rule)
 
-Approval bridge (P13 semantics, guardrail-provider ApprovalRequest
-contract): when the terminal error class is an approval-denial class
-(default: ``ModelCallDeniedError`` — raised when a guardrail returns
-``require_confirmation=True`` and no interrupt/resume flow exists), the
-mapper first emits a non-final ``TaskStatusUpdateEvent(state=
-input-required)`` carrying an agent message, THEN the final ``failed``
-update. External orchestrators see the A2A-standard "this needed human
-input" state; the run still denies because suspend/resume is deferred to
-the durable-session work (capability-protocols-v2).
+Approval bridge (guardrail-provider ApprovalRequest contract):
+
+- **Durable suspension (P30)** — terminal error class in
+  ``PENDING_APPROVAL_ERROR_CLASSES`` (``PendingApprovalError``: the
+  guardrail persisted an ApprovalRequest): the mapper emits ONE final
+  ``TaskStatusUpdateEvent(state=input-required, final=True)`` and NO
+  ``failed`` update — the task genuinely awaits human input; a
+  follow-up message on the same contextId resumes after the decision.
+- **Deny fallback (P13)** — terminal error class in
+  ``APPROVAL_DENIED_ERROR_CLASSES`` (``ModelCallDeniedError``: no
+  durable approval store): the mapper first emits a non-final
+  ``input-required`` update carrying an agent message, THEN the final
+  ``failed`` update — observational bridge, the run still denies.
 
 Two-phase D8 error contract
 ----------------------------
@@ -72,19 +76,38 @@ from assistant.harnesses.sdk.events import (
 )
 
 # Exception class names (leaf, unqualified) whose terminal RunFinished
-# signals "a guardrail wanted human confirmation". P13 semantics:
-# require_confirmation on model_call DENIES until the approval
-# interrupt/resume flow exists, and ModelCallDeniedError is the class
+# signals "a guardrail wanted human confirmation" WITHOUT a durable
+# approval store (P13 deny fallback): ModelCallDeniedError is the class
 # both SDK harness bindings raise for that denial
-# (core/capabilities/model_bindings.py).
+# (core/capabilities/model_bindings.py). These still fail terminally —
+# input-required is emitted observationally first.
 APPROVAL_DENIED_ERROR_CLASSES: Final[frozenset[str]] = frozenset(
     {"ModelCallDeniedError"}
 )
 
+# P30 durable-sessions: class names signaling a REAL suspension — the
+# guardrail persisted an ApprovalRequest and the run awaits a human
+# decision. These map to a FINAL input-required status update (the A2A
+# non-terminal task state: the turn ends, the task awaits input) with
+# NO failed update — resuming is a retry against the same contextId
+# after `assistant approvals approve <id>`.
+PENDING_APPROVAL_ERROR_CLASSES: Final[frozenset[str]] = frozenset(
+    {"PendingApprovalError"}
+)
+
 _INPUT_REQUIRED_NOTE = (
     "A guardrail requires human confirmation for this action ({cls}). "
-    "Approval interrupt/resume is not implemented yet; the task will "
-    "now fail (deny-by-default per security-hardening P13)."
+    "Approval interrupt/resume is not available for this persona "
+    "(no durable sessions); the task will now fail (deny-by-default "
+    "per security-hardening P13)."
+)
+
+_PENDING_APPROVAL_NOTE = (
+    "A guardrail suspended this run awaiting human approval ({cls}). "
+    "List pending approvals with `assistant approvals list -p "
+    "<persona>`, decide with `assistant approvals approve|deny <id> "
+    "-p <persona>`, then send a follow-up message on the same "
+    "contextId to resume."
 )
 
 
@@ -98,6 +121,7 @@ async def map_harness_to_a2a(
     task_id: str,
     context_id: str,
     approval_denied_classes: frozenset[str] = APPROVAL_DENIED_ERROR_CLASSES,
+    pending_approval_classes: frozenset[str] = PENDING_APPROVAL_ERROR_CLASSES,
 ) -> AsyncIterator[TaskStatusUpdateEvent | TaskArtifactUpdateEvent]:
     """Map a ``HarnessEvent`` async iterator to A2A task events.
 
@@ -165,6 +189,36 @@ async def map_harness_to_a2a(
                     )
                 else:
                     leaf = event.error.rsplit(".", 1)[-1]
+                    if leaf in pending_approval_classes:
+                        # P30 REAL suspension: the run is checkpointed
+                        # and an ApprovalRequest is persisted. Terminal
+                        # stream event is input-required (final=True on
+                        # the STREAM), the task does NOT fail — a
+                        # follow-up message on the same contextId
+                        # resumes after the human decision.
+                        yield TaskStatusUpdateEvent(
+                            task_id=task_id,
+                            context_id=context_id,
+                            status=TaskStatus(
+                                state=TaskState.INPUT_REQUIRED,
+                                message=Message(
+                                    role="agent",
+                                    parts=[
+                                        TextPart(
+                                            text=_PENDING_APPROVAL_NOTE.format(
+                                                cls=leaf
+                                            )
+                                        )
+                                    ],
+                                    message_id=f"{task_id}-input-required",
+                                    task_id=task_id,
+                                    context_id=context_id,
+                                ),
+                                timestamp=_now(),
+                            ),
+                            final=True,
+                        )
+                        continue
                     if leaf in approval_denied_classes:
                         # ApprovalRequest bridge: surface the A2A
                         # input-required state before the deny-fail.
