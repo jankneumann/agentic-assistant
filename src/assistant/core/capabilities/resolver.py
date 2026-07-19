@@ -131,7 +131,11 @@ class CapabilityResolver:
         config = getattr(persona, "guardrails", None)
         if isinstance(config, GuardrailConfig) and config:
             return PolicyGuardrails(
-                config, persona=getattr(persona, "name", "")
+                config,
+                persona=getattr(persona, "name", ""),
+                # P30 durable-sessions: persist: db resolves the spend
+                # ledger against the persona DB.
+                database_url=getattr(persona, "database_url", "") or "",
             )
         return AllowAllGuardrails()
 

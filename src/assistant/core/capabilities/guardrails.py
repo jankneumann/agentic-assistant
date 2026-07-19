@@ -74,7 +74,7 @@ from assistant.core.capabilities.types import ActionDecision, ActionRequest, Ris
 logger = logging.getLogger(__name__)
 
 _VALID_EFFECTS = ("allow", "deny", "require_confirmation")
-_VALID_PERSIST = ("memory", "file")
+_VALID_PERSIST = ("memory", "file", "db")
 
 
 @runtime_checkable
@@ -183,6 +183,11 @@ class GuardrailConfig:
     #: Set when ``budgets.model_call.persist: file`` — resolved at
     #: persona load to ``<persona_dir>/.cache/guardrails/spend.json``.
     spend_file: Path | None = None
+    #: The raw ``budgets.model_call.persist`` selection. ``"db"`` (P30
+    #: durable-sessions) selects :class:`PostgresBudgetLedger` on the
+    #: persona DB via :func:`budget_ledger_for` — the caller must
+    #: supply the persona's ``database_url``.
+    spend_persist: str = "memory"
 
     def __bool__(self) -> bool:
         return bool(
@@ -294,6 +299,7 @@ def parse_guardrail_config(
 
     budget: ModelCallBudget | None = None
     spend_file: Path | None = None
+    spend_persist = "memory"
     raw_budgets = raw.get("budgets") or {}
     if not isinstance(raw_budgets, dict):
         raise GuardrailConfigError(
@@ -357,6 +363,7 @@ def parse_guardrail_config(
                 f"guardrails: budgets.model_call.persist {persist!r} is "
                 f"not one of {list(_VALID_PERSIST)}."
             )
+        spend_persist = persist
         if persist == "file":
             if persona_dir is None:
                 raise GuardrailConfigError(
@@ -410,6 +417,7 @@ def parse_guardrail_config(
         model_call_budget=budget,
         delegation=delegation,
         spend_file=spend_file,
+        spend_persist=spend_persist,
     )
 
 
@@ -512,7 +520,42 @@ _LEDGERS: dict[str, BudgetLedger] = {}
 _LEDGERS_LOCK = threading.Lock()
 
 
-def budget_ledger_for(persona: str, config: GuardrailConfig) -> BudgetLedger:
+def budget_ledger_for(
+    persona: str, config: GuardrailConfig, *, database_url: str = ""
+) -> BudgetLedger:
+    """Resolve the persona's process-wide spend ledger.
+
+    ``persist: memory`` (default) → :class:`InMemoryBudgetLedger`;
+    ``persist: file`` → :class:`JsonFileBudgetLedger` under the
+    persona ``.cache/`` tree; ``persist: db`` (P30 durable-sessions)
+    → ``PostgresBudgetLedger`` on the persona DB — the caller passes
+    the resolved ``database_url`` (the config section cannot carry it;
+    the url resolves through the credential seam at persona load). A
+    ``db`` selection without a url raises an actionable error rather
+    than silently degrading to a process-local ledger.
+    """
+    if config.spend_persist == "db":
+        if not database_url:
+            raise GuardrailConfigError(
+                f"guardrails: budgets.model_call.persist: db for persona "
+                f"{persona!r} requires a resolvable database url "
+                f"(database: {{url_env: ...}}); none resolved."
+            )
+        key = f"{persona}:db:{database_url}"
+        with _LEDGERS_LOCK:
+            ledger = _LEDGERS.get(key)
+            if ledger is None:
+                # Lazy import: keep guardrails import-light; the durable
+                # module owns the SQLAlchemy schema (G4 posture — import
+                # at the source module for patching).
+                from assistant.core.db import create_sync_engine
+                from assistant.core.durable import PostgresBudgetLedger
+
+                ledger = PostgresBudgetLedger(
+                    create_sync_engine(database_url), persona=persona
+                )
+                _LEDGERS[key] = ledger
+            return ledger
     key = f"{persona}:{config.spend_file or '<memory>'}"
     with _LEDGERS_LOCK:
         ledger = _LEDGERS.get(key)
@@ -566,10 +609,16 @@ class PolicyGuardrails:
         persona: str = "",
         ledger: BudgetLedger | None = None,
         now: Callable[[], datetime] | None = None,
+        database_url: str = "",
     ) -> None:
         self._config = config
         self._persona = persona
-        self._ledger = ledger or budget_ledger_for(persona, config)
+        # ``database_url`` matters only for ``persist: db`` (P30) — the
+        # resolver and CLI guardrail-selection paths pass the persona's
+        # resolved url so the DB ledger can be constructed.
+        self._ledger = ledger or budget_ledger_for(
+            persona, config, database_url=database_url
+        )
         self._now = now or (lambda: datetime.now(UTC))
 
     # -- protocol surface ------------------------------------------------

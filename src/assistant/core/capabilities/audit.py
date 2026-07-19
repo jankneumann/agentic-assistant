@@ -23,6 +23,13 @@ their exact behavior; the identity-attaching sites (delegation spawner,
 model-call hook, harness spawn paths) opt in by construction. Emission
 is defensive: a failing provider logs a WARNING and never breaks the
 action flow (same posture as memory capture).
+
+P30 durable-sessions adds the deferred durable sink: when the acting
+persona has durable sessions configured (an audit sink registered via
+``assistant.core.durable``), the same record is ALSO appended to the
+``audit_log`` table on the persona DB. Telemetry spans continue
+regardless; the durable append is best-effort and never changes
+enforcement outcomes.
 """
 
 from __future__ import annotations
@@ -84,6 +91,32 @@ def emit_guardrail_audit(
         logger.warning(
             "guardrail audit record not emitted (%s); decision "
             "enforcement is unaffected",
+            type(exc).__name__,
+        )
+    # P30 durable-sessions: append the same decision record to the
+    # persona's durable audit log when one is registered (no-op
+    # otherwise). record_durable_audit is itself best-effort.
+    try:
+        from assistant.core.durable import record_durable_audit
+
+        record_durable_audit(
+            identity.persona,
+            GUARDRAIL_AUDIT_SPAN,
+            action_type=action.action_type,
+            resource=action.resource,
+            role=identity.role,
+            decision=decision_outcome(decision),
+            reason=decision.reason,
+            attributes={
+                "delegation_chain": list(identity.delegation_chain),
+                "chain_depth": identity.chain_depth,
+                "session_id": identity.session_id,
+            },
+        )
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "durable audit append failed (%s); decision enforcement is "
+            "unaffected",
             type(exc).__name__,
         )
 
