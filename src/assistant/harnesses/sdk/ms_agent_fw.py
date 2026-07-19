@@ -32,6 +32,10 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from assistant.core.capabilities.approvals import (
+    ApprovalDeniedError,
+    PendingApprovalError,
+)
 from assistant.core.capabilities.model_bindings import (
     ModelCallDeniedError,
     bind_msaf_chat_client,
@@ -107,6 +111,8 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         model_provider: ModelProvider | None = None,
         credential_provider: CredentialProvider | None = None,
         delegation_context: DelegationContext | None = None,
+        approval_store: Any | None = None,
+        thread_id: str | None = None,
     ) -> None:
         super().__init__(persona, role)
         # P12 delegation-context: set only on sub-harnesses built by
@@ -120,6 +126,12 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         self._memory_snippet_limit = memory_snippet_limit
         self._model_provider = model_provider
         self._credential_provider = credential_provider
+        # P30 durable-sessions: injectable ApprovalStore for the
+        # model-call guardrail hook (None = P13 deny fallback). MSAF has
+        # no checkpointer seam yet — durable conversation persistence
+        # for this harness is deferred (no agent-framework injection
+        # point; same posture as the P21 mid-turn retrieval deferral).
+        self._approval_store = approval_store
         self._active_model: str = self._DEFAULT_MODEL
         # Resolved ModelRef backing ``_active_model`` — read by
         # ``@traced_harness`` for cost attribution (P19).
@@ -127,7 +139,9 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         # Stable conversation-thread identifier for transport binding (D4).
         # UUID4 synthesized once at construction; persists for the lifetime of
         # this adapter instance across invoke / astream_invoke calls.
-        self._thread_id: str = str(uuid.uuid4())
+        # P30: an explicit ``thread_id`` keeps the session-registry
+        # re-bind seam uniform across SDK harnesses.
+        self._thread_id: str = thread_id or str(uuid.uuid4())
 
     def name(self) -> str:
         return "ms_agent_framework"
@@ -169,6 +183,19 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
 
         resolver = CapabilityResolver()
         return resolver.resolve(self.persona, "sdk", self.role).guardrails
+
+    def _resolve_approval_store(self) -> Any | None:
+        """Injected ApprovalStore, else the persona's durable store.
+
+        Mirrors ``DeepAgentsHarness._resolve_approval_store`` — ``None``
+        (no durable sessions) preserves P13 deny semantics.
+        """
+        if self._approval_store is not None:
+            return self._approval_store
+        from assistant.core.durable import durable_stores_for
+
+        stores = durable_stores_for(self.persona)
+        return stores.approvals if stores is not None else None
 
     def _resolve_context_provider(self) -> ContextProvider:
         """Return the persona+role's ContextProvider, or the default.
@@ -269,6 +296,7 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         credentials = self._resolve_credential_provider()
         guardrails = self._resolve_guardrail_provider()
 
+        approvals = self._resolve_approval_store()
         last_exc: Exception | None = None
         for ref in refs:
             try:
@@ -278,8 +306,16 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
                     guardrails=guardrails,
                     persona=self.persona.name,
                     role=self.role.name,
+                    approvals=approvals,
+                    thread_id=self._thread_id,
                 )
-            except ModelCallDeniedError:
+            except (
+                ModelCallDeniedError,
+                PendingApprovalError,
+                ApprovalDeniedError,
+            ):
+                # Policy stops (P30 approval suspension included) — never
+                # walk the fallback chain past them.
                 raise
             except Exception as exc:
                 last_exc = exc
@@ -624,6 +660,7 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
             model_provider=self._model_provider,
             credential_provider=self._credential_provider,
             delegation_context=context,
+            approval_store=self._approval_store,
         )
         agent = await sub.create_agent(tools, extensions)
         return await sub.invoke(agent, task)

@@ -11,8 +11,11 @@ from uuid import uuid4
 
 from deepagents import create_deep_agent
 from langchain.chat_models import init_chat_model
-from langgraph.checkpoint.memory import InMemorySaver
 
+from assistant.core.capabilities.approvals import (
+    ApprovalDeniedError,
+    PendingApprovalError,
+)
 from assistant.core.capabilities.model_bindings import (
     ModelCallDeniedError,
     bind_langchain,
@@ -27,6 +30,7 @@ from assistant.core.composition import compose_system_prompt
 from assistant.core.persona import PersonaConfig
 from assistant.core.role import RoleConfig
 from assistant.harnesses.base import SdkHarnessAdapter
+from assistant.harnesses.sdk.checkpointer import resolve_checkpointer
 from assistant.harnesses.sdk.events import (
     HarnessEvent,
     RunFinished,
@@ -75,6 +79,9 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         credential_provider: CredentialProvider | None = None,
         guardrail_provider: GuardrailProvider | None = None,
         delegation_context: DelegationContext | None = None,
+        checkpointer: Any | None = None,
+        approval_store: Any | None = None,
+        thread_id: str | None = None,
     ) -> None:
         super().__init__(persona, role)
         self._memory_policy = memory_policy
@@ -85,6 +92,14 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         # P12 delegation-context: set only on sub-harnesses built by
         # spawn_sub_agent; rendered ahead of the composed system prompt.
         self._delegation_context = delegation_context
+        # P30 durable-sessions: injectable LangGraph checkpointer.
+        # ``None`` resolves from persona config in ``create_agent``
+        # (InMemorySaver unless ``sessions: {durable: true}``).
+        self._checkpointer = checkpointer
+        # P30 durable-sessions: injectable ApprovalStore consulted by
+        # the model-call guardrail hook. ``None`` resolves from persona
+        # config (no store unless durable sessions are configured).
+        self._approval_store = approval_store
         self._active_model: str = self._DEFAULT_MODEL
         # Resolved ModelRef backing ``_active_model`` — read by
         # ``@traced_harness`` for cost attribution (P19: pricing
@@ -95,7 +110,10 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         # "thread_id must persist for the lifetime of the adapter instance
         # across multiple invoke / astream_invoke calls"). ``create_agent``
         # MUST NOT reassign this — IMPL_REVIEW round-1 gemini #5.
-        self._thread_id: str = str(uuid4())
+        # P30 durable-sessions: an EXPLICIT ``thread_id`` re-binds this
+        # harness to an existing durable conversation — the injected /
+        # resolved checkpointer restores the prior turns for that id.
+        self._thread_id: str = thread_id or str(uuid4())
 
     def name(self) -> str:
         return "deep_agents"
@@ -159,6 +177,19 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         resolver = CapabilityResolver()
         return resolver.resolve(self.persona, "sdk", self.role).guardrails
 
+    def _resolve_approval_store(self) -> Any | None:
+        """Injected ApprovalStore, else the persona's durable store.
+
+        ``None`` (no durable sessions) preserves the P13
+        deny-until-interrupt behavior in ``check_model_call``.
+        """
+        if self._approval_store is not None:
+            return self._approval_store
+        from assistant.core.durable import durable_stores_for
+
+        stores = durable_stores_for(self.persona)
+        return stores.approvals if stores is not None else None
+
     def _build_model(self) -> Any:
         """Resolve + bind the chat model through the ModelProvider seam.
 
@@ -174,6 +205,7 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         credentials = self._resolve_credential_provider()
         guardrails = self._resolve_guardrail_provider()
 
+        approvals = self._resolve_approval_store()
         last_exc: Exception | None = None
         for ref in refs:
             try:
@@ -184,8 +216,17 @@ class DeepAgentsHarness(SdkHarnessAdapter):
                     persona=self.persona.name,
                     role=self.role.name,
                     init_fn=init_chat_model,
+                    approvals=approvals,
+                    thread_id=self._thread_id,
                 )
-            except ModelCallDeniedError:
+            except (
+                ModelCallDeniedError,
+                PendingApprovalError,
+                ApprovalDeniedError,
+            ):
+                # Policy stops (deny, suspended-awaiting-approval, or a
+                # human deny), not provider failures — never walk the
+                # fallback chain past them.
                 raise
             except Exception as exc:
                 last_exc = exc
@@ -265,13 +306,23 @@ class DeepAgentsHarness(SdkHarnessAdapter):
 
         system_prompt = await self._compose_system_prompt()
 
+        # P30 durable-sessions: an injected checkpointer wins; otherwise
+        # resolve from persona config — InMemorySaver unless the persona
+        # declares ``sessions: {durable: true}``, in which case the
+        # process-cached AsyncPostgresSaver makes every thread_id
+        # resumable across restarts.
+        if self._checkpointer is not None:
+            checkpointer = self._checkpointer
+        else:
+            checkpointer = await resolve_checkpointer(self.persona)
+
         return create_deep_agent(
             model=model,
             tools=rendered_tools,
             system_prompt=system_prompt,
             memory=cfg.get("memory_files") or ["./AGENTS.md"],
             skills=skills_dirs,
-            checkpointer=InMemorySaver(),
+            checkpointer=checkpointer,
         )
 
     @traced_harness
@@ -502,6 +553,11 @@ class DeepAgentsHarness(SdkHarnessAdapter):
             credential_provider=self._credential_provider,
             guardrail_provider=self._guardrail_provider,
             delegation_context=context,
+            # P30: propagate the parent's injected persistence seams so
+            # sub-harnesses share them (config-resolved defaults are
+            # re-resolved per sub-harness when nothing was injected).
+            checkpointer=self._checkpointer,
+            approval_store=self._approval_store,
         )
         agent = await sub.create_agent(tools, extensions)
         return await sub.invoke(agent, task)
