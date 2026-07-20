@@ -62,9 +62,11 @@ class LoopState:
         2 — adds last_handoff_id (phase-record-compaction)
         3 — adds phase_archetype (per OpenSpec
             add-per-phase-archetype-resolution; design decision D7)
+        4 — adds force, gate_signals, gate_verdict (GATEKEEPER judge gate —
+            replaces deterministic complexity blocking)
     """
 
-    schema_version: int = 3
+    schema_version: int = 4
     change_id: str = ""
     current_phase: str = "INIT"
     iteration: int = 0
@@ -78,6 +80,11 @@ class LoopState:
     implementation_strategy: dict[str, str] = field(default_factory=dict)
     memory_ids: list[str] = field(default_factory=list)
     handoff_ids: list[str] = field(default_factory=list)
+    # Append-only log of {phase, outcome, at[, note]} entries. Written by
+    # runner.py apply-outcome (cross-process path) and the apply-outcome-failure
+    # escalation wrapper. Declared here so autopilot's dataclass round-trip
+    # (asdict/load_state) preserves it rather than dropping it on save.
+    phase_history: list[dict[str, Any]] = field(default_factory=list)
     last_handoff_id: str | None = None
     started_at: str = ""
     phase_started_at: str = ""
@@ -93,6 +100,16 @@ class LoopState:
     # path per D8). Persisted in loop-state.json and emitted in
     # POST /status/report payloads alongside `phase`.
     phase_archetype: str | None = None
+    # NEW (v4): GATEKEEPER judge gate.
+    # `force` mirrors the --force flag so resume is faithful; when True the
+    # GATEKEEPER judge is skipped (operator override of the risk judgment).
+    # `gate_signals` is the risk + verifiability profile gathered at INIT and
+    # handed to the judge sub-agent. `gate_verdict` records the judge's
+    # decision (proceed / proceed_with_review / escalate) for observability
+    # and resume.
+    force: bool = False
+    gate_signals: dict[str, Any] = field(default_factory=dict)
+    gate_verdict: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -117,11 +134,11 @@ def load_state(path: str | Path) -> LoopState:
     state = LoopState(
         **{k: v for k, v in data.items() if k in LoopState.__dataclass_fields__}
     )
-    # v2 → v3 forward migration: bump schema_version on load so callers see
-    # the current shape immediately. phase_archetype defaults to None via the
-    # dataclass default. The new schema_version is persisted on next save.
-    if state.schema_version < 3:
-        state.schema_version = 3
+    # Forward migration: bump schema_version on load so callers see the current
+    # shape immediately. New fields (phase_archetype, force, gate_signals,
+    # gate_verdict) default via the dataclass; the bump persists on next save.
+    if state.schema_version < 4:
+        state.schema_version = 4
     return state
 
 
@@ -130,7 +147,12 @@ def load_state(path: str | Path) -> LoopState:
 # ---------------------------------------------------------------------------
 
 TRANSITIONS: dict[str, dict[str, str]] = {
-    "INIT": {"next": "PLAN"},
+    "INIT": {"next": "GATEKEEPER_OR_PLAN"},
+    "GATEKEEPER": {
+        "proceed": "PLAN",
+        "proceed_with_review": "PLAN",
+        "escalate": "ESCALATE",
+    },
     "PLAN": {"exists": "PLAN_ITERATE", "created": "PLAN_ITERATE", "failed": "ESCALATE"},
     "PLAN_ITERATE": {"complete": "PLAN_REVIEW_OR_IMPLEMENT", "failed": "ESCALATE"},
     "PLAN_REVIEW": {"converged": "IMPLEMENT", "not_converged": "PLAN_FIX", "max_iter": "ESCALATE"},
@@ -161,6 +183,10 @@ def transition(state: LoopState, outcome: str) -> str:
         raise ValueError(f"Invalid outcome {outcome!r} for phase {phase!r}")
 
     # Dynamic resolution
+    if target == "GATEKEEPER_OR_PLAN":
+        # --force is an explicit operator override of the risk judgment, so it
+        # skips the GATEKEEPER judge entirely and proceeds straight to PLAN.
+        return "PLAN" if state.force else "GATEKEEPER"
     if target == "PLAN_REVIEW_OR_IMPLEMENT":
         return "PLAN_REVIEW" if state.cli_review_enabled else "IMPLEMENT"
     if target == "IMPL_REVIEW_OR_VALIDATE":
@@ -207,6 +233,139 @@ def check_escalation_resolved(
     if gate_check_fn is not None:
         return gate_check_fn(state)
     return False
+
+
+# ---------------------------------------------------------------------------
+# apply-outcome failure handling (design D9 / Task 5.5)
+# ---------------------------------------------------------------------------
+
+# Result of a runner.py apply-outcome invocation. Value is the process exit
+# code (0 == success). The orchestrator treats any non-zero code as a failure
+# that must escalate rather than silently continue.
+ApplyOutcomeRunner = Callable[..., int]
+
+
+def _default_apply_outcome_runner(
+    *,
+    change_id: str,
+    phase: str,
+    outcome: str,
+    handoff_id: str,
+    allow_phase_mismatch: bool,
+) -> int:
+    """Shell out to ``runner.py apply-outcome`` and return its exit code."""
+    import subprocess  # local import — keeps module import cheap
+
+    cmd = [
+        sys.executable,
+        str(_SCRIPTS_DIR / "runner.py"),
+        "apply-outcome",
+        "--change-id", change_id,
+        "--phase", phase,
+        "--outcome", outcome,
+        "--handoff-id", handoff_id,
+    ]
+    if allow_phase_mismatch:
+        cmd.append("--allow-phase-mismatch")
+    completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if completed.returncode != 0:
+        logger.warning(
+            "apply-outcome exited %d for phase=%s change=%s: %s",
+            completed.returncode, phase, change_id, completed.stderr.strip(),
+        )
+    return completed.returncode
+
+
+def apply_outcome_or_escalate(
+    *,
+    change_id: str,
+    phase: str,
+    outcome: str,
+    handoff_id: str,
+    state_path: str | Path,
+    allow_phase_mismatch: bool = False,
+    apply_runner: ApplyOutcomeRunner | None = None,
+    status_fn: Callable[[LoopState, str, str, bool], None] | None = None,
+) -> int:
+    """Run apply-outcome and escalate on failure (design D9).
+
+    Invokes ``runner.py apply-outcome`` (via *apply_runner*, injectable for
+    tests). On a zero exit, returns 0 and leaves the state as apply-outcome
+    wrote it. On a non-zero exit the orchestrator MUST NOT continue silently;
+    instead it:
+
+      1. Retains the un-applied handoff file (this function never deletes it).
+      2. Appends a ``phase_history`` entry recording the apply-outcome failure.
+      3. Transitions ``current_phase`` to ``ESCALATE`` with ``previous_phase``
+         set to the failing *phase*.
+
+    Best-effort (D9.1): if the ESCALATE write ALSO fails (corrupt/read-only
+    loop-state), the failure is logged at CRITICAL with the handoff path and
+    the underlying cause, and the function returns the non-zero exit code. The
+    retained handoff file remains the durable record for operator resume.
+
+    Returns the apply-outcome exit code (0 on success, non-zero on failure).
+    """
+    runner = apply_runner or _default_apply_outcome_runner
+    rc = runner(
+        change_id=change_id,
+        phase=phase,
+        outcome=outcome,
+        handoff_id=handoff_id,
+        allow_phase_mismatch=allow_phase_mismatch,
+    )
+    if rc == 0:
+        return 0
+
+    # Non-zero exit — escalate. Operate on the raw JSON dict so unknown keys
+    # (phase_history, checkpoints, etc.) survive the round-trip.
+    path = Path(state_path)
+    try:
+        raw = json.loads(path.read_text())
+        if not isinstance(raw, dict):
+            raise ValueError(f"unexpected loop-state shape in {path}")
+
+        history = raw.get("phase_history")
+        if not isinstance(history, list):
+            history = []
+        history.append({
+            "phase": phase,
+            "outcome": "apply_outcome_failed",
+            "at": _now_iso(),
+            "note": (
+                f"runner.py apply-outcome exited {rc}; handoff {handoff_id} "
+                f"retained un-applied. Resolve the underlying cause and resume."
+            ),
+        })
+        raw["phase_history"] = history
+        raw["previous_phase"] = phase
+        raw["current_phase"] = "ESCALATE"
+        raw["escalation_reason"] = (
+            f"apply-outcome failed (exit {rc}) for phase {phase}; handoff "
+            f"{handoff_id} retained un-applied"
+        )
+        raw["phase_started_at"] = _now_iso()
+        path.write_text(json.dumps(raw, indent=2) + "\n")
+
+        if status_fn is not None:
+            # Reload a dataclass view for the status callback signature.
+            try:
+                _safe_status_call(
+                    status_fn, load_state(path), "status.escalated",
+                    f"apply-outcome failed for {phase}; escalated", urgent=True,
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("status_fn call after escalate failed", exc_info=True)
+    except Exception as exc:  # noqa: BLE001
+        # D9.1 double-failure: cannot even write the ESCALATE transition.
+        logger.critical(
+            "apply-outcome failed (exit %d) AND the ESCALATE write also failed "
+            "(%s). Handoff %s is retained at its path under "
+            "openspec/changes/%s/handoffs/; loop-state may be inconsistent. "
+            "Operator must resolve manually before resume.",
+            rc, exc, handoff_id, change_id,
+        )
+    return rc
 
 
 # ---------------------------------------------------------------------------
@@ -368,9 +527,11 @@ def run_loop(
     gate_check_fn: Callable[[LoopState], bool] | None = None,
     converge_fn: Callable[..., Any] | None = None,
     assess_complexity_fn: Callable[..., Any] | None = None,
+    gatekeeper_fn: Callable[[LoopState], str] | None = None,
     post_fix_validator_fn: Callable[[Path], list[str]] | None = None,
     status_fn: Callable[[LoopState, str, str, bool], None] | None = None,
     cli_review_enabled: bool = True,
+    force: bool = False,
     max_global_iterations: int = 50,
 ) -> LoopState:
     """Drive the autopilot loop from the current phase to DONE or ESCALATE.
@@ -449,6 +610,11 @@ def run_loop(
         )
         logger.info("Created new loop state for %s", change_id)
 
+    # The --force flag (operator override of the GATEKEEPER risk judgment) is
+    # re-applied from the caller on every run, mirroring cli_review_enabled so a
+    # resume honors the flag the operator passed this time.
+    state.force = force
+
     # ---- Main loop ----
     while state.current_phase != "DONE" and state.total_iterations < max_global_iterations:
         phase = state.current_phase
@@ -470,6 +636,7 @@ def run_loop(
                 gate_check_fn=gate_check_fn,
                 converge_fn=_converge,
                 assess_complexity_fn=_assess,
+                gatekeeper_fn=gatekeeper_fn,
                 post_fix_validator_fn=post_fix_validator_fn,
             )
         except Exception as exc:
@@ -539,12 +706,16 @@ def _run_phase(
     converge_fn: Callable[..., Any] | None,
     assess_complexity_fn: Callable[..., Any] | None,
     post_fix_validator_fn: Callable[[Path], list[str]] | None,
+    gatekeeper_fn: Callable[[LoopState], str] | None = None,
 ) -> str | None:
     """Run a single phase and return the outcome string, or None to pause."""
     phase = state.current_phase
 
     if phase == "INIT":
         return _phase_init(state, change_dir, assess_complexity_fn)
+
+    if phase == "GATEKEEPER":
+        return _phase_gatekeeper(state, gatekeeper_fn)
 
     if phase == "PLAN":
         return _phase_plan(state, change_dir, plan_fn)
@@ -611,10 +782,16 @@ def _phase_init(
     change_dir: Path,
     assess_complexity_fn: Callable[..., Any] | None,
 ) -> str:
-    """Run complexity assessment and configure the loop accordingly."""
+    """Gather the risk + verifiability signal profile and apply the scope floor.
+
+    INIT no longer blocks on size. It records the ``gate_signals`` profile (for
+    the GATEKEEPER judge) and enforces only the deterministic scope-safety floor
+    — a broad write scope flips ``force_required`` and escalates unless --force
+    was given. Everything else is handed to the judge.
+    """
     state.phase_started_at = _now_iso()
     # D7: state-only phases must still record phase_archetype so observability
-    # surfaces are uniform across the 13 non-terminal phases.
+    # surfaces are uniform across the non-terminal phases.
     _resolve_phase_archetype_for_state_only(state, "INIT")
 
     if assess_complexity_fn is not None:
@@ -623,26 +800,91 @@ def _phase_init(
         result = assess_complexity_fn(
             work_packages_path=wp_path,
             proposal_path=proposal_path if proposal_path.exists() else None,
+            force=state.force,
         )
-        # Support both GateResult dataclass and dict
-        force_required = getattr(result, "force_required", None)
-        if force_required is None and isinstance(result, dict):
-            force_required = result.get("force_required", False)
-        val_review = getattr(result, "val_review_enabled", None)
-        if val_review is None and isinstance(result, dict):
-            val_review = result.get("val_review_enabled", False)
 
-        if force_required:
-            warnings = getattr(result, "warnings", [])
-            if isinstance(result, dict):
-                warnings = result.get("warnings", [])
+        def _field(name: str, default: Any) -> Any:
+            """Support both GateResult dataclass and dict results."""
+            value = getattr(result, name, None)
+            if value is None and isinstance(result, dict):
+                value = result.get(name, default)
+            return default if value is None else value
+
+        # Persist the signal profile so the GATEKEEPER judge (and resume) sees it.
+        state.gate_signals = dict(_field("signals", {}))
+
+        # Scope-safety floor — the only deterministic block remaining. --force is
+        # an explicit operator override of this floor, so honor state.force here
+        # (the documented bypass) rather than escalating unconditionally.
+        force_required = _field("force_required", False)
+        if force_required and not state.force:
+            warnings = _field("warnings", [])
             enter_escalate(
                 state,
-                f"Complexity gate: force_required — {'; '.join(warnings)}",
+                f"Scope-safety gate: force_required — {'; '.join(warnings)}",
             )
             return "next"  # will be overridden by escalate
-        state.val_review_enabled = bool(val_review)
+        # Risk-signal-driven validation review (e.g. db migration, security).
+        if _field("val_review_enabled", False):
+            state.val_review_enabled = True
     return "next"
+
+
+# Permissive headless fallback: when no judge model is reachable, proceed —
+# enabling validation review only when a risk signal is present.
+_RISK_SIGNAL_KEYS: tuple[str, ...] = (
+    "has_db_migration",
+    "has_security_signal",
+    "has_broad_write_scope",
+)
+
+_GATEKEEPER_OUTCOMES: frozenset[str] = frozenset(
+    {"proceed", "proceed_with_review", "escalate"}
+)
+
+
+def _default_gate_verdict(signals: dict[str, Any]) -> str:
+    """Permissive verdict from signals alone — never escalates."""
+    if any(bool(signals.get(k)) for k in _RISK_SIGNAL_KEYS):
+        return "proceed_with_review"
+    return "proceed"
+
+
+def _phase_gatekeeper(
+    state: LoopState,
+    gatekeeper_fn: Callable[[LoopState], str] | None,
+) -> str:
+    """Judge whether the change is verifiable and low-risk enough to automate.
+
+    The judge sub-agent reads ``state.gate_signals`` plus the plan artifacts and
+    returns ``proceed`` / ``proceed_with_review`` / ``escalate``. When no judge
+    is wired (headless CI, coordinator down, unit tests) the gate falls back to
+    a permissive signal-only verdict rather than blocking.
+    """
+    state.phase_started_at = _now_iso()
+
+    outcome: str | None = None
+    if gatekeeper_fn is not None:
+        outcome = gatekeeper_fn(state)
+    if outcome not in _GATEKEEPER_OUTCOMES:
+        # No judge, or an unrecognized verdict — degrade permissively.
+        outcome = _default_gate_verdict(state.gate_signals)
+
+    state.gate_verdict = outcome
+    if outcome == "proceed_with_review":
+        state.val_review_enabled = True
+    elif outcome == "escalate":
+        # Route through the escalation helper so previous_phase and
+        # escalation_reason are populated. The bare table transition
+        # (GATEKEEPER -> ESCALATE) would leave both unset, making the saved
+        # state unhelpful and causing transition() to raise on the
+        # ESCALATE "resolved" -> _previous_phase resume path.
+        enter_escalate(
+            state,
+            "GATEKEEPER judged the change unverifiable or too risky for "
+            "autonomous execution",
+        )
+    return outcome
 
 
 def _phase_plan(

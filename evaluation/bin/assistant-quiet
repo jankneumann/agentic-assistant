@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Wrapper for gen-eval CLI scenarios.
+#
+# Gen-eval's CliClient flags any non-empty stderr as a step error even
+# when exit_code is 0 (see clients/cli_client.py). The `assistant`
+# binary unconditionally emits a LangChainPendingDeprecationWarning at
+# import time via langgraph.checkpoint.serde.encrypted, which is
+# resistant to PYTHONWARNINGS=ignore (the warning class bypasses the
+# normal filter machinery). This wrapper drops that specific line and
+# the empty separator while preserving any *real* stderr output, so
+# legitimate failures still surface.
+#
+# Follow-up: silence the warning at source in src/assistant/cli.py
+# (warnings.filterwarnings) so this wrapper can be removed.
+
+set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+"$REPO_ROOT/.venv/bin/assistant" "$@" \
+  2> >(grep -vE "LangChainPendingDeprecationWarning|JsonPlusSerializer|^$" >&2 || true)
