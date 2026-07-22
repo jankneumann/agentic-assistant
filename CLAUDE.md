@@ -693,6 +693,7 @@ that waste the most time:
 | G6 | Private-persona content leaking into public tests | Use `FIXTURE_PERSONA_SENTINEL_v1` assertions; never hard-code `personas/personal/` strings; trust the two-layer guard |
 | G7 | Submodule standalone tests silent-skip when parent `roles/` is absent | Default is strict fail; opt in with `ALLOW_STANDALONE_SUBMODULE_SKIP=1` when running the submodule in isolation |
 | G8 | Local `mypy src/` passes but CI `mypy src tests` fails on test-side narrowing errors | Always run the full CI scope locally (`uv run mypy src tests`) before pushing — see Landing the Plane quality gates |
+| G9 | CI blocks on the architecture-ledger drift gate after touching `harnesses/`, `extensions/`, `core/memory*`, or `telemetry/` | Update a `docs/architecture/` ledger file, or declare a non-interface change with `[skip-ledger: <reason>]` in a commit message — see "Architecture Ledger Drift Gate" |
 
 ## What's Not Yet Wired
 
@@ -786,6 +787,42 @@ browse with `gh issue list --label followup`:
   - #18 — `assistant export` should run `discover_tools` for host-harness manifests
   - #19 — detect parameter/body name collisions in `_build_args_schema`
 
+## Architecture Ledger Drift Gate
+
+CI runs a **blocking** gate (`scripts/check-architecture-ledger-drift.py`,
+between Ruff and Mypy in `.github/workflows/ci.yml`) that fails when a
+change touches an interface-bearing path **without** updating the
+architecture ledger. The goal is to keep interface changes captured in one
+reviewable place. Watched prefixes:
+
+- `src/assistant/harnesses/`
+- `src/assistant/extensions/`
+- `src/assistant/core/memory*`
+- `src/assistant/telemetry/`
+
+Ledger files (updating **either** satisfies the gate):
+`docs/architecture/interface-stability.md`,
+`docs/architecture/primitives-and-providers.md`.
+
+**When you change a watched path, do ONE of:**
+
+1. Record the interface change in a ledger file (the intended path — a real
+   entry describing what changed), OR
+2. If the change is genuinely NOT an interface change (bugfix, comment,
+   internal refactor under a watched dir), declare it with a marker in any
+   commit message on the branch: `[skip-ledger: <reason>]` (reason
+   required, non-empty). The bypass is logged in CI and visible in history —
+   it is a reviewable declaration, not a silent whitespace edit.
+
+The gate diffs against the merge base with `origin/main` and needs full
+history (`fetch-depth: 0` in CI). Run it locally with
+`python scripts/check-architecture-ledger-drift.py --base origin/main`.
+
+**Dispatch briefs MUST list this gate** in their Verification section when
+the work touches a watched path — otherwise dispatched agents will report
+green while CI blocks on a missing ledger update (see the "dispatch briefs
+must list every CI gate" lesson).
+
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, complete ALL steps below. Work is NOT
@@ -796,6 +833,8 @@ complete until `git push` succeeds.
    - `uv run pytest tests/`
    - `uv run ruff check src tests`
    - `uv run mypy src tests`  (CI runs the broader scope; `mypy src/` alone misses test-side errors)
+   - `python scripts/check-architecture-ledger-drift.py --base origin/main`
+     (**blocking gate** — see below; only fires when interface-bearing paths change)
    - `openspec validate --strict` if OpenSpec artifacts changed
 3. **Update issue / OpenSpec status** — close finished, annotate in-progress
 4. **PUSH TO REMOTE** — mandatory:

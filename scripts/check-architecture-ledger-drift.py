@@ -14,8 +14,19 @@ Compares the branch against its **merge base with the base branch**, not
    unresolvable, so a gate that silently did not run is never mistaken for a
    pass.
 
+Escape hatch: a change under a watched path that is genuinely NOT an
+interface change (a bugfix, a comment, an internal refactor) can bypass the
+gate by putting a marker in any commit message on the branch:
+
+    [skip-ledger: <reason>]
+
+This is deliberately a declaration in the git history, not a silent
+whitespace edit to the ledger. It is visible in review and auditable after
+the fact -- someone consciously asserting "not an interface change" is far
+better signal than a token ledger touch made only to satisfy the gate.
+
 Exit codes:
-  0  no drift (or nothing relevant changed)
+  0  no drift, nothing relevant changed, or an explicit skip declaration
   1  drift: interface-bearing files changed, ledger did not
   2  could not determine a comparison base (environment problem, not drift)
 """
@@ -24,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 
@@ -37,6 +49,10 @@ LEDGER_FILES = {
     "docs/architecture/interface-stability.md",
     "docs/architecture/primitives-and-providers.md",
 }
+
+# Case-insensitive; reason is required and must be non-empty so the marker
+# cannot be used as a contentless bypass.
+_SKIP_MARKER = re.compile(r"\[skip-ledger:\s*(?P<reason>[^\]]*\S)\s*\]", re.I)
 
 
 def _git(*args: str) -> str:
@@ -78,16 +94,30 @@ def _resolve_base(explicit: str | None) -> str | None:
     return None
 
 
-def _changed_files(base: str) -> list[str]:
-    """Files changed between the merge base and HEAD."""
+def _merge_base(base: str) -> str:
+    """Merge base of ``base`` and HEAD, or ``base`` if none is reachable."""
     try:
-        merge_base = _git("merge-base", base, "HEAD").strip()
+        return _git("merge-base", base, "HEAD").strip()
     except subprocess.CalledProcessError:
         # Unrelated histories (e.g. a shallow clone not reaching a common
         # ancestor) -- fall back to comparing against the base directly.
-        merge_base = base
+        return base
+
+
+def _changed_files(merge_base: str) -> list[str]:
+    """Files changed between the merge base and HEAD."""
     out = _git("diff", "--name-only", f"{merge_base}..HEAD")
     return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def _skip_reason(merge_base: str) -> str | None:
+    """Return the reason if any commit in the range declares a skip marker."""
+    try:
+        log = _git("log", "--format=%B", f"{merge_base}..HEAD")
+    except subprocess.CalledProcessError:
+        return None
+    match = _SKIP_MARKER.search(log)
+    return match.group("reason").strip() if match else None
 
 
 def main() -> int:
@@ -108,13 +138,27 @@ def main() -> int:
         )
         return 2
 
-    changed = _changed_files(base)
+    merge_base = _merge_base(base)
+    changed = _changed_files(merge_base)
     touched_interface = sorted(
         path for path in changed if path.startswith(WATCHED_PREFIXES)
     )
     touched_ledger = any(path in LEDGER_FILES for path in changed)
 
     if touched_interface and not touched_ledger:
+        skip = _skip_reason(merge_base)
+        if skip is not None:
+            # Declared non-interface change -- allow, but record it so the
+            # bypass is visible in the CI log, not silent.
+            print(
+                "Architecture ledger drift gate bypassed via "
+                f"[skip-ledger: {skip}]. Watched paths changed without a "
+                "ledger update:"
+            )
+            for path in touched_interface:
+                print(f"  - {path}")
+            return 0
+
         print(
             "Interface-bearing files changed without architecture ledger "
             f"updates (compared against {base}):"
@@ -124,6 +168,10 @@ def main() -> int:
         print("\nUpdate one of:")
         for path in sorted(LEDGER_FILES):
             print(f"  - {path}")
+        print(
+            "\nOr, if this is genuinely not an interface change, declare it "
+            "in a commit message: [skip-ledger: <reason>]"
+        )
         return 1
 
     return 0
