@@ -109,7 +109,12 @@ class TestExportMemoryContext:
         policy._manager.export_memory = AsyncMock(return_value="exported")
 
         assert policy.export_memory_context(mock_persona) == "exported"
-        policy._manager.export_memory.assert_awaited_once_with("test")
+        # Passes None, not the persona name: the MemoryManager is bound to
+        # a persona at construction (persona_name=persona.name), so it
+        # resolves the bound persona itself. A policy built for one persona
+        # therefore cannot export another persona's memory, even if a caller
+        # hands it a different persona object.
+        policy._manager.export_memory.assert_awaited_once_with(None)
 
     def test_bridges_from_inside_running_event_loop(self, mock_persona):
         """A sync edge invoked from async code must not deadlock —
