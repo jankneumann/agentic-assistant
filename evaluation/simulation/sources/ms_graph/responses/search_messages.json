@@ -1,0 +1,29 @@
+// FIXTURE_GRAPH_RESPONSE_v1
+{
+  "value": [
+    {
+      "id": "AAAAA-synthetic-message-id-0001",
+      "subject": "Synthetic project sync",
+      "bodyPreview": "Synthetic placeholder body preview text.",
+      "from": {
+        "emailAddress": {
+          "name": "Synthetic User Three",
+          "address": "user3@synthetic.example"
+        }
+      },
+      "receivedDateTime": "2026-05-01T09:00:00Z"
+    },
+    {
+      "id": "AAAAA-synthetic-message-id-0002",
+      "subject": "Synthetic kickoff agenda",
+      "bodyPreview": "Synthetic placeholder body preview text.",
+      "from": {
+        "emailAddress": {
+          "name": "Synthetic User Four",
+          "address": "user4@synthetic.example"
+        }
+      },
+      "receivedDateTime": "2026-05-01T10:00:00Z"
+    }
+  ]
+}

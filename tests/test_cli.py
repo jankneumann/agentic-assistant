@@ -51,7 +51,7 @@ class StubHarness(SdkHarnessAdapter):
         return self.invoke_response
 
     async def spawn_sub_agent(
-        self, role: RoleConfig, task: str, tools, extensions
+        self, role: RoleConfig, task: str, tools, extensions, context=None
     ) -> str:
         return self.spawn_response
 
@@ -281,30 +281,30 @@ def test_export_rejects_sdk_harness(stub_factory) -> None:
 
 def _canned_registry() -> object:
     """Build a small ``HttpToolRegistry`` for list-tools / startup tests."""
-    from langchain_core.tools import StructuredTool
-    from pydantic import BaseModel
-
+    from assistant.core.toolspec import ToolSpec
     from assistant.http_tools import HttpToolRegistry
-
-    class _Args(BaseModel):
-        name: str
 
     async def _noop(name: str) -> None:
         return None
 
+    schema = {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": ["name"],
+    }
     reg = HttpToolRegistry()
     reg.register(
         "backend", "list_items",
-        StructuredTool.from_function(
-            coroutine=_noop, name="backend:list_items",
-            description="List items", args_schema=_Args,
+        ToolSpec(
+            name="backend:list_items", description="List items",
+            input_schema=dict(schema), handler=_noop,
         ),
     )
     reg.register(
         "backend", "create_item",
-        StructuredTool.from_function(
-            coroutine=_noop, name="backend:create_item",
-            description="Create an item", args_schema=_Args,
+        ToolSpec(
+            name="backend:create_item", description="Create an item",
+            input_schema=dict(schema), handler=_noop,
         ),
     )
     return reg
@@ -322,7 +322,7 @@ def test_list_tools_with_no_sources_prints_message(
 
     from assistant.http_tools import HttpToolRegistry
 
-    async def _spy(tool_sources, *, client=None):
+    async def _spy(tool_sources, *, client=None, credentials=None):
         return HttpToolRegistry()
 
     monkeypatch.setattr(cli_mod, "discover_tools", _spy)
@@ -343,13 +343,8 @@ def test_list_tools_with_successful_sources(
     """Per spec: per-source sections with tool names + exit 0 on success."""
     monkeypatch.setenv("CONTENT_ANALYZER_URL", "http://127.0.0.1:1/ignored")
 
-    from langchain_core.tools import StructuredTool
-    from pydantic import BaseModel
-
+    from assistant.core.toolspec import ToolSpec
     from assistant.http_tools import HttpToolRegistry
-
-    class _Args(BaseModel):
-        q: str
 
     async def _noop(q: str) -> None:
         return None
@@ -359,13 +354,19 @@ def test_list_tools_with_successful_sources(
     registry = HttpToolRegistry()
     registry.register(
         "content_analyzer", "search",
-        StructuredTool.from_function(
-            coroutine=_noop, name="content_analyzer:search",
-            description="Search content", args_schema=_Args,
+        ToolSpec(
+            name="content_analyzer:search",
+            description="Search content",
+            input_schema={
+                "type": "object",
+                "properties": {"q": {"type": "string"}},
+                "required": ["q"],
+            },
+            handler=_noop,
         ),
     )
 
-    async def _fake_discover(tool_sources, *, client=None):
+    async def _fake_discover(tool_sources, *, client=None, credentials=None):
         return registry
 
     monkeypatch.setattr(cli_mod, "discover_tools", _fake_discover)
@@ -392,13 +393,8 @@ def test_list_tools_exits_zero_when_warning_but_tools_registered(
 
     # Canned registry has `backend:*` tools, not `content_analyzer:*`,
     # so we need a registry keyed by the actually-configured source name.
-    from langchain_core.tools import StructuredTool
-    from pydantic import BaseModel
-
+    from assistant.core.toolspec import ToolSpec
     from assistant.http_tools import HttpToolRegistry
-
-    class _Args(BaseModel):
-        pass
 
     async def _noop() -> None:
         return None
@@ -406,13 +402,15 @@ def test_list_tools_exits_zero_when_warning_but_tools_registered(
     registry = HttpToolRegistry()
     registry.register(
         "content_analyzer", "search",
-        StructuredTool.from_function(
-            coroutine=_noop, name="content_analyzer:search",
-            description="Search content", args_schema=_Args,
+        ToolSpec(
+            name="content_analyzer:search",
+            description="Search content",
+            input_schema={"type": "object", "properties": {}},
+            handler=_noop,
         ),
     )
 
-    async def _fake_discover(tool_sources, *, client=None):
+    async def _fake_discover(tool_sources, *, client=None, credentials=None):
         # Emit a warning like discovery would when /openapi.json 500s —
         # but still succeed via the fallback.
         logging.getLogger("assistant.http_tools.discovery").warning(
@@ -437,7 +435,7 @@ def test_list_tools_with_failing_source_exits_nonzero(
     monkeypatch.setenv("CONTENT_ANALYZER_URL", "http://127.0.0.1:1/ignored")
     from assistant.http_tools import HttpToolRegistry
 
-    async def _fake_discover(tool_sources, *, client=None):
+    async def _fake_discover(tool_sources, *, client=None, credentials=None):
         logging.getLogger("assistant.http_tools.discovery").warning(
             "skipping source %r: simulated failure", "content_analyzer",
         )
@@ -464,7 +462,7 @@ def test_startup_calls_discover_tools_when_base_url_set(
     called = {"count": 0}
     registry = _canned_registry()
 
-    async def _spy(tool_sources, *, client=None):
+    async def _spy(tool_sources, *, client=None, credentials=None):
         called["count"] += 1
         return registry
 
@@ -487,7 +485,7 @@ def test_startup_skips_discovery_when_no_sources(
 
     called = {"count": 0}
 
-    async def _spy(tool_sources, *, client=None):
+    async def _spy(tool_sources, *, client=None, credentials=None):
         called["count"] += 1
         from assistant.http_tools import HttpToolRegistry
         return HttpToolRegistry()
@@ -1030,3 +1028,69 @@ def test_teacher_help_line_appends_method_commands(stub_factory) -> None:
     # Order: /quit MUST come before /methods (terminator before
     # teacher-specific commands, matching the visual progression).
     assert help_region.index("/quit") < help_region.index("/methods")
+
+
+# ── P11 harness-routing: --harness auto default ─────────────────────
+
+
+def test_auto_default_resolves_through_select_harness(
+    stub_factory, monkeypatch
+) -> None:
+    """Omitted -H sends the 'auto' sentinel through the _select_harness
+    seam; the factory receives the concrete resolution."""
+    select_seen: list[str | None] = []
+    create_seen: list[str] = []
+
+    def fake_select(pc, rc, *, requested=None):
+        select_seen.append(requested)
+        return "deep_agents"
+
+    def capture(persona, role, harness_name):
+        create_seen.append(harness_name)
+        return StubHarness(persona, role)
+
+    monkeypatch.setattr(cli_mod, "_select_harness", fake_select)
+    monkeypatch.setattr(cli_mod, "_create_harness", capture)
+    runner = CliRunner()
+    result = runner.invoke(cli_mod.main, ["-p", "personal"], input="quit\n")
+    assert result.exit_code == 0
+    assert select_seen == ["auto"]
+    assert create_seen and create_seen[0] == "deep_agents"
+
+
+def test_explicit_harness_bypasses_routing(stub_factory, monkeypatch) -> None:
+    """-H deep_agents reaches the factory verbatim (select passes
+    explicit names through — exercised here with the REAL seam)."""
+    create_seen: list[str] = []
+
+    def capture(persona, role, harness_name):
+        create_seen.append(harness_name)
+        return StubHarness(persona, role)
+
+    monkeypatch.setattr(cli_mod, "_create_harness", capture)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main, ["-p", "personal", "-H", "deep_agents"], input="quit\n"
+    )
+    assert result.exit_code == 0
+    assert create_seen and create_seen[0] == "deep_agents"
+
+
+def test_auto_routing_failure_is_a_usage_error(
+    stub_factory, monkeypatch
+) -> None:
+    def fail_select(pc, rc, *, requested=None):
+        raise ValueError("No enabled SDK harness for persona 'personal'")
+
+    monkeypatch.setattr(cli_mod, "_select_harness", fail_select)
+    runner = CliRunner()
+    result = runner.invoke(cli_mod.main, ["-p", "personal"], input="quit\n")
+    assert result.exit_code != 0
+    assert "No enabled SDK harness" in result.output
+
+
+def test_run_help_advertises_auto_choice() -> None:
+    runner = CliRunner()
+    result = runner.invoke(cli_mod.main, ["run", "--help"])
+    assert result.exit_code == 0
+    assert "auto" in result.output

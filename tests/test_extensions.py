@@ -45,8 +45,8 @@ def test_each_stub_exports_create_extension(name: str) -> None:
 def test_stubs_return_empty_tool_lists(name: str) -> None:
     mod = import_module(f"assistant.extensions.{name}")
     instance = mod.create_extension({})
-    assert instance.as_langchain_tools() == []
-    assert instance.as_ms_agent_tools() == []
+    # P17 tool-spec migration: the single tool surface is tool_specs().
+    assert instance.tool_specs() == []
 
 
 @pytest.mark.parametrize("name", STUB_NAMES)

@@ -1,22 +1,22 @@
-"""Cross-cutting dual-format parity test (D11 / task 7.5).
+"""Cross-adapter rendering parity for extension ToolSpecs (P17).
 
-Each of the four real Microsoft 365 extensions emits its tools twice
-— once as LangChain ``StructuredTool`` for the DeepAgents harness,
-once as MSAF-compatible callables for the MSAgentFrameworkHarness.
-The two formats are *siblings*, not derived from one another (D11),
-so the only mechanical check that catches drift is a parametrized
-parity test:
+Replaces the pre-P17 dual-format (D11) parity test: extensions no
+longer author their tools twice. Each of the four real Microsoft 365
+extensions emits a single ``tool_specs()`` list and the per-harness
+adapters (``assistant.harnesses.tool_adapters``) render it to the
+LangChain, MSAF, and MCP shapes. Drift between harnesses is now
+impossible by construction — these tests pin the adapter contract
+instead:
 
-- Same number of tools across formats.
-- Same tool names at the same index across formats.
-
-The per-extension tests cover wire-shape semantics; this file is the
-last-line defense against an extension author adding a tool to one
-format and forgetting the other.
-
-Risk this catches: the IMPL_REVIEW round-1 finding from PLAN_REVIEW
-that motivated D11 — "if as_langchain_tools is updated but
-as_ms_agent_tools forgets, one harness sees stale tools".
+- Adapters are pure renderings: N specs in → N rendered tools out, in
+  order (spec tool-spec / "Adapters do not change the tool set").
+- Rendered names/descriptions match the ToolSpec fields across all
+  three adapters (render equivalence with the old per-format outputs:
+  the canonical ``<extension>.<verb>`` names are unchanged from the
+  pre-migration ``as_langchain_tools`` / ``as_ms_agent_tools``
+  surfaces).
+- Real extensions MUST NOT return empty spec lists (extension-registry
+  MODIFIED contract).
 """
 
 from __future__ import annotations
@@ -25,6 +25,12 @@ from typing import Any
 
 import pytest
 
+from assistant.core.toolspec import ToolSpec
+from assistant.harnesses.tool_adapters import (
+    render_langchain_tools,
+    render_mcp_tools,
+    render_msaf_tools,
+)
 from tests.mocks.graph_client import MockGraphClient
 
 
@@ -50,76 +56,90 @@ REAL_EXTENSION_NAMES: list[str] = [
     "sharepoint",
 ]
 
+#: Canonical tool-name lists — unchanged from the pre-P17 dual-format
+#: surfaces, so this doubles as the render-equivalence check against
+#: the old ``as_langchain_tools()`` / ``as_ms_agent_tools()`` outputs.
+EXPECTED_TOOL_NAMES: dict[str, list[str]] = {
+    "ms_graph": [
+        "ms_graph.search_people",
+        "ms_graph.get_my_profile",
+        "ms_graph.search_messages",
+    ],
+    "outlook": [
+        "outlook.list_messages",
+        "outlook.read_message",
+        "outlook.search_messages",
+        "outlook.send_email",
+        "outlook.list_calendar_events",
+        "outlook.find_free_times",
+    ],
+    "teams": [
+        "teams.list_chats",
+        "teams.list_channel_messages",
+        "teams.read_message",
+        "teams.post_chat_message",
+    ],
+    "sharepoint": [
+        "sharepoint.search_sites",
+        "sharepoint.list_documents",
+        "sharepoint.download_document",
+    ],
+}
+
 
 @pytest.mark.parametrize("name", REAL_EXTENSION_NAMES)
-def test_dual_format_tool_count_parity(name: str) -> None:
-    """Each real extension MUST emit the same number of tools per format.
-
-    Spec scenario: ms-extensions / "Tool counts match across formats".
-    """
+def test_tool_specs_carry_canonical_names(name: str) -> None:
+    """tool_specs() names match the pre-migration tool surface exactly."""
     ext = _build_extension(name)
-    langchain_tools = ext.as_langchain_tools()
-    ms_agent_tools = ext.as_ms_agent_tools()
-    assert len(langchain_tools) == len(ms_agent_tools), (
-        f"{name}: tool count drift — "
-        f"as_langchain_tools={len(langchain_tools)} "
-        f"vs as_ms_agent_tools={len(ms_agent_tools)}. "
-        "Adding a tool to one format MUST add it to the other (D11)."
-    )
+    specs = ext.tool_specs()
+    assert [s.name for s in specs] == EXPECTED_TOOL_NAMES[name]
+    assert all(isinstance(s, ToolSpec) for s in specs)
+    assert all(s.source == f"extension:{name}" for s in specs)
 
 
 @pytest.mark.parametrize("name", REAL_EXTENSION_NAMES)
-def test_dual_format_tool_name_parity_by_index(name: str) -> None:
-    """Each real extension's tool names MUST match index-for-index.
-
-    Spec scenario: ms-extensions / "Tool names match by index".
-
-    LangChain ``StructuredTool`` exposes ``name`` directly. MSAF tools
-    expose either an ``__ai_name__`` attribute (set by ``ai_function``
-    or the project's fallback wrapper) or fall back to ``__name__``.
-    """
+def test_adapters_render_same_count_and_names(name: str) -> None:
+    """All three adapters are pure renderings: same count, same order,
+    same names as the ToolSpec list."""
     ext = _build_extension(name)
-    langchain_tools = ext.as_langchain_tools()
-    ms_agent_tools = ext.as_ms_agent_tools()
+    specs = ext.tool_specs()
 
-    for idx, (lc, msaf) in enumerate(
-        zip(langchain_tools, ms_agent_tools, strict=True)
-    ):
-        lc_name = getattr(lc, "name", None)
-        msaf_name = (
-            getattr(msaf, "__ai_name__", None)
-            or getattr(msaf, "name", None)
-            or getattr(msaf, "__name__", None)
-        )
-        assert lc_name is not None, (
-            f"{name}[{idx}]: LangChain tool has no `name` attribute"
-        )
-        assert msaf_name is not None, (
-            f"{name}[{idx}]: MSAF tool has no resolvable name "
-            "(checked __ai_name__, name, __name__)"
-        )
-        assert lc_name == msaf_name, (
-            f"{name}[{idx}]: tool name drift — "
-            f"LangChain={lc_name!r} vs MSAF={msaf_name!r}. "
-            "Adding/renaming a tool in one format MUST update the "
-            "other (D11)."
-        )
+    lc = render_langchain_tools(list(specs))
+    msaf = render_msaf_tools(list(specs))
+    mcp = render_mcp_tools(list(specs))
+
+    assert len(lc) == len(msaf) == len(mcp) == len(specs)
+    spec_names = [s.name for s in specs]
+    assert [t.name for t in lc] == spec_names
+    assert [t.name for t in msaf] == spec_names
+    assert [t.name for t in mcp] == spec_names
+
+
+@pytest.mark.parametrize("name", REAL_EXTENSION_NAMES)
+def test_adapters_preserve_description_and_schema(name: str) -> None:
+    ext = _build_extension(name)
+    specs = ext.tool_specs()
+    lc = render_langchain_tools(list(specs))
+    msaf = render_msaf_tools(list(specs))
+    mcp = render_mcp_tools(list(specs))
+    for spec, lc_t, msaf_t, mcp_t in zip(specs, lc, msaf, mcp, strict=True):
+        assert lc_t.description == spec.description
+        assert lc_t.args_schema == spec.input_schema
+        assert msaf_t.description == spec.description
+        assert mcp_t.description == spec.description
+        assert mcp_t.inputSchema == spec.input_schema
 
 
 @pytest.mark.parametrize("name", REAL_EXTENSION_NAMES)
 def test_each_real_extension_yields_at_least_one_tool(name: str) -> None:
-    """Real extensions MUST NOT return empty tool lists.
+    """Real extensions MUST NOT return empty spec lists.
 
     Spec scenario: extension-registry / "ms_graph/teams/sharepoint/
     outlook no longer return empty tool lists" (the MODIFIED contract
     that distinguishes a real extension from a stub).
     """
     ext = _build_extension(name)
-    assert len(ext.as_langchain_tools()) > 0, (
-        f"{name}: as_langchain_tools returned empty — real extensions "
-        "MUST expose at least one tool (post-P5 contract)"
-    )
-    assert len(ext.as_ms_agent_tools()) > 0, (
-        f"{name}: as_ms_agent_tools returned empty — real extensions "
+    assert len(ext.tool_specs()) > 0, (
+        f"{name}: tool_specs returned empty — real extensions "
         "MUST expose at least one tool (post-P5 contract)"
     )

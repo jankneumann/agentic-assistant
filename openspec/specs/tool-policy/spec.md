@@ -1,7 +1,14 @@
 # tool-policy Specification
 
 ## Purpose
-TBD - created by archiving change capability-protocols. Update Purpose after archive.
+Governs the `ToolPolicy` runtime-checkable protocol, the
+`DefaultToolPolicy` implementation, and tool manifest export. It exists so
+that which tools a given persona/role composition actually exposes is a
+policy decision made in one place, rather than every discovered or
+registered tool being unconditionally available. Consumers are the
+capability resolver, the harness adapters that filter their aggregated tool
+set through the policy, and the `assistant export` command that emits
+manifests for host harnesses.
 ## Requirements
 ### Requirement: ToolPolicy Protocol
 
@@ -25,45 +32,50 @@ keeping ToolPolicy decoupled from PersonaRegistry.
 The `DefaultToolPolicy` SHALL accept an optional
 `http_tool_registry: HttpToolRegistry | None = None` constructor
 parameter. The `authorized_tools(persona, role, *, loaded_extensions)`
-method SHALL return a list containing (a) all tools from the provided
-`loaded_extensions` plus (b) all tools from the `http_tool_registry`
-(when not `None`), filtered by `role.preferred_tools` when that list
-is non-empty.
+method SHALL return a list of harness-neutral `ToolSpec` instances
+(see the `tool-spec` capability) containing (a) every spec from each
+loaded extension's `tool_specs()` — telemetry-wrapped here, at the
+single aggregation site, via `wrap_extension_tool_specs` — plus (b)
+all specs from the `http_tool_registry` (when not `None`; those are
+wrapped at build time), filtered by `role.preferred_tools` when that
+list is non-empty. The tool policy is the SOLE tool aggregator:
+harnesses receive this list through `create_agent(tools=...)` and
+render it with their per-harness adapter.
 
-When `role.preferred_tools` is empty, both extension tools and HTTP
-tools MUST be returned unfiltered. When `role.preferred_tools` is
-non-empty, the returned list MUST contain only tools whose name (for
-extension tools) or registry key `"{source_name}:{operation_id}"` (for
-HTTP tools) appears in `preferred_tools`.
+When `role.preferred_tools` is empty, both extension specs and HTTP
+specs MUST be returned unfiltered. When `role.preferred_tools` is
+non-empty, the returned list MUST contain only specs whose `name`
+(the `"{source_name}:{operation_id}"` registry key for HTTP tools)
+appears in `preferred_tools`.
 
-Extension tools and HTTP tools with the same name SHALL both appear in
+Extension specs and HTTP specs with the same name SHALL both appear in
 the returned list (no deduplication); callers relying on uniqueness
 SHALL namespace via the `"{source}:{op}"` key for HTTP tools.
 
-#### Scenario: Merges extension and http tools
+#### Scenario: Merges extension and http tool specs
 
 - **WHEN** `role.preferred_tools` is `[]`
-- **AND** `loaded_extensions` provide `[ext_tool_a]`
-- **AND** `http_tool_registry` contains `{"backend:list_items": http_tool_b}`
+- **AND** `loaded_extensions` provide `[ext_spec_a]`
+- **AND** `http_tool_registry` contains `{"backend:list_items": http_spec_b}`
 - **THEN** `authorized_tools()` MUST return a list containing both
-  `ext_tool_a` and `http_tool_b`
+  `ext_spec_a` (wrapped) and `http_spec_b`
 
 #### Scenario: preferred_tools filters across both sources
 
 - **WHEN** `role.preferred_tools` is `["backend:list_items"]`
-- **AND** `loaded_extensions` provide a tool named `ext_tool_a`
+- **AND** `loaded_extensions` provide a spec named `ext_tool_a`
 - **AND** `http_tool_registry` contains `"backend:list_items"` and
   `"backend:create_item"`
 - **THEN** `authorized_tools()` MUST return a list containing only the
-  `backend:list_items` HTTP tool
+  `backend:list_items` spec
 - **AND** `ext_tool_a`, `backend:create_item` MUST NOT appear
 
 #### Scenario: No registry means extension-only behavior
 
 - **WHEN** `DefaultToolPolicy` is constructed with
   `http_tool_registry=None`
-- **AND** `loaded_extensions` provide `[tool_a, tool_b]`
-- **THEN** `authorized_tools()` MUST return `[tool_a, tool_b]` (prior
+- **AND** `loaded_extensions` provide `[spec_a, spec_b]`
+- **THEN** `authorized_tools()` MUST return `[spec_a, spec_b]` (prior
   behavior preserved)
 
 ### Requirement: Tool Manifest Export

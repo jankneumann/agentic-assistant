@@ -1,0 +1,6 @@
+// FIXTURE_SIM_RESPONSE_v1
+{
+  "newsletters": [
+    {"id": "nl-synthetic-0001", "title": "Synthetic Newsletter #1", "published": "2026-07-01"}
+  ]
+}

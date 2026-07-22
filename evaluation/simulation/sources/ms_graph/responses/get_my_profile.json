@@ -1,0 +1,11 @@
+// FIXTURE_GRAPH_RESPONSE_v1
+{
+  "id": "00000000-0000-0000-0000-00000000abcd",
+  "displayName": "Synthetic Test Account",
+  "givenName": "Synthetic",
+  "surname": "Test",
+  "mail": "synthetic.test@synthetic.example",
+  "userPrincipalName": "synthetic.test@synthetic.example",
+  "jobTitle": "Synthetic Role",
+  "preferredLanguage": "en-US"
+}

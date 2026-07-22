@@ -1,0 +1,32 @@
+# Public test fixture (FIXTURE_PERSONA_SENTINEL_v1) — continual-learning
+# persona for P28 continual-learning tests. Not a mirror of any real
+# private submodule; exists only so public tests can exercise the
+# FeedbackEvent → ImprovementProposal pipeline end-to-end.
+
+name: learning_lab
+display_name: "Learning Lab (fixture)"
+
+database:
+  url_env: LEARNING_LAB_DATABASE_URL
+
+graphiti:
+  url_env: LEARNING_LAB_GRAPHITI_URL
+
+auth:
+  provider: custom
+  config: {}
+
+harnesses:
+  deep_agents:
+    enabled: true
+
+default_role: chief_of_staff
+
+learning:
+  enabled: true
+  auto_apply_low_risk: false
+  reflection:
+    consumer: memory
+  # Relative on purpose: CLI tests run inside an isolated filesystem,
+  # so proposals land under the test cwd rather than the fixture tree.
+  proposals_dir: .learning-proposals

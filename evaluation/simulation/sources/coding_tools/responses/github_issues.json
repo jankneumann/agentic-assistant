@@ -1,0 +1,7 @@
+// FIXTURE_SIM_RESPONSE_v1
+{
+  "issues": [
+    {"number": 1, "title": "Synthetic issue one", "state": "open", "labels": ["bug"]},
+    {"number": 2, "title": "Synthetic issue two", "state": "open", "labels": ["followup"]}
+  ]
+}

@@ -7,10 +7,11 @@ Replaces the P1 11-line stub. Exposes six tools (four read, two write):
 Design references:
 
 - D6  — extension internal structure (private async tool methods,
-  dual-format wrappers, injected ``CloudGraphClient``).
+  injected ``CloudGraphClient``).
 - D9  — error handling boundaries (lazy import of ``GraphAPIError``).
-- D11 — tool format conversion is per-extension (LangChain twin and
-  MSAF twin both call the same private async method).
+- P17 tool-spec migration — ``tool_specs()`` compiles each private
+  async method into a harness-neutral ToolSpec; per-harness adapters
+  render it (replaces the D11 dual-format wrappers).
 - D18 — per-method retry safety control. ``_send_email`` MUST pass
   ``retry_safe=False`` to ``client.post`` so a transient 5xx never
   duplicates the message.
@@ -26,8 +27,8 @@ Design references:
   GraphClient construction is attempted.
 
 Spec: ms-extensions / "outlook Extension Real Implementation" plus the
-four cross-cutting requirements (URL-encoding, scope override,
-breaker-open error, dual-format parity).
+cross-cutting requirements (URL-encoding, scope override,
+breaker-open error, ToolSpec surface).
 """
 
 from __future__ import annotations
@@ -37,7 +38,6 @@ from collections.abc import Awaitable, Callable
 from functools import wraps
 from typing import TYPE_CHECKING, Any
 
-from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from assistant.core.cloud_client import CloudGraphClient
@@ -46,6 +46,8 @@ from assistant.core.resilience import (
     get_circuit_breaker_registry,
     health_status_from_breaker,
 )
+from assistant.core.toolspec import ToolSpec, tool_spec_from_model
+from assistant.extensions.base import ExtensionBase
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
     from assistant.core.persona import PersonaConfig
@@ -230,62 +232,7 @@ def _guard_open_breaker(
 
 
 # ---------------------------------------------------------------------------
-# MSAF tool wrapper (D11)
-# ---------------------------------------------------------------------------
-
-
-def _msaf_tool(
-    name: str, coroutine: Callable[..., Awaitable[Any]]
-) -> Callable[..., Awaitable[Any]]:
-    """Wrap a coroutine for ``as_ms_agent_tools`` consumption.
-
-    When the ``agent-framework`` SDK is installed (wp-foundation-impls
-    adds it via pyproject), ``ai_function`` decorates the coroutine with
-    the SDK-required metadata so the MSAF harness can register the tool
-    by name. When the SDK is NOT installed (parallel-execution window
-    where wp-outlook lands before wp-foundation-impls), we fall back to
-    a thin wrapper that exposes the same ``name``/``__name__`` surface
-    that ``as_langchain_tools()`` exposes; the dual-format parity test
-    still passes, and the MSAF harness will simply re-decorate the
-    coroutines once it imports them — but only if the SDK is present.
-
-    Lazy import so ``import assistant.extensions.outlook`` does not
-    raise ``ModuleNotFoundError`` when ``agent-framework`` is absent.
-    """
-    try:  # pragma: no cover — exercised once SDK lands
-        # ``agent_framework`` may be installed without ``ai_function``
-        # exposed at top-level (early SDK versions); use ``getattr`` so
-        # the fall-through path runs cleanly in either case.
-        import agent_framework  # type: ignore[import-not-found,unused-ignore]
-
-        ai_function = agent_framework.ai_function  # type: ignore[attr-defined]
-        decorated = ai_function(name=name)(coroutine)
-        # Preserve a readable ``name`` attribute for the parity test.
-        try:
-            decorated.name = name
-        except (AttributeError, TypeError):
-            pass
-        return decorated
-    except (ImportError, AttributeError):
-        # SDK not installed yet; expose a thin name-bearing async
-        # wrapper. This wrapper is what MSAF would call; once the SDK
-        # is installed, ``as_ms_agent_tools()`` returns the
-        # ``ai_function``-decorated form on next process start.
-        @wraps(coroutine)
-        async def _wrapper(*args: Any, **kwargs: Any) -> Any:
-            return await coroutine(*args, **kwargs)
-
-        # Override __name__ so dual-format parity by index works.
-        _wrapper.__name__ = name
-        try:
-            _wrapper.name = name  # type: ignore[attr-defined]
-        except (AttributeError, TypeError):
-            pass
-        return _wrapper
-
-
-# ---------------------------------------------------------------------------
-# LangChain args-schemas (one per tool)
+# Args-schemas (one per tool — drive ToolSpec.input_schema and validation)
 # ---------------------------------------------------------------------------
 
 
@@ -350,7 +297,7 @@ class _FindFreeTimesArgs(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class OutlookExtension:
+class OutlookExtension(ExtensionBase):
     """Real Outlook (Microsoft Graph) extension.
 
     Constructed with a config dict and an injected ``CloudGraphClient``
@@ -378,13 +325,14 @@ class OutlookExtension:
             f"extension:{self.name}"
         )
 
-    # ----- LangChain tool surface ------------------------------------
+    # ----- Tool surface (ToolSpec — spec tool-spec / P17) -------------
 
-    def as_langchain_tools(self) -> list[StructuredTool]:
-        """Return six ``StructuredTool``s, one per tool method."""
+    def tool_specs(self) -> list[ToolSpec]:
+        """Return six harness-neutral ToolSpecs, one per tool method."""
+        source = f"extension:{self.name}"
         return [
-            StructuredTool.from_function(
-                coroutine=self._list_messages,
+            tool_spec_from_model(
+                handler=self._list_messages,
                 name="outlook.list_messages",
                 description=(
                     "List recent messages from the user's mailbox "
@@ -393,18 +341,20 @@ class OutlookExtension:
                     "GraphAPIError(error_code=\"page_ceiling_exceeded\"); "
                     "narrow the query if you need more."
                 ),
-                args_schema=_ListMessagesArgs,
+                args_model=_ListMessagesArgs,
+                source=source,
             ),
-            StructuredTool.from_function(
-                coroutine=self._read_message,
+            tool_spec_from_model(
+                handler=self._read_message,
                 name="outlook.read_message",
                 description=(
                     "Read a single message by id (/me/messages/{id})."
                 ),
-                args_schema=_ReadMessageArgs,
+                args_model=_ReadMessageArgs,
+                source=source,
             ),
-            StructuredTool.from_function(
-                coroutine=self._search_messages,
+            tool_spec_from_model(
+                handler=self._search_messages,
                 name="outlook.search_messages",
                 description=(
                     "Search the user's mailbox via $search "
@@ -412,20 +362,22 @@ class OutlookExtension:
                     "results larger than this raise "
                     "GraphAPIError(error_code=\"page_ceiling_exceeded\")."
                 ),
-                args_schema=_SearchMessagesArgs,
+                args_model=_SearchMessagesArgs,
+                source=source,
             ),
-            StructuredTool.from_function(
-                coroutine=self._send_email,
+            tool_spec_from_model(
+                handler=self._send_email,
                 name="outlook.send_email",
                 description=(
                     "Send an email via Microsoft Graph (/me/sendMail). "
                     "Non-idempotent — retry-safe disabled to prevent "
                     "duplicates on transient 5xx."
                 ),
-                args_schema=_SendEmailArgs,
+                args_model=_SendEmailArgs,
+                source=source,
             ),
-            StructuredTool.from_function(
-                coroutine=self._list_calendar_events,
+            tool_spec_from_model(
+                handler=self._list_calendar_events,
                 name="outlook.list_calendar_events",
                 description=(
                     "List the user's calendar events (/me/events). "
@@ -433,38 +385,19 @@ class OutlookExtension:
                     "larger than this raise GraphAPIError"
                     "(error_code=\"page_ceiling_exceeded\")."
                 ),
-                args_schema=_ListCalendarEventsArgs,
+                args_model=_ListCalendarEventsArgs,
+                source=source,
             ),
-            StructuredTool.from_function(
-                coroutine=self._find_free_times,
+            tool_spec_from_model(
+                handler=self._find_free_times,
                 name="outlook.find_free_times",
                 description=(
                     "Find common free time across attendees "
                     "(/me/findMeetingTimes)."
                 ),
-                args_schema=_FindFreeTimesArgs,
+                args_model=_FindFreeTimesArgs,
+                source=source,
             ),
-        ]
-
-    # ----- MSAF tool surface (D11) -----------------------------------
-
-    def as_ms_agent_tools(self) -> list[Callable[..., Awaitable[Any]]]:
-        """Return MSAF-compatible callables.
-
-        Each callable bears the same canonical name as its LangChain
-        twin (``outlook.<verb>``) so harness consumers see identical
-        tool surfaces — see ms-extensions / "Tool counts match across
-        formats" and "Tool names match by index".
-        """
-        return [
-            _msaf_tool("outlook.list_messages", self._list_messages),
-            _msaf_tool("outlook.read_message", self._read_message),
-            _msaf_tool("outlook.search_messages", self._search_messages),
-            _msaf_tool("outlook.send_email", self._send_email),
-            _msaf_tool(
-                "outlook.list_calendar_events", self._list_calendar_events
-            ),
-            _msaf_tool("outlook.find_free_times", self._find_free_times),
         ]
 
     # ----- Health (extension-registry / "Real extension derives ...") --
@@ -473,6 +406,31 @@ class OutlookExtension:
         return health_status_from_breaker(
             self._breaker, key=f"extension:{self.name}"
         )
+
+    # ----- Lifecycle (P10 extension-lifecycle) ------------------------
+    # ``initialize()`` stays the inherited no-op: eager token
+    # acquisition would trigger an interactive MSAL prompt at persona
+    # load for the delegated flow (design D7).
+
+    async def shutdown(self) -> None:
+        """Close the injected client's connection pool.
+
+        ``CloudGraphClient.aclose()`` is idempotent by contract, so a
+        double shutdown (explicit + atexit) is safe.
+        """
+        await self._client.aclose()
+
+    async def refresh_credentials(self) -> None:
+        """Proactively refresh MSAL credentials via the client.
+
+        Delegates to the injected client's ``refresh_credentials()``
+        when it exposes one (the real ``GraphClient`` does); mock or
+        third-party ``CloudGraphClient`` implementations without the
+        method degrade to a no-op (design D6).
+        """
+        refresh = getattr(self._client, "refresh_credentials", None)
+        if callable(refresh):
+            await refresh()
 
     # ─────────────────────────────────────────────────────────────────
     # Private tool methods — single canonical implementation per D11.

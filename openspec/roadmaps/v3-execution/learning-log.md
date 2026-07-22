@@ -1,0 +1,21 @@
+# Learning Log
+
+| Item | Status | Summary |
+|------|--------|--------|
+| X3 | implementation | Removed from pyproject entirely; external invocation documented in evaluation/RE |
+| P21 | implementation | _run_blocking: asyncio.run when no loop; single-worker-thread asyncio.run when i |
+| P24 | review | All accepted; verdict 6 pins legacy as_*_tools() shim removal as P17 exit criter |
+| P19 | review | Deleted harnesses.<h>.model + StaticModelProvider pre-users (Churn Rule: breakin |
+| P10 | review | hasattr-discovery + ExtensionBase no-op defaults preserves structural compat for |
+| P27 | review | Per-source FastAPI mock apps expose /openapi.json; existing http_tools discovery |
+| P13 | review | Never os.environ; empty value masks process env; ~30-line parser, no python-dote |
+| P7 | review | ConsumerModelProvider rewrites ModelRequest.consumer to the job binding (default |
+| P6 | review | In-memory SessionRegistry is the first consumer of the P24 session-registry cont |
+| P17 | review | Same official package, wire-identical; low-level accepts pre-built Tool entries  |
+| P20 | review | Health filtering runs after required-tag filtering and only removes candidates — |
+| P25 | review | <mount>/data/<persona>/<REF> with identical masking semantics; migrating a perso |
+| P11 | review | Explicit -H -> persona rules -> built-ins; disabled-target rules skip with warni |
+| P22 | review | Empty allow-list = --network=none (real); non-empty = proxy-honored env vars wit |
+| P26 | review | Foreign items never become native preferences; revocation = prefix delete; no cl |
+| P12 | review | Outcomes ride trace_delegation + parent-side interaction record; DelegationConte |
+| P28 | review | Proposals are persona-dir files; routing_config review-only forever; auto-apply  |

@@ -47,6 +47,7 @@ from typing import Any
 from langchain_core.callbacks.usage import UsageMetadataCallbackHandler
 from langchain_core.tracers.context import register_configure_hook
 
+from assistant.core.capabilities.models import ModelRef, compute_cost
 from assistant.telemetry.context import assistant_ctx, get_assistant_ctx
 from assistant.telemetry.factory import get_observability_provider
 
@@ -128,44 +129,58 @@ def _resolve_persona_role(self_obj: Any) -> tuple[str | None, str | None]:
 
 
 def _resolve_model(self_obj: Any) -> str:
-    """Pull the harness-configured model id from ``self.persona.harnesses``.
+    """Return the harness's active model id for span labeling.
 
-    Mirrors the lookup in :class:`DeepAgentsHarness.create_agent`.
-    Resolution order:
-    1. ``self._active_model`` — the harness's own active model id, set by
-       concrete adapters at ``create_agent`` time so spans report the
-       real default even when the persona omits a model override
-       (Iter-2 round-2 fix gemini #5).
-    2. ``self.persona.harnesses[<harness_name>].model`` — explicit
-       per-persona override.
-    3. ``"unknown"`` — final fallback so span emission never raises.
+    ``self._active_model`` is initialized to the harness's default and
+    overwritten with the resolved ref's id at ``create_agent`` time
+    (Iter-2 round-2 fix gemini #5). The legacy fallback that scanned
+    ``persona.harnesses[...].model`` config strings was removed with
+    the registry-only cleanup (P19 owner review verdict #3); harness
+    objects without an ``_active_model`` label as ``"unknown"`` so
+    span emission never raises.
     """
     active = getattr(self_obj, "_active_model", None)
     if isinstance(active, str) and active:
         return active
-    persona = getattr(self_obj, "persona", None)
-    if persona is None:
-        return "unknown"
-    harnesses = getattr(persona, "harnesses", None) or {}
-    if not isinstance(harnesses, dict):
-        return "unknown"
-    # Prefer the harness's own ``name()`` if available, else first
-    # configured entry.
-    harness_name_fn = getattr(self_obj, "name", None)
-    candidates: list[str] = []
-    if callable(harness_name_fn):
-        try:
-            candidates.append(harness_name_fn())
-        except Exception:
-            pass
-    candidates.extend(harnesses.keys())
-    for key in candidates:
-        cfg = harnesses.get(key) or {}
-        if isinstance(cfg, dict):
-            model = cfg.get("model")
-            if isinstance(model, str) and model:
-                return model
     return "unknown"
+
+
+def _model_cost_metadata(
+    self_obj: Any, in_tok: int, out_tok: int
+) -> dict[str, Any] | None:
+    """Cost-attribution metadata from the harness's active ModelRef.
+
+    Follows the ``_active_model`` pattern (model-provider-routing):
+    concrete harnesses stash the resolved ``ModelRef`` on
+    ``self._active_model_ref`` at ``create_agent`` time. When present,
+    the span metadata carries the ref's name and dialect, plus a
+    ``cost_usd`` computed from the OpenRouter-shaped pricing fields and
+    the reported token counts. Missing pricing (e.g. a local endpoint)
+    omits the cost — never guessed. Returns ``None`` when no ref is
+    active so pre-P19 span shapes are unchanged.
+    """
+    ref = getattr(self_obj, "_active_model_ref", None)
+    if not isinstance(ref, ModelRef):
+        return None
+    meta: dict[str, Any] = {"model_ref": ref.name, "model_dialect": ref.dialect}
+    cost = compute_cost(ref.pricing, in_tok, out_tok)
+    if cost is not None:
+        meta["cost_usd"] = cost
+    return meta
+
+
+def _merge_metadata(
+    base: dict[str, Any] | None, extra: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Merge span metadata dicts; ``None`` when both are ``None``."""
+    if base is None and extra is None:
+        return None
+    merged: dict[str, Any] = {}
+    if extra:
+        merged.update(extra)
+    if base:
+        merged.update(base)
+    return merged
 
 
 def _sum_usage_metadata(usage_metadata: dict[str, Any]) -> tuple[int, int]:
@@ -269,7 +284,10 @@ def traced_harness(
                     input_tokens=in_tok,
                     output_tokens=out_tok,
                     duration_ms=duration_ms,
-                    metadata={"streaming": True, "cancelled": True},
+                    metadata=_merge_metadata(
+                        {"streaming": True, "cancelled": True},
+                        _model_cost_metadata(self_obj, in_tok, out_tok),
+                    ),
                 )
                 raise
             except BaseException as exc:
@@ -282,7 +300,10 @@ def traced_harness(
                     input_tokens=in_tok,
                     output_tokens=out_tok,
                     duration_ms=duration_ms,
-                    metadata={"streaming": True, "error": type(exc).__name__},
+                    metadata=_merge_metadata(
+                        {"streaming": True, "error": type(exc).__name__},
+                        _model_cost_metadata(self_obj, in_tok, out_tok),
+                    ),
                 )
                 raise
             duration_ms = (time.perf_counter() - start) * 1000.0
@@ -294,7 +315,10 @@ def traced_harness(
                 input_tokens=in_tok,
                 output_tokens=out_tok,
                 duration_ms=duration_ms,
-                metadata={"streaming": True},
+                metadata=_merge_metadata(
+                    {"streaming": True},
+                    _model_cost_metadata(self_obj, in_tok, out_tok),
+                ),
             )
 
         return async_gen_wrapper
@@ -329,7 +353,10 @@ def traced_harness(
                 input_tokens=in_tok,
                 output_tokens=out_tok,
                 duration_ms=duration_ms,
-                metadata={"error": type(exc).__name__},
+                metadata=_merge_metadata(
+                    {"error": type(exc).__name__},
+                    _model_cost_metadata(self_obj, in_tok, out_tok),
+                ),
             )
             raise
         duration_ms = (time.perf_counter() - start) * 1000.0
@@ -341,7 +368,9 @@ def traced_harness(
             input_tokens=in_tok,
             output_tokens=out_tok,
             duration_ms=duration_ms,
-            metadata=None,
+            metadata=_merge_metadata(
+                None, _model_cost_metadata(self_obj, in_tok, out_tok)
+            ),
         )
         return result
 
@@ -361,14 +390,20 @@ def traced_delegation[R](
     """
 
     @functools.wraps(fn)
-    async def wrapper(self_obj: Any, sub_role_name: str, task: str) -> R:
+    async def wrapper(
+        self_obj: Any, sub_role_name: str, task: str, **kwargs: Any
+    ) -> R:
+        # P12 delegation-context: pass-through keyword arguments
+        # (conversation_summary / deadline_seconds / allowed_tools) —
+        # the span vocabulary is unchanged; only (sub_role, task) are
+        # emitted, with the same 256-char hashing rule for task.
         persona, parent_role = _resolve_persona_role(self_obj)
         provider = get_observability_provider()
         emitted_task = _hash_task(task)
         start = time.perf_counter()
         try:
             with assistant_ctx(persona, sub_role_name):
-                result = await fn(self_obj, sub_role_name, task)
+                result = await fn(self_obj, sub_role_name, task, **kwargs)
         except BaseException as exc:
             duration_ms = (time.perf_counter() - start) * 1000.0
             provider.trace_delegation(
@@ -425,6 +460,9 @@ def trace_memory_op[R](
             if op == "fact_write":
                 # store_fact(persona, key, value): target = key
                 target_raw = args[1] if len(args) > 1 else kwargs.get("key")
+            elif op == "preference_write":
+                # store_preference(persona, category, key, ...): target = key
+                target_raw = args[2] if len(args) > 2 else kwargs.get("key")
             elif op == "search":
                 # search(persona, query, ...): target = query
                 target_raw = args[1] if len(args) > 1 else kwargs.get("query")

@@ -1,7 +1,15 @@
 # ms-agent-framework-harness Specification
 
 ## Purpose
-TBD - created by archiving change ms-graph-extension. Update Purpose after archive.
+Governs the `MSAgentFrameworkHarness` adapter that runs persona/role
+compositions on Microsoft's `agent-framework` SDK: building an
+`agent_framework.Agent` in `create_agent`, string-returning `invoke`,
+nested sub-agent spawning, consumption of resolved capabilities, memory
+snippet prepending under a `## Recent context` heading, and `@traced_harness`
+observability. It exists as the second full harness so Microsoft Graph
+tooling can run natively on the MSAF stack alongside Deep Agents. Memory
+injection is deliberately minimal-prepend only — a documented asymmetry
+versus the Deep Agents harness.
 ## Requirements
 ### Requirement: MSAgentFrameworkHarness Full Implementation
 
@@ -39,9 +47,13 @@ The system SHALL construct an `agent_framework.Agent` in
 `agent_framework.openai.OpenAIChatClient` or
 `agent_framework.azure_openai.AzureOpenAIChatClient`), (b) the composed
 system prompt (from the persona × role composition) as the
-`instructions` parameter, and (c) the union of provided `tools` plus
-each extension's `as_ms_agent_tools()` output as the `tools`
-parameter.
+`instructions` parameter, and (c) the provided `tools` list — the
+complete, already-aggregated `ToolSpec` list produced by
+`ToolPolicy.authorized_tools()` — rendered to the MSAF native shape
+via the per-harness adapter (`render_msaf_tools` →
+`agent_framework.FunctionTool`). The harness MUST NOT derive tools
+from the `extensions` argument (P17 tool-spec migration; the tool
+policy is the sole aggregator per the harness-adapter contract).
 
 #### Scenario: Agent receives composed instructions
 
@@ -51,15 +63,16 @@ parameter.
 - **THEN** the constructed `Agent` MUST be initialized with
   `instructions="You are work assistant."`
 
-#### Scenario: Agent receives extension tools via as_ms_agent_tools
+#### Scenario: Agent receives the rendered aggregated tool list
 
-- **WHEN** an extension's `as_ms_agent_tools()` returns
-  `[outlook_list_messages]`
-- **AND** `create_agent(tools=[ad_hoc_tool],
-  extensions=[outlook_extension])` is awaited
-- **THEN** the constructed `Agent` MUST have both
-  `outlook_list_messages` and `ad_hoc_tool` in its `tools` list
-- **AND** the harness MUST NOT consume `as_langchain_tools()`
+- **WHEN** `create_agent(tools=[outlook_search_spec],
+  extensions=[outlook_extension])` is awaited, where
+  `outlook_search_spec` is a `ToolSpec`
+- **THEN** the constructed `Agent`'s `tools` list MUST contain the
+  MSAF rendering of `outlook_search_spec` (a `FunctionTool` with the
+  same name, description, and input schema)
+- **AND** the harness MUST NOT call any tool-producing method on
+  `outlook_extension`
 
 #### Scenario: Chat client selection respects persona configuration
 
@@ -120,22 +133,25 @@ the supplied `task` string, and returning the response.
 ### Requirement: Capability Consumption
 
 The system SHALL consume capabilities from the P1.8
-`CapabilityResolver`: `ToolPolicy` (to determine authorized
-extensions), `ContextProvider` (for the system prompt),
+`CapabilityResolver`: `ToolPolicy` (upstream, as the sole tool
+aggregator whose `authorized_tools()` output arrives via
+`create_agent(tools=...)`), `ContextProvider` (for the system prompt),
 `GuardrailProvider` (to gate `spawn_sub_agent`), and `MemoryPolicy`
 (for minimal memory injection — see "Memory Snippet Injection"
 requirement below).
 
-#### Scenario: Authorized extensions are filtered through ToolPolicy
+#### Scenario: Tool aggregation happens upstream in ToolPolicy
 
-- **WHEN** the `ToolPolicy` returns
-  `authorized_extensions(persona, role) == [outlook_extension]`
-- **AND** `create_agent(tools=[], extensions=[outlook_extension,
-  teams_extension])` would otherwise see both
-- **THEN** the harness MUST consult `ToolPolicy.authorized_extensions`
-  before reading `as_ms_agent_tools()`
-- **AND** only the authorized subset's tools MUST flow into the
+- **WHEN** `ToolPolicy.authorized_tools(persona, role,
+  loaded_extensions=[outlook_extension, teams_extension])` authorizes
+  only outlook's specs
+- **AND** the caller passes that authorized list to
+  `create_agent(tools=<authorized>, extensions=[outlook_extension,
+  teams_extension])`
+- **THEN** only the authorized specs' renderings MUST flow into the
   constructed `Agent`
+- **AND** the harness MUST NOT consult the extensions to add or
+  remove tools
 
 #### Scenario: spawn_sub_agent calls GuardrailProvider before constructing sub-agent
 
@@ -151,32 +167,33 @@ requirement below).
 
 The system SHALL inject the persona's recent memory snippets into the
 constructed `Agent`'s `instructions` parameter at `create_agent`
-time. The harness SHALL request the snippets via the configured
+time. The harness SHALL await the configured async
 `MemoryPolicy.get_recent_snippets(persona, role, limit=N)` (where N
-defaults to 10), and SHALL prepend the resulting text block to the
+defaults to 10) directly on the `create_agent` event loop (owner
+review verdict C8, 2026-07-16 — no sync-to-async bridge on the hot
+path), and SHALL prepend the resulting text block to the
 composed system prompt under a clearly demarcated section heading
 (`## Recent context`). When the persona has no `MemoryPolicy`
 configured, or the policy returns an empty list, no section MUST be
 injected and the instructions MUST equal the composed prompt
 unchanged.
 
-This closes the asymmetry with the DeepAgents harness (which already
-consumes `MemoryPolicy`) by ensuring MSAF agents on the work persona
-have access to the same recent-context snippets without requiring
-any change to the `agent-framework` SDK contract.
+As of `memory-retrieval-activation` (P21) the built-in policies return
+**live** snippets: `PostgresGraphitiMemoryPolicy` retrieves recent
+facts, preferences, interaction summaries, and Graphiti semantic
+results via `MemoryManager.get_recent_snippets`;
+`FileMemoryPolicy` returns bounded `memory.md` excerpts. The
+DeepAgents harness performs the identical prepend, so the two SDK
+harnesses are symmetric.
 
-**Follow-up scope** — P5 deliberately ships the *minimum* viable
-memory injection: a string prepend at `create_agent` time. A
-higher-fidelity integration (live retrieval mid-turn, structured
-memory items rather than concatenated text, write-back of agent
-observations to memory) requires a structured memory hook on the
-`agent-framework` SDK that does not exist in the SDK version pinned
-by P5. Revisiting this is a P5b candidate when (a) the
-`agent-framework` SDK exposes a memory injection point with a stable
-contract, OR (b) usage data shows the prepend approach is
-insufficient for the work persona. Until then, the asymmetry with
-DeepAgents is a documented trade-off (DeepAgents has full
-`MemoryPolicy` consumption; MSAF has prepend-only).
+**Follow-up scope** — the prepend remains the *only* injection
+mechanism. A higher-fidelity integration (live retrieval mid-turn,
+structured memory items rather than concatenated text) still requires
+a structured memory hook on the `agent-framework` SDK that does not
+exist in the SDK version pinned by P5; revisit when the SDK exposes a
+memory injection point with a stable contract. Post-turn write-back of
+completed turns is now covered by the harness-adapter capability's
+"SDK Harness Post-Turn Memory Capture" requirement.
 
 #### Scenario: Memory snippets prepended to instructions
 

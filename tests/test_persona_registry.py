@@ -149,8 +149,7 @@ def test_private_extension_takes_precedence(
             class _PrivateGmail:
                 name = "private-gmail"
                 def __init__(self, config): self.config = config
-                def as_langchain_tools(self): return []
-                def as_ms_agent_tools(self): return []
+                def tool_specs(self): return []
                 async def health_check(self): return True
 
             # Post-P5 factory contract: accept the persona kwarg

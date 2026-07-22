@@ -1,7 +1,14 @@
 # msal-auth Specification
 
 ## Purpose
-TBD - created by archiving change ms-graph-extension. Update Purpose after archive.
+Governs MSAL-based authentication for Microsoft Graph: the `MSALStrategy`
+protocol, the interactive delegated and client-credentials strategies,
+token cache file discipline with persona-repo gitignore verification,
+strategy selection from persona configuration, running synchronous MSAL
+calls off the event loop, and the rule that authentication errors are never
+retried. It exists to isolate token acquisition and refresh from transport
+and tool code, and to keep credentials and caches out of the public repo.
+Its consumer is the graph-client, which requests tokens per call.
 ## Requirements
 ### Requirement: MSAL Strategy Protocol
 

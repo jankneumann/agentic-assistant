@@ -7,14 +7,31 @@ from pathlib import Path
 from typing import Any
 
 from assistant.core.capabilities.context import ContextProvider, DefaultContextProvider
-from assistant.core.capabilities.guardrails import AllowAllGuardrails, GuardrailProvider
+from assistant.core.capabilities.guardrails import (
+    AllowAllGuardrails,
+    GuardrailConfig,
+    GuardrailProvider,
+    PolicyGuardrails,
+)
 from assistant.core.capabilities.memory import (
     FileMemoryPolicy,
     HostProvidedMemoryPolicy,
     MemoryPolicy,
     PostgresGraphitiMemoryPolicy,
 )
-from assistant.core.capabilities.sandbox import PassthroughSandbox, SandboxProvider
+from assistant.core.capabilities.models import (
+    HostProvidedModelProvider,
+    ModelProvider,
+    ModelRegistry,
+    RegistryModelProvider,
+    default_model_registry,
+)
+from assistant.core.capabilities.sandbox import (
+    ContainerSandboxProvider,
+    PassthroughSandbox,
+    SandboxProvider,
+    SandboxSettings,
+)
 from assistant.core.capabilities.tools import DefaultToolPolicy, ToolPolicy
 from assistant.core.capabilities.types import (
     CapabilitySet,
@@ -43,6 +60,7 @@ class CapabilityResolver:
         memory_factory: Callable[[], MemoryPolicy] | None = None,
         tool_factory: Callable[[], ToolPolicy] | None = None,
         context_factory: Callable[[], ContextProvider] | None = None,
+        model_factory: Callable[[], ModelProvider] | None = None,
         http_tool_registry: HttpToolRegistry | None = None,
     ) -> None:
         self._guardrail_factory = guardrail_factory
@@ -50,7 +68,76 @@ class CapabilityResolver:
         self._memory_factory = memory_factory
         self._tool_factory = tool_factory
         self._context_factory = context_factory
+        self._model_factory = model_factory
         self._http_tool_registry = http_tool_registry
+
+    def _resolve_models(self, persona: Any, harness_type: str) -> ModelProvider:
+        """Slot #6 — capability-resolver spec + P19 model-provider-routing.
+
+        Host harnesses get :class:`HostProvidedModelProvider` (the host
+        seat owns model selection). SDK harnesses always get a
+        :class:`RegistryModelProvider` — backed by the persona's
+        ``models:`` registry when declared, else by the registry
+        synthesized from the known harness defaults
+        (:func:`default_model_registry`; P19 owner review verdict #3,
+        registry-only).
+        """
+        if self._model_factory:
+            return self._model_factory()
+        if harness_type == "host":
+            return HostProvidedModelProvider()
+        registry = getattr(persona, "models", None)
+        if isinstance(registry, ModelRegistry) and registry.entries:
+            return RegistryModelProvider(registry)
+        return RegistryModelProvider(default_model_registry())
+
+    def _resolve_sandbox(self, persona: Any) -> SandboxProvider:
+        """Sandbox slot — P22 meta-harness-compat.
+
+        Factory override wins (unchanged). Otherwise a persona whose
+        ``sandbox:`` section requests ``provider: container`` gets the
+        first real provider, :class:`ContainerSandboxProvider`
+        (persona-scoped credentials injected for the credentials
+        plane); every other persona keeps :class:`PassthroughSandbox`,
+        preserving pre-P22 behavior. Construction errors (e.g. no
+        docker/podman on PATH) propagate — a persona that explicitly
+        requested isolation never silently degrades to passthrough.
+        """
+        if self._sandbox_factory:
+            return self._sandbox_factory()
+        settings = getattr(persona, "sandbox", None)
+        if (
+            isinstance(settings, SandboxSettings)
+            and settings.provider == "container"
+        ):
+            return ContainerSandboxProvider(
+                image=settings.image,
+                runtime=settings.runtime,
+                credentials=getattr(persona, "credentials", None),
+            )
+        return PassthroughSandbox()
+
+    def _resolve_guardrails(self, persona: Any) -> GuardrailProvider:
+        """Guardrail slot — P13 security-hardening.
+
+        Factory override wins (unchanged). Otherwise, a persona that
+        declares a non-empty ``guardrails:`` section gets
+        :class:`PolicyGuardrails` (both host and sdk branches); every
+        other persona keeps :class:`AllowAllGuardrails`, preserving
+        pre-P13 behavior.
+        """
+        if self._guardrail_factory:
+            return self._guardrail_factory()
+        config = getattr(persona, "guardrails", None)
+        if isinstance(config, GuardrailConfig) and config:
+            return PolicyGuardrails(
+                config,
+                persona=getattr(persona, "name", ""),
+                # P30 durable-sessions: persist: db resolves the spend
+                # ledger against the persona DB.
+                database_url=getattr(persona, "database_url", "") or "",
+            )
+        return AllowAllGuardrails()
 
     def resolve(
         self, persona: Any, harness_type: str, role: Any
@@ -63,11 +150,7 @@ class CapabilityResolver:
 
         if harness_type == "host":
             return CapabilitySet(
-                guardrails=(
-                    self._guardrail_factory()
-                    if self._guardrail_factory
-                    else AllowAllGuardrails()
-                ),
+                guardrails=self._resolve_guardrails(persona),
                 sandbox=(
                     self._sandbox_factory()
                     if self._sandbox_factory
@@ -86,6 +169,7 @@ class CapabilityResolver:
                     )
                 ),
                 context=context,
+                models=self._resolve_models(persona, harness_type),
             )
 
         if self._memory_factory:
@@ -96,16 +180,8 @@ class CapabilityResolver:
             memory = FileMemoryPolicy()
 
         return CapabilitySet(
-            guardrails=(
-                self._guardrail_factory()
-                if self._guardrail_factory
-                else AllowAllGuardrails()
-            ),
-            sandbox=(
-                self._sandbox_factory()
-                if self._sandbox_factory
-                else PassthroughSandbox()
-            ),
+            guardrails=self._resolve_guardrails(persona),
+            sandbox=self._resolve_sandbox(persona),
             memory=memory,
             tools=(
                 self._tool_factory()
@@ -115,4 +191,5 @@ class CapabilityResolver:
                 )
             ),
             context=context,
+            models=self._resolve_models(persona, harness_type),
         )

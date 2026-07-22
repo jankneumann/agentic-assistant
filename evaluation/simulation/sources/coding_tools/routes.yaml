@@ -1,0 +1,57 @@
+# Simulated coding-tools source (P27 eval-simulation-loop).
+#
+# Operation ids match the `coding_tools:*` names in
+# roles/{coder,planner}/role.yaml preferred_tools.
+name: coding_tools
+title: "Simulated Coding Tools"
+version: "0.1.0"
+
+routes:
+  - operation_id: repo_status
+    method: GET
+    path: /repo/status
+    summary: "Get repository status"
+    response_file: responses/repo_status.json
+    parameters:
+      - name: repo
+        description: "Repository name (owner/repo)"
+        required: false
+
+  - operation_id: github_issues
+    method: GET
+    path: /github/issues
+    summary: "List GitHub issues"
+    response_file: responses/github_issues.json
+    parameters:
+      - name: repo
+        description: "Repository name (owner/repo)"
+        required: false
+      - name: state
+        description: "Issue state filter (open/closed/all)"
+        required: false
+
+  - operation_id: github_prs
+    method: GET
+    path: /github/prs
+    summary: "List GitHub pull requests"
+    response_file: responses/github_prs.json
+    parameters:
+      - name: repo
+        description: "Repository name (owner/repo)"
+        required: false
+
+  - operation_id: file_read
+    method: GET
+    path: /files/read
+    summary: "Read a file from the repository"
+    response_file: responses/file_read.json
+    parameters:
+      - name: path
+        description: "Repository-relative file path"
+        required: true
+
+  - operation_id: agent_coordinate
+    method: POST
+    path: /agents/coordinate
+    summary: "Coordinate with the agent task board"
+    response_file: responses/agent_coordinate.json

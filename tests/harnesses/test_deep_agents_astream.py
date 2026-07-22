@@ -52,6 +52,11 @@ def _make_harness() -> DeepAgentsHarness:
     persona = MagicMock()
     persona.name = "test"
     persona.harnesses = {}
+    # Empty database_url + memory_content: the capability resolver picks
+    # FileMemoryPolicy and post-turn capture is a no-op (memory-retrieval-
+    # activation) — keeps these streaming tests focused on event mapping.
+    persona.database_url = ""
+    persona.memory_content = ""
     role = MagicMock()
     role.name = "assistant"
     role.skills_dir = None
@@ -60,6 +65,8 @@ def _make_harness() -> DeepAgentsHarness:
     # importing create_deep_agent at construction time).
     harness.persona = persona
     harness.role = role
+    harness._memory_policy = None
+    harness._memory_snippet_limit = 10
     harness._active_model = DeepAgentsHarness._DEFAULT_MODEL
     harness._thread_id = "thread-test-uuid-1234"
     return harness
@@ -739,3 +746,63 @@ def test_create_agent_does_not_reassign_thread_id_source() -> None:
         "(IMPL_REVIEW round-1 gemini #5 / round-2 claude-r2-1). "
         "Source extracted for inspection:\n" + code
     )
+
+
+# ---------------------------------------------------------------------------
+# memory-retrieval-activation — post-turn capture on the streaming path
+# ---------------------------------------------------------------------------
+
+
+class _RecordingMemoryPolicy:
+    """Minimal MemoryPolicy fake that records post-turn captures."""
+
+    def __init__(self) -> None:
+        self.recorded: list[tuple[str, str]] = []
+
+    def resolve(self, persona: Any, harness_name: str) -> Any:
+        raise NotImplementedError
+
+    def export_memory_context(self, persona: Any) -> str:
+        return ""
+
+    async def get_recent_snippets(
+        self, persona: Any, role: Any, *, limit: int = 10
+    ) -> list[str]:
+        return []
+
+    async def record_interaction(
+        self, persona: Any, role: Any, *, user_message: str, response: str
+    ) -> None:
+        self.recorded.append((user_message, response))
+
+
+@pytest.mark.asyncio
+async def test_astream_invoke_captures_accumulated_text_on_success() -> None:
+    """A successful stream MUST capture the concatenated assistant text
+    before the terminal RunFinished (memory-retrieval-activation)."""
+    harness = _make_harness()
+    policy = _RecordingMemoryPolicy()
+    harness._memory_policy = policy
+    agent = _make_fake_agent(
+        [_text_chunk_event("Hello "), _text_chunk_event("world")]
+    )
+
+    events = [ev async for ev in harness.astream_invoke(agent, "greet me")]
+
+    assert isinstance(events[-1], RunFinished)
+    assert policy.recorded == [("greet me", "Hello world")]
+
+
+@pytest.mark.asyncio
+async def test_astream_invoke_does_not_capture_on_error() -> None:
+    """A failed stream MUST NOT capture (success-path only contract)."""
+    harness = _make_harness()
+    policy = _RecordingMemoryPolicy()
+    harness._memory_policy = policy
+    agent = _make_raising_agent(RuntimeError("upstream broke"))
+
+    with pytest.raises(RuntimeError, match="upstream broke"):
+        async for _ in harness.astream_invoke(agent, "greet me"):
+            pass
+
+    assert policy.recorded == []

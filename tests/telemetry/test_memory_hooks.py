@@ -102,6 +102,24 @@ async def test_get_context_emits_op_context(spy_and_manager: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_recent_snippets_emits_op_snippets_no_double_count(
+    spy_and_manager: Any,
+) -> None:
+    """memory-retrieval-activation: exactly ONE trace_memory_op with
+    op="snippets", spanning the inner graphiti search (req
+    observability.6 — no second span from inside the client)."""
+    spy, mgr, graphiti = spy_and_manager
+    await mgr.get_recent_snippets("personal", "researcher")
+    calls = spy.calls["trace_memory_op"]
+    assert len(calls) == 1
+    assert calls[0]["op"] == "snippets"
+    assert calls[0]["target"] == "personal"
+    assert calls[0]["persona"] == "personal"
+    # The inner graphiti search happened inside the single span.
+    assert graphiti.calls == ["search:researcher"]
+
+
+@pytest.mark.asyncio
 async def test_store_fact_emits_op_fact_write_with_key_target(
     spy_and_manager: Any,
 ) -> None:
@@ -124,6 +142,19 @@ async def test_store_interaction_emits_op_interaction_write(
     assert len(calls) == 1
     assert calls[0]["op"] == "interaction_write"
     assert calls[0]["target"] == "personal"
+
+
+@pytest.mark.asyncio
+async def test_list_interactions_emits_op_interaction_list(
+    spy_and_manager: Any,
+) -> None:
+    spy, mgr, _ = spy_and_manager
+    await mgr.list_interactions("personal", limit=10)
+    calls = spy.calls["trace_memory_op"]
+    assert len(calls) == 1
+    assert calls[0]["op"] == "interaction_list"
+    assert calls[0]["target"] == "personal"
+    assert isinstance(calls[0]["duration_ms"], float)
 
 
 @pytest.mark.asyncio

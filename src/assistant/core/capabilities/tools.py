@@ -5,6 +5,15 @@ supplied by the ``http-tools-layer`` phase: ``authorized_tools``
 merges extension tools with HTTP-tool registry contents and applies
 the ``role.preferred_tools`` filter uniformly by tool name
 (``"{source}:{op_id}"`` for HTTP tools).
+
+P17 ``mcp-server-exposure`` (spec ``tool-spec``): ``authorized_tools``
+aggregates and returns harness-neutral
+:class:`~assistant.core.toolspec.ToolSpec` instances — extensions via
+``Extension.tool_specs()`` (telemetry-wrapped here, at the single
+aggregation site) plus the HTTP-tool registry (wrapped at build time).
+The tool policy is the SOLE tool aggregator: harnesses receive this
+list through ``create_agent(tools=...)`` and render it with their
+per-harness adapter, never re-deriving tools from extensions.
 """
 
 from __future__ import annotations
@@ -12,7 +21,7 @@ from __future__ import annotations
 from typing import Any, Protocol, runtime_checkable
 
 from assistant.http_tools import HttpToolRegistry
-from assistant.telemetry.tool_wrap import wrap_extension_tools
+from assistant.telemetry.tool_wrap import wrap_extension_tool_specs
 
 
 @runtime_checkable
@@ -40,11 +49,11 @@ class DefaultToolPolicy:
         all_tools: list[Any] = []
         for ext in loaded_extensions:
             # Spec capability-resolver "Aggregated Extension Tools Are
-            # Traced": each extension's tools are wrapped at the
+            # Traced": each extension's ToolSpecs are wrapped at the
             # aggregation site so every invocation emits one
             # ``trace_tool_call(tool_kind="extension", ...)``. The
             # shared helper keeps wrapping policy in one place.
-            all_tools.extend(wrap_extension_tools(ext))
+            all_tools.extend(wrap_extension_tool_specs(ext))
 
         if self._http_tool_registry is not None:
             all_tools.extend(self._http_tool_registry.list_all())

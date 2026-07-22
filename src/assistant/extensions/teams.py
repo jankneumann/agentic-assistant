@@ -9,10 +9,9 @@ Wire-shape decisions (see ``openspec/changes/ms-graph-extension``):
 - D6: same class structure as the other three real extensions —
   ``__init__(config, client)`` with the ``CloudGraphClient`` injected,
   scopes resolved with REPLACE semantics (D24), private async methods
-  (`_list_chats`, `_post_chat_message`, ...) wrapped twice — once as
-  LangChain ``StructuredTool``, once as MSAF ``@ai_function`` callable.
-- D11: tools authored twice rather than via a central converter so the
-  per-ecosystem descriptions stay precise.
+  (`_list_chats`, `_post_chat_message`, ...) compiled into
+  harness-neutral ToolSpecs via ``tool_specs()`` (P17 tool-spec
+  migration; replaces the D11 dual-format authoring).
 - D18: ``_post_chat_message`` calls ``client.post(..., retry_safe=False)``
   because Teams chat-messages are non-idempotent — auto-replaying a 5xx
   would duplicate the message in the chat.
@@ -39,7 +38,6 @@ from __future__ import annotations
 import urllib.parse
 from typing import TYPE_CHECKING, Any
 
-from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from assistant.core.resilience import (
@@ -48,10 +46,10 @@ from assistant.core.resilience import (
     get_circuit_breaker_registry,
     health_status_from_breaker,
 )
+from assistant.core.toolspec import ToolSpec, tool_spec_from_model
+from assistant.extensions.base import ExtensionBase
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from assistant.core.cloud_client import CloudGraphClient
     from assistant.core.persona import PersonaConfig
 
@@ -245,7 +243,7 @@ class _PostChatMessageArgs(BaseModel):
 # ─────────────────────────────────────────────────────────────────────
 
 
-class TeamsExtension:
+class TeamsExtension(ExtensionBase):
     """Real Microsoft Teams extension (P5 — replaces ``StubExtension``)."""
 
     name: str = "teams"
@@ -262,68 +260,44 @@ class TeamsExtension:
             get_circuit_breaker_registry().get_breaker(f"extension:{self.name}")
         )
 
-    # ── Tool surfaces ──────────────────────────────────────────────
+    # ── Tool surface (ToolSpec — spec tool-spec / P17) ─────────────
 
-    def as_langchain_tools(self) -> list[StructuredTool]:
-        """Return LangChain ``StructuredTool``s; one per tool method.
+    def tool_specs(self) -> list[ToolSpec]:
+        """Return harness-neutral ToolSpecs; one per tool method.
 
-        DeepAgents harness consumes only this surface; the MSAF harness
-        consumes ``as_ms_agent_tools()``. Both surfaces wrap the same
-        private async method (e.g. ``_list_chats``) — D11 dual-format
-        authoring with per-ecosystem descriptions.
+        Per-harness adapters (``assistant.harnesses.tool_adapters``)
+        render these to each harness's native shape; every rendering
+        invokes the same private async method (e.g. ``_list_chats``).
         """
+        source = f"extension:{self.name}"
         return [
-            StructuredTool.from_function(
-                coroutine=self._list_chats,
+            tool_spec_from_model(
+                handler=self._list_chats,
                 name="teams.list_chats",
                 description=_LIST_CHATS_DESCRIPTION,
-                args_schema=_ListChatsArgs,
+                args_model=_ListChatsArgs,
+                source=source,
             ),
-            StructuredTool.from_function(
-                coroutine=self._list_channel_messages,
+            tool_spec_from_model(
+                handler=self._list_channel_messages,
                 name="teams.list_channel_messages",
                 description=_LIST_CHANNEL_MESSAGES_DESCRIPTION,
-                args_schema=_ListChannelMessagesArgs,
+                args_model=_ListChannelMessagesArgs,
+                source=source,
             ),
-            StructuredTool.from_function(
-                coroutine=self._read_message,
+            tool_spec_from_model(
+                handler=self._read_message,
                 name="teams.read_message",
                 description=_READ_MESSAGE_DESCRIPTION,
-                args_schema=_ReadMessageArgs,
+                args_model=_ReadMessageArgs,
+                source=source,
             ),
-            StructuredTool.from_function(
-                coroutine=self._post_chat_message,
+            tool_spec_from_model(
+                handler=self._post_chat_message,
                 name="teams.post_chat_message",
                 description=_POST_CHAT_MESSAGE_DESCRIPTION,
-                args_schema=_PostChatMessageArgs,
-            ),
-        ]
-
-    def as_ms_agent_tools(self) -> list[Callable[..., Any]]:
-        """Return MSAF tools — one ``@ai_function``-decorated callable
-        per tool method.
-
-        ``agent_framework`` is an optional dependency (only installed
-        when the MS Agent Framework harness is in use). When it's not
-        importable we still need to expose tool callables for the
-        dual-format parity contract (ms-extensions / "Tool counts
-        match across formats", "Tool names match by index"). The
-        fallback branch returns plain async wrappers that satisfy the
-        same name-by-index parity assertion.
-        """
-        ai_function = _resolve_ai_function()
-        return [
-            _ai_tool(ai_function, "teams.list_chats", self._list_chats),
-            _ai_tool(
-                ai_function,
-                "teams.list_channel_messages",
-                self._list_channel_messages,
-            ),
-            _ai_tool(ai_function, "teams.read_message", self._read_message),
-            _ai_tool(
-                ai_function,
-                "teams.post_chat_message",
-                self._post_chat_message,
+                args_model=_PostChatMessageArgs,
+                source=source,
             ),
         ]
 
@@ -331,6 +305,31 @@ class TeamsExtension:
         return health_status_from_breaker(
             self._breaker, key=f"extension:{self.name}"
         )
+
+    # ── Lifecycle (P10 extension-lifecycle) ────────────────────────
+    # ``initialize()`` stays the inherited no-op: eager token
+    # acquisition would trigger an interactive MSAL prompt at persona
+    # load for the delegated flow (design D7).
+
+    async def shutdown(self) -> None:
+        """Close the injected client's connection pool.
+
+        ``CloudGraphClient.aclose()`` is idempotent by contract, so a
+        double shutdown (explicit + atexit) is safe.
+        """
+        await self._client.aclose()
+
+    async def refresh_credentials(self) -> None:
+        """Proactively refresh MSAL credentials via the client.
+
+        Delegates to the injected client's ``refresh_credentials()``
+        when it exposes one (the real ``GraphClient`` does); mock or
+        third-party ``CloudGraphClient`` implementations without the
+        method degrade to a no-op (design D6).
+        """
+        refresh = getattr(self._client, "refresh_credentials", None)
+        if callable(refresh):
+            await refresh()
 
     # ── Tool methods ───────────────────────────────────────────────
 
@@ -508,74 +507,6 @@ def _resolve_scopes(config: dict[str, Any]) -> list[str]:
             f"got {type(raw).__name__}"
         )
     return list(raw)
-
-
-def _resolve_ai_function() -> Callable[..., Any]:
-    """Return ``agent_framework.ai_function`` or a no-op fallback.
-
-    ``agent-framework`` is an optional dependency (extras = ``ms``);
-    when it's not installed the fallback returns a decorator factory
-    that preserves ``__name__`` so the dual-format parity assertion
-    (``msaf.__name__ == langchain.name``) still holds.
-    """
-    try:
-        from agent_framework import ai_function  # type: ignore[attr-defined]
-    except ImportError:
-        return _noop_ai_function
-    return ai_function  # type: ignore[no-any-return,unused-ignore]
-
-
-def _noop_ai_function(
-    *,
-    name: str | None = None,
-    **_extra: Any,
-) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-    """Stand-in for ``agent_framework.ai_function`` when SDK is absent.
-
-    Returns a decorator that returns the wrapped callable unchanged.
-    Production runs install ``agent-framework`` via the ``ms`` extra;
-    this fallback only kicks in when the SDK isn't available (e.g.
-    the personal persona never enables MSAF). Name assignment happens
-    via the ``_ai_tool`` wrapper so this stays a pure pass-through.
-    """
-    # ``name`` and ``**_extra`` are accepted for kwarg-compat with the
-    # real SDK signature; the fallback ignores them.
-    del name, _extra
-
-    def _decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
-        return fn
-
-    return _decorator
-
-
-def _ai_tool(
-    ai_function: Callable[..., Any],
-    name: str,
-    fn: Callable[..., Any],
-) -> Callable[..., Any]:
-    """Wrap ``fn`` as an MSAF tool with the requested tool name.
-
-    Bound methods do not allow ``__name__`` assignment, so we wrap
-    the bound method in a thin ``async def`` whose ``__name__`` is
-    writable, apply ``@ai_function(name=name)``, and force-set
-    ``__name__`` on the result. This makes the dual-format name-by-
-    index parity assertion (``msaf.__name__ == langchain.name``) hold
-    regardless of whether the real SDK decorator preserves names.
-    """
-
-    async def _bound(*args: Any, **kwargs: Any) -> Any:
-        return await fn(*args, **kwargs)
-
-    _bound.__name__ = name
-    _bound.__qualname__ = name
-    decorated: Any = ai_function(name=name)(_bound)
-    # Defensive: ensure ``__name__`` reflects the requested tool name
-    # even if the SDK decorator wraps in something opaque.
-    try:
-        decorated.__name__ = name
-    except (AttributeError, TypeError):
-        pass
-    return decorated
 
 
 # ─────────────────────────────────────────────────────────────────────

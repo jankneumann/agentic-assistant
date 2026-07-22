@@ -1,0 +1,20 @@
+// FIXTURE_SIM_RESPONSE_v1
+{
+  "results": [
+    {
+      "id": "doc-synthetic-0001",
+      "title": "Synthetic article about agent evaluation",
+      "snippet": "Synthetic placeholder snippet for simulation runs.",
+      "score": 0.92,
+      "url": "https://synthetic.example/articles/agent-evaluation"
+    },
+    {
+      "id": "doc-synthetic-0002",
+      "title": "Synthetic note on fixture-backed simulators",
+      "snippet": "Second synthetic placeholder snippet.",
+      "score": 0.81,
+      "url": "https://synthetic.example/notes/simulators"
+    }
+  ],
+  "total": 2
+}

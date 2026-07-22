@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import atexit
 import importlib.util
+import inspect
 import logging
 import os
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from importlib import import_module
 from pathlib import Path
@@ -14,7 +18,112 @@ from typing import Any
 
 import yaml
 
+from assistant.core.capabilities.catalog import (
+    apply_catalog_metadata,
+    load_catalog_cache,
+)
+from assistant.core.capabilities.credentials import (
+    CredentialProvider,
+    EnvCredentialProvider,
+)
+from assistant.core.capabilities.guardrails import (
+    GuardrailConfig,
+    GuardrailConfigError,
+    parse_guardrail_config,
+)
+from assistant.core.capabilities.models import (
+    ModelRegistry,
+    ModelRegistryError,
+    parse_model_registry,
+)
+from assistant.core.capabilities.openbao import (
+    CredentialsConfigError,
+    build_credential_provider,
+    parse_credentials_config,
+)
+from assistant.core.capabilities.sandbox import (
+    SandboxConfigError,
+    SandboxSettings,
+    parse_sandbox_settings,
+)
+from assistant.core.cleanroom import (
+    CleanRoomConfig,
+    CleanRoomConfigError,
+    parse_clean_room_config,
+)
+from assistant.core.durable import (
+    SessionsConfig,
+    SessionsConfigError,
+    parse_sessions_config,
+)
+from assistant.core.extension_integrity import (
+    IntegrityVerdict,
+    check_extension_integrity,
+)
+from assistant.core.harness_routing import (
+    HarnessRoutingError,
+    HarnessRoutingRule,
+    parse_harness_routing,
+)
+from assistant.core.learning import (
+    LearningConfig,
+    LearningConfigError,
+    parse_learning_config,
+)
+from assistant.core.scheduler import (
+    ScheduleConfig,
+    ScheduleConfigError,
+    parse_schedule_config,
+)
+
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class A2AAuthConfig:
+    """Parsed ``auth.a2a`` served-surface auth declaration (P25 agent-iam).
+
+    ``token_env`` is a CredentialProvider ref (env-var name today,
+    vault path under the OpenBao backend) — never the token value
+    itself. The only supported ``type`` is ``bearer``.
+    """
+
+    type: str
+    token_env: str
+
+
+def parse_a2a_auth(raw: Any) -> A2AAuthConfig | None:
+    """Validate an ``auth.a2a`` mapping; ``None`` when undeclared.
+
+    Actionable-error posture: unknown keys, unsupported types, and a
+    missing/empty ``token_env`` fail with a ``ValueError`` naming the
+    offender so persona load surfaces it directly.
+    """
+    if not raw:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"auth.a2a: expected a mapping, got {type(raw).__name__}."
+        )
+    unknown = sorted(set(raw) - {"type", "token_env"})
+    if unknown:
+        raise ValueError(
+            f"auth.a2a: unknown keys {unknown}. Expected 'type: bearer' "
+            f"and 'token_env: <ref>'."
+        )
+    auth_type = raw.get("type", "bearer")
+    if auth_type != "bearer":
+        raise ValueError(
+            f"auth.a2a: type {auth_type!r} is not supported; only "
+            f"'bearer' exists today."
+        )
+    token_env = raw.get("token_env")
+    if not isinstance(token_env, str) or not token_env:
+        raise ValueError(
+            "auth.a2a: requires a non-empty 'token_env' naming the "
+            "credential ref that holds the expected bearer token."
+        )
+    return A2AAuthConfig(type=auth_type, token_env=token_env)
 
 
 @dataclass
@@ -45,6 +154,61 @@ class PersonaConfig:
     disabled_roles: list[str] = field(default_factory=list)
     prompt_augmentation: str = ""
     memory_content: str = ""
+    # Parsed + validated ``models:`` registry (model-provider spec /
+    # P19 model-provider-routing) — the only model-selection mechanism.
+    # Empty when the persona declares no registry; the resolver then
+    # synthesizes one from the known harness defaults
+    # (``default_model_registry``).
+    models: ModelRegistry = field(default_factory=ModelRegistry)
+    # Parsed + validated ``guardrails:`` section (guardrail-provider
+    # spec / P13 security-hardening). Falsy when the persona declares
+    # no guardrails — the resolver then selects AllowAllGuardrails.
+    guardrails: GuardrailConfig = field(default_factory=GuardrailConfig)
+    # Parsed + validated ``schedules:`` section (scheduler spec / P7).
+    # Falsy when the persona declares no scheduled jobs — the daemon
+    # CLI refuses to start without them.
+    schedules: ScheduleConfig = field(default_factory=ScheduleConfig)
+    # Parsed + validated ``harnesses.routing:`` rules (harness-adapter
+    # spec / P11 harness-routing). Ordered first-match rules consumed
+    # by ``select_harness`` for ``--harness auto``; the ``routing`` key
+    # is popped out of ``harnesses`` so that mapping stays strictly
+    # harness-name -> config. Empty when the persona declares no rules.
+    harness_routing: tuple[HarnessRoutingRule, ...] = ()
+    # Persona-scoped credential provider (credential-provider spec /
+    # P13): persona ``.env`` values first, process env fallback.
+    # Since P25 agent-iam a persona ``credentials: {backend: openbao}``
+    # section selects the OpenBao backend layered over the same env
+    # tiers. ``repr=False`` — the scoped namespace holds secret values.
+    credentials: CredentialProvider = field(
+        default_factory=EnvCredentialProvider, repr=False
+    )
+    # Parsed ``auth.a2a`` served-surface auth (P25 agent-iam). ``None``
+    # keeps the pre-P25 loopback-unauthenticated posture (the A2A
+    # server warns at startup).
+    a2a_auth: A2AAuthConfig | None = None
+    # Parsed ``sandbox:`` section (sandbox-provider spec / P22
+    # meta-harness-compat). ``None`` keeps the PassthroughSandbox
+    # default; ``provider: container`` selects the
+    # ContainerSandboxProvider through the capability resolver.
+    sandbox: SandboxSettings | None = None
+    # Parsed + validated ``clean_room:`` section (clean-room spec /
+    # P26 knowledge-clean-room). Falsy when the persona declares no
+    # clean-room rules — the declassification gateway then refuses
+    # every export AND import (total persona isolation, the default).
+    clean_room: CleanRoomConfig = field(default_factory=CleanRoomConfig)
+    # Parsed + validated ``learning:`` section (learning spec / P28
+    # continual-learning). Falsy when the persona declares no learning
+    # section (or ``enabled: false``) — every learning entry point
+    # (feedback, reflection, proposals, apply) then refuses; continual
+    # learning is dormant by default.
+    learning: LearningConfig = field(default_factory=LearningConfig)
+    # Parsed + validated ``sessions:`` section (P30 durable-sessions).
+    # Falsy when the persona declares no durable sessions — the
+    # DeepAgents checkpointer stays InMemorySaver, serving-surface
+    # session registries stay purely in-memory, and every
+    # require_confirmation guardrail decision keeps its P13 deny
+    # behavior (approvals need the persona DB).
+    sessions: SessionsConfig = field(default_factory=SessionsConfig)
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -61,12 +225,30 @@ class PersonaRegistry:
     callers — see docs/gotchas.md G6 for the privacy-boundary rationale.
     """
 
-    def __init__(self, personas_dir: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        personas_dir: Path | str | None = None,
+        *,
+        credential_provider_factory: (
+            Callable[[str, Path], CredentialProvider] | None
+        ) = None,
+    ) -> None:
         if personas_dir is None:
             env = os.environ.get("ASSISTANT_PERSONAS_DIR")
             personas_dir = Path(env) if env else _DEFAULT_PERSONAS_DIR
         self.personas_dir = Path(personas_dir)
+        # P13 security-hardening: injection point for a custom
+        # CredentialProvider backend (e.g. OpenBao in P25). The factory
+        # receives ``(persona_name, persona_dir)``; the default builds
+        # the persona-scoped env provider (persona ``.env`` first,
+        # process env fallback).
+        self._credential_provider_factory = credential_provider_factory
         self._cache: dict[str, PersonaConfig] = {}
+        # P10 extension-lifecycle: extensions that completed
+        # ``initialize()`` and are awaiting ``shutdown()``, in
+        # activation order. Drained by ``shutdown_extensions()``.
+        self._active_extensions: list[Any] = []
+        self._atexit_registered = False
 
     def discover(self) -> list[str]:
         if not self.personas_dir.exists():
@@ -107,17 +289,142 @@ class PersonaRegistry:
         auth_cfg_raw = (raw.get("auth") or {}).get("config") or {}
         tool_sources_raw = raw.get("tool_sources") or {}
 
+        try:
+            models = parse_model_registry(raw.get("models") or {})
+        except ModelRegistryError as exc:
+            raise ValueError(
+                f"Persona '{raw['name']}' ({config_path}): invalid "
+                f"models: registry — {exc}"
+            ) from exc
+
+        # P20 local-inference-node: entries whose `id` matches a row in
+        # the persona-local catalog cache (written by `assistant models
+        # sync-catalog`) inherit pricing / context_length / modalities
+        # for fields they left empty — declared values always win, and
+        # a missing cache is a silent no-op (offline-safe, no network).
+        if models:
+            updated = apply_catalog_metadata(
+                models, load_catalog_cache(persona_dir)
+            )
+            if updated:
+                logger.debug(
+                    "persona '%s': catalog cache filled metadata for %s",
+                    raw["name"],
+                    updated,
+                )
+
+        try:
+            guardrails = parse_guardrail_config(
+                raw.get("guardrails") or {}, persona_dir=persona_dir
+            )
+        except GuardrailConfigError as exc:
+            raise ValueError(
+                f"Persona '{raw['name']}' ({config_path}): invalid "
+                f"guardrails: section — {exc}"
+            ) from exc
+
+        try:
+            schedules = parse_schedule_config(raw.get("schedules") or {})
+        except ScheduleConfigError as exc:
+            raise ValueError(
+                f"Persona '{raw['name']}' ({config_path}): invalid "
+                f"schedules: section — {exc}"
+            ) from exc
+
+        # P11 harness-routing: ``harnesses.routing:`` is a rule list,
+        # not a harness config — pop it so ``PersonaConfig.harnesses``
+        # stays strictly harness-name -> config mapping.
+        harnesses_raw = dict(raw.get("harnesses", {}) or {})
+        try:
+            harness_routing = parse_harness_routing(
+                harnesses_raw.pop("routing", None)
+            )
+        except HarnessRoutingError as exc:
+            raise ValueError(
+                f"Persona '{raw['name']}' ({config_path}): invalid "
+                f"harnesses.routing: section — {exc}"
+            ) from exc
+
+        try:
+            a2a_auth = parse_a2a_auth((raw.get("auth") or {}).get("a2a"))
+        except ValueError as exc:
+            raise ValueError(
+                f"Persona '{raw['name']}' ({config_path}): invalid "
+                f"auth.a2a: section — {exc}"
+            ) from exc
+
+        try:
+            sandbox = parse_sandbox_settings(raw.get("sandbox"))
+        except SandboxConfigError as exc:
+            raise ValueError(
+                f"Persona '{raw['name']}' ({config_path}): invalid "
+                f"sandbox: section — {exc}"
+            ) from exc
+
+        try:
+            clean_room = parse_clean_room_config(raw.get("clean_room"))
+        except CleanRoomConfigError as exc:
+            raise ValueError(
+                f"Persona '{raw['name']}' ({config_path}): invalid "
+                f"clean_room: section — {exc}"
+            ) from exc
+
+        try:
+            learning = parse_learning_config(
+                raw.get("learning"), persona_dir=persona_dir
+            )
+        except LearningConfigError as exc:
+            raise ValueError(
+                f"Persona '{raw['name']}' ({config_path}): invalid "
+                f"learning: section — {exc}"
+            ) from exc
+
+        try:
+            sessions = parse_sessions_config(raw.get("sessions"))
+        except SessionsConfigError as exc:
+            raise ValueError(
+                f"Persona '{raw['name']}' ({config_path}): invalid "
+                f"sessions: section — {exc}"
+            ) from exc
+
+        # P13 security-hardening: every persona-config secret read goes
+        # through the persona-scoped CredentialProvider (persona .env
+        # values first, process env fallback) — never through a direct
+        # os.environ read. P25 agent-iam: an injected factory still
+        # wins; otherwise a persona ``credentials: {backend: openbao}``
+        # section selects the OpenBao backend layered over the env
+        # tiers (unconfigured/unreachable degrades to env, never fatal).
+        try:
+            credentials_config = parse_credentials_config(
+                raw.get("credentials")
+            )
+        except CredentialsConfigError as exc:
+            raise ValueError(
+                f"Persona '{raw['name']}' ({config_path}): invalid "
+                f"credentials: section — {exc}"
+            ) from exc
+        credentials = (
+            self._credential_provider_factory(raw["name"], persona_dir)
+            if self._credential_provider_factory is not None
+            else build_credential_provider(
+                raw["name"], persona_dir, credentials_config
+            )
+        )
+
+        def _cred(ref: Any) -> str:
+            return credentials.get_credential(str(ref)) if ref else ""
+
         config = PersonaConfig(
             name=raw["name"],
             display_name=raw.get("display_name", raw["name"]),
-            database_url=_env((raw.get("database") or {}).get("url_env", "")),
-            graphiti_url=_env((raw.get("graphiti") or {}).get("url_env", "")),
+            database_url=_cred((raw.get("database") or {}).get("url_env", "")),
+            graphiti_url=_cred((raw.get("graphiti") or {}).get("url_env", "")),
             auth_provider=(raw.get("auth") or {}).get("provider", "custom"),
-            auth_config={k: _env(v) for k, v in auth_cfg_raw.items()},
-            harnesses=raw.get("harnesses", {}) or {},
+            auth_config={k: _cred(v) for k, v in auth_cfg_raw.items()},
+            harnesses=harnesses_raw,
             tool_sources={
                 src_name: {
-                    "base_url": _env(src.get("base_url_env", "")),
+                    "base_url": _cred(src.get("base_url_env", "")),
                     "auth_header": _normalize_auth_header(src),
                     "allowed_tools": src.get("allowed_tools", []) or [],
                 }
@@ -129,6 +436,16 @@ class PersonaRegistry:
             ),
             default_role=raw.get("default_role", "chief_of_staff"),
             disabled_roles=raw.get("disabled_roles", []) or [],
+            models=models,
+            guardrails=guardrails,
+            schedules=schedules,
+            harness_routing=harness_routing,
+            credentials=credentials,
+            a2a_auth=a2a_auth,
+            sandbox=sandbox,
+            clean_room=clean_room,
+            learning=learning,
+            sessions=sessions,
             raw=raw,
         )
 
@@ -144,6 +461,117 @@ class PersonaRegistry:
         return config
 
     def load_extensions(self, config: PersonaConfig) -> list[Any]:
+        """Load, initialize, and register the persona's extensions (sync).
+
+        Thin wrapper over :meth:`load_extensions_async` for callers
+        outside an event loop (scripts, sync tests). Callers already
+        running inside a loop MUST use the async variant — a sync call
+        cannot await the extensions' ``initialize()`` hooks, and
+        running them on a throwaway worker-thread loop would bind
+        extension resources (e.g. httpx pools) to a dead loop
+        (extension-lifecycle design D4).
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.load_extensions_async(config))
+        raise RuntimeError(
+            "PersonaRegistry.load_extensions() cannot be called while an "
+            "event loop is running; use "
+            "`await registry.load_extensions_async(config)` instead."
+        )
+
+    async def load_extensions_async(self, config: PersonaConfig) -> list[Any]:
+        """Load extensions, run ``initialize()`` hooks, register shutdown.
+
+        Per the persona-registry requirement "Extension Initialization
+        and Shutdown Lifecycle": each loaded extension's optional
+        ``initialize()`` hook runs in declaration order immediately
+        post-load; a failing hook disables that extension (WARNING +
+        best-effort ``shutdown()``) without failing persona load.
+        Extensions that survive are tracked for
+        :meth:`shutdown_extensions` and a once-per-registry ``atexit``
+        handler.
+        """
+        extensions: list[Any] = []
+        for ext in self._load_extension_instances(config):
+            if not await self._initialize_extension(ext):
+                continue
+            extensions.append(ext)
+        if extensions:
+            self._active_extensions.extend(extensions)
+            self._register_atexit_handler()
+        return extensions
+
+    async def shutdown_extensions(self) -> None:
+        """Run ``shutdown()`` hooks on all active extensions.
+
+        Reverse activation order; per-extension errors are swallowed
+        with a WARNING. Idempotent — the active list is drained first,
+        so a second call (e.g. explicit daemon teardown followed by
+        the ``atexit`` handler) is a no-op.
+        """
+        extensions, self._active_extensions = self._active_extensions, []
+        for ext in reversed(extensions):
+            try:
+                await _call_optional_hook(ext, "shutdown")
+            except Exception as exc:
+                logger.warning(
+                    "Extension %r: shutdown() failed (continuing): %s",
+                    getattr(ext, "name", "<unknown>"),
+                    exc,
+                )
+
+    def _register_atexit_handler(self) -> None:
+        if self._atexit_registered:
+            return
+        self._atexit_registered = True
+        atexit.register(self._atexit_shutdown)
+
+    def _atexit_shutdown(self) -> None:
+        """Best-effort interpreter-exit bridge to ``shutdown_extensions``.
+
+        No event loop runs at ``atexit`` time, so ``asyncio.run`` is
+        safe. All errors are swallowed — the interpreter is exiting
+        and there is nothing actionable left to do.
+        """
+        if not self._active_extensions:
+            return
+        try:
+            asyncio.run(self.shutdown_extensions())
+        except Exception:  # pragma: no cover — interpreter teardown
+            logger.debug("atexit extension shutdown failed", exc_info=True)
+
+    async def _initialize_extension(self, ext: Any) -> bool:
+        """Run an extension's optional ``initialize()`` hook.
+
+        Returns ``True`` when the extension is usable (hook absent or
+        succeeded). On failure: WARNING, best-effort ``shutdown()`` of
+        the partially-initialized instance, and ``False`` so the
+        caller disables exactly this extension (design D3).
+        """
+        try:
+            await _call_optional_hook(ext, "initialize")
+        except Exception as exc:
+            logger.warning(
+                "Extension %r: initialize() failed; disabling this "
+                "extension (its tools will not be exposed): %s",
+                getattr(ext, "name", "<unknown>"),
+                exc,
+            )
+            try:
+                await _call_optional_hook(ext, "shutdown")
+            except Exception:
+                logger.debug(
+                    "Extension %r: best-effort shutdown after failed "
+                    "initialize also failed",
+                    getattr(ext, "name", "<unknown>"),
+                    exc_info=True,
+                )
+            return False
+        return True
+
+    def _load_extension_instances(self, config: PersonaConfig) -> list[Any]:
         extensions: list[Any] = []
         for ext_def in config.extensions:
             module_name = ext_def["module"]
@@ -151,6 +579,36 @@ class PersonaRegistry:
 
             private_path = config.extensions_dir / f"{module_name}.py"
             if private_path.exists():
+                # P13 security-hardening: verify the private file against
+                # the optional extensions-dir manifest BEFORE any code in
+                # it executes. A blocked file is disabled entirely — no
+                # fallback to a same-named public module, so tampering
+                # can never silently swap implementations.
+                integrity = check_extension_integrity(
+                    config.extensions_dir, private_path
+                )
+                if integrity.blocked:
+                    logger.error(
+                        "Extension %r: integrity verification failed "
+                        "(%s); NOT executing %s — extension disabled. "
+                        "If this change is intentional, regenerate the "
+                        "manifest with `assistant persona hash-extensions "
+                        "-p %s`.",
+                        module_name,
+                        integrity.detail,
+                        private_path,
+                        config.name,
+                    )
+                    continue
+                if integrity.verdict is IntegrityVerdict.UNVERIFIED:
+                    logger.warning(
+                        "Extension %r: %s — loading UNVERIFIED private "
+                        "extension. Generate a manifest with `assistant "
+                        "persona hash-extensions -p %s`.",
+                        module_name,
+                        integrity.detail,
+                        config.name,
+                    )
                 ext = _load_private_extension(
                     config.name,
                     module_name,
@@ -308,10 +766,23 @@ def _install_health_check_conformance_guard(ext: Any) -> None:
         )
 
 
-def _env(var_name: str | None) -> str:
-    if not var_name:
-        return ""
-    return os.environ.get(var_name, "")
+async def _call_optional_hook(ext: Any, hook_name: str) -> None:
+    """Invoke an optional lifecycle hook on ``ext``, tolerantly.
+
+    Per extension-lifecycle design D1/D2: hooks are documented-optional
+    (a ``typing.Protocol`` cannot carry defaults, and requiring them
+    would break ``isinstance`` for structural private-submodule
+    extensions), so absence is a no-op. A present hook is called and
+    its result awaited only when awaitable — a synchronous hook on an
+    out-of-tree extension is accepted. Exceptions propagate to the
+    caller, which owns the failure policy.
+    """
+    hook = getattr(ext, hook_name, None)
+    if not callable(hook):
+        return
+    result = hook()
+    if inspect.isawaitable(result):
+        await result
 
 
 def _normalize_auth_header(src: dict[str, Any]) -> dict[str, Any] | None:

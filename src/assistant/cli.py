@@ -1,8 +1,9 @@
 """CLI: persona-by-role-by-harness selection with REPL + /role + /delegate.
 
-Supports two modes:
+Supports three modes:
   - `run` (default): interactive REPL via SDK harness
   - `export`: generate host-harness integration artifacts
+  - `daemon`: run the persona's scheduled jobs (P7 scheduler)
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from assistant.core.role import RoleConfig, RoleRegistry
 from assistant.delegation.spawner import DelegationSpawner
 from assistant.harnesses.base import HostHarnessAdapter, SdkHarnessAdapter
 from assistant.harnesses.factory import create_harness as _default_create_harness
+from assistant.harnesses.factory import select_harness as _default_select_harness
 from assistant.http_tools import HttpToolRegistry
 from assistant.http_tools.discovery import discover_tools
 from assistant.telemetry import set_assistant_ctx
@@ -27,6 +29,10 @@ from assistant.telemetry import set_assistant_ctx
 logger = logging.getLogger(__name__)
 
 _create_harness = _default_create_harness
+# Injectable seam mirroring ``_create_harness`` (tests stub it). P11
+# harness-routing: resolves the ``auto`` sentinel; explicit -H names
+# pass through unchanged.
+_select_harness = _default_select_harness
 
 def _list_role_skills(rc: RoleConfig) -> list[str]:
     """Return sorted skill names declared by the role's ``skills_dir``.
@@ -61,6 +67,7 @@ def _build_help_line(rc: RoleConfig) -> str:
         "/roles",
         "/role <name>",
         "/delegate <role> <task>",
+        "/feedback <text>",
         "/quit",
     ]
     if rc.name == "teacher":
@@ -131,9 +138,16 @@ def main() -> None:
 @click.option(
     "--harness",
     "-H",
-    type=click.Choice(["deep_agents", "ms_agent_framework", "claude_code"]),
-    default="deep_agents",
-    help="Harness backend.",
+    type=click.Choice(
+        ["auto", "deep_agents", "ms_agent_framework", "claude_code"]
+    ),
+    default="auto",
+    help=(
+        "Harness backend. 'auto' (default) routes deterministically: "
+        "persona harnesses.routing: rules first, then M365-tool roles "
+        "to ms_agent_framework when enabled, else deep_agents. Host "
+        "harnesses are never auto-selected."
+    ),
 )
 @click.option(
     "--list-personas",
@@ -215,6 +229,14 @@ def run(
                 f"Available: {', '.join(available) if available else '(none)'}."
             )
 
+    # P11 harness-routing: resolve the 'auto' sentinel (explicit names
+    # pass through). The session keeps this harness across /role
+    # switches — routing runs once at startup.
+    try:
+        harness = _select_harness(pc, rc, requested=harness)
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
+
     # Bind the assistant ContextVar (D4) so every span emitted during
     # this CLI run carries the right persona + role labels without
     # threading them through every method signature. Set once per CLI
@@ -292,6 +314,62 @@ def export(persona: str, role: str | None, harness: str) -> None:
     click.echo(context.get("system_prompt", ""))
 
 
+@main.command("export-omnigent-agent")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.option(
+    "--base-url",
+    type=str,
+    default="http://127.0.0.1:8765",
+    show_default=True,
+    help=(
+        "Base URL where `assistant serve -p <persona> --a2a --mcp` is "
+        "reachable from the meta-harness; endpoint paths are appended."
+    ),
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(dir_okay=False, writable=True, path_type=Path),
+    default=None,
+    help="Write the YAML to this file instead of stdout.",
+)
+def export_omnigent_agent(
+    persona: str, base_url: str, output: Path | None
+) -> None:
+    """Export an Omnigent-shaped composable agent definition (P22).
+
+    Generates a YAML describing this assistant as an agent composable
+    UNDER the Omnigent meta-harness via its served A2A/MCP/AG-UI
+    endpoints (ADR 0007). The file header marks the schema as
+    Omnigent-shaped-but-unverified — check it against the canonical
+    omnigent-ai/omnigent schema on a connected machine before use.
+    """
+    from assistant.composition.omnigent import (
+        build_omnigent_agent_definition,
+        render_omnigent_agent_yaml,
+    )
+
+    persona_reg = PersonaRegistry()
+    role_reg = RoleRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    roles: list[RoleConfig] = []
+    for role_name in role_reg.available_for_persona(pc):
+        try:
+            roles.append(role_reg.load(role_name, pc))
+        except ValueError as e:  # pragma: no cover — defensive
+            logger.warning("Skipping unloadable role %r: %s", role_name, e)
+
+    definition = build_omnigent_agent_definition(
+        pc, roles, base_url=base_url
+    )
+    text = render_omnigent_agent_yaml(definition)
+    if output is not None:
+        output.write_text(text)
+        click.echo(f"Wrote Omnigent agent definition to {output}")
+    else:
+        click.echo(text, nl=False)
+
+
 @main.command()
 @click.option("--persona", "-p", type=str, required=True, help="Persona name.")
 @click.option("--role", "-r", type=str, default=None, help="Role name.")
@@ -299,17 +377,45 @@ def export(persona: str, role: str | None, harness: str) -> None:
     "--harness",
     "-H",
     type=str,
-    default="deep_agents",
-    help="SDK harness backend (default: deep_agents).",
+    default="auto",
+    help=(
+        "SDK harness backend (default: auto — deterministic routing "
+        "via persona rules + role signals; explicit names bypass)."
+    ),
 )
 @click.option("--host", type=str, default="127.0.0.1", help="Bind host (default: 127.0.0.1).")
 @click.option("--port", type=int, default=8765, help="Bind port (default: 8765).")
+@click.option(
+    "--a2a",
+    "enable_a2a",
+    is_flag=True,
+    default=False,
+    help=(
+        "Also serve the A2A protocol surface: agent card at "
+        "/.well-known/agent-card.json (+ legacy agent.json) and "
+        "JSON-RPC POST /a2a/v1 (message/send, message/stream)."
+    ),
+)
+@click.option(
+    "--mcp",
+    "enable_mcp",
+    is_flag=True,
+    default=False,
+    help=(
+        "Also serve the MCP surface: streamable-HTTP transport at "
+        "/mcp exposing one ask_<role> tool per enabled role (plus a "
+        "generic ask). Auth is deferred to P25 — keep the default "
+        "loopback bind."
+    ),
+)
 def serve(
     persona: str,
     role: str | None,
     harness: str,
     host: str,
     port: int,
+    enable_a2a: bool,
+    enable_mcp: bool,
 ) -> None:
     """Start the AG-UI bridge HTTP server (SSE endpoint)."""
     try:
@@ -336,6 +442,13 @@ def serve(
     except ValueError as e:
         raise click.UsageError(str(e)) from e
 
+    # P11 harness-routing: resolve 'auto' before validation so
+    # make_app only ever sees a concrete harness name.
+    try:
+        harness = _select_harness(pc, rc, requested=harness)
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
+
     # Validate harness before building the app.
     try:
         adapter = _create_harness(pc, rc, harness)
@@ -357,11 +470,307 @@ def serve(
             err=True,
         )
 
+    # Only pass the surface kwargs when a flag is set so the default
+    # invocation keeps the exact legacy make_app(persona, role, harness)
+    # call shape (and injected test fakes with that signature keep
+    # working).
+    surface_kwargs: dict = {}
+    if enable_a2a:
+        surface_kwargs.update(
+            enable_a2a=True,
+            a2a_base_url=f"http://{host}:{port}",
+        )
+        click.echo(
+            f"A2A enabled: agent card at http://{host}:{port}"
+            "/.well-known/agent-card.json"
+        )
+    if enable_mcp:
+        surface_kwargs.update(enable_mcp=True)
+        click.echo(
+            f"MCP enabled: streamable HTTP at http://{host}:{port}/mcp"
+        )
+
     try:
-        app = make_app(persona, role_name, harness)
+        app = make_app(persona, role_name, harness, **surface_kwargs)
         uvicorn.run(app, host=host, port=port)
     except KeyboardInterrupt:
         pass
+
+
+@main.command()
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.option(
+    "--harness",
+    "-H",
+    type=str,
+    default="auto",
+    help=(
+        "SDK harness backend for scheduled jobs (default: auto — "
+        "resolved per job against the job's role; a job's harness: "
+        "key overrides this value)."
+    ),
+)
+@click.option(
+    "--serve",
+    "with_server",
+    is_flag=True,
+    help="Also start the AG-UI SSE server alongside the scheduler.",
+)
+@click.option("--host", type=str, default="127.0.0.1", help="AG-UI bind host (default: 127.0.0.1).")
+@click.option("--port", type=int, default=8765, help="AG-UI bind port (default: 8765).")
+def daemon(
+    persona: str,
+    harness: str,
+    with_server: bool,
+    host: str,
+    port: int,
+) -> None:
+    """Run the persona's scheduled jobs (schedules:) until interrupted.
+
+    Starts the P7 scheduler: one asyncio task per enabled job in the
+    persona's ``schedules:`` section (cron / interval / calendar
+    triggers), each run spawning a fresh SDK harness under the job's
+    ``consumer`` model binding (default ``scheduler`` — bind it to a
+    cheap/local entry in ``models:``). With ``--serve`` the AG-UI SSE
+    server runs in the same process. For long-running daemons,
+    configure ``guardrails.budgets.model_call.persist: file`` so
+    budget ceilings survive restarts.
+    """
+    persona_reg = PersonaRegistry()
+    role_reg = RoleRegistry()
+
+    pc = _load_persona_or_fail(persona_reg, persona)
+
+    if not pc.schedules:
+        raise click.UsageError(
+            f"Persona '{persona}' declares no schedules: section — "
+            "nothing to run. Add scheduled jobs to persona.yaml (see "
+            "personas/_template/persona.yaml)."
+        )
+    enabled = pc.schedules.enabled_jobs()
+    if not enabled:
+        raise click.UsageError(
+            f"Persona '{persona}' has schedules, but every job is "
+            "enabled: false — nothing to run."
+        )
+
+    # Validate every job's role and effective harness up front —
+    # failures here are configuration errors and must not surface as
+    # mid-flight job failures at 7am. P11 harness-routing: each job's
+    # effective harness is its own `harness:` key, falling back to the
+    # daemon -H value; 'auto' resolves against the job's role.
+    for job in enabled:
+        # P28 continual-learning: reflect jobs run the learning
+        # pipeline, not a harness — validate their prerequisites
+        # (enabled learning + persona DB) instead of role/harness.
+        if job.kind == "reflect":
+            from assistant.core.learning import LearningDenied, require_learning
+
+            try:
+                require_learning(pc)
+            except LearningDenied as e:
+                raise click.UsageError(
+                    f"Scheduled job '{job.name}': {e}"
+                ) from e
+            if not pc.database_url:
+                raise click.UsageError(
+                    f"Scheduled job '{job.name}': persona '{persona}' has "
+                    "no database_url configured — reflection needs the "
+                    "persona's memory database."
+                )
+            continue
+        try:
+            rc = role_reg.load(job.role, pc)
+        except ValueError as e:
+            raise click.UsageError(
+                f"Scheduled job '{job.name}': {e}"
+            ) from e
+        try:
+            resolved = _select_harness(
+                pc, rc, requested=job.harness or harness
+            )
+            adapter = _create_harness(pc, rc, resolved)
+        except ValueError as e:
+            raise click.UsageError(
+                f"Scheduled job '{job.name}': {e}"
+            ) from e
+        if not isinstance(adapter, SdkHarnessAdapter):
+            click.echo(
+                f"Error: scheduled job '{job.name}': harness "
+                f"'{resolved}' is a host harness, not an SDK harness. "
+                "Scheduled jobs require an SDK harness.",
+                err=True,
+            )
+            sys.exit(1)
+
+    # Daemons should persist budget state: a memory-only ledger resets
+    # every restart, silently re-arming daily/monthly ceilings.
+    budget = pc.guardrails.model_call_budget if pc.guardrails else None
+    if budget is not None and pc.guardrails.spend_file is None:
+        click.echo(
+            "Warning: guardrails.budgets.model_call uses the in-memory "
+            "ledger; for a long-running daemon set persist: file so "
+            "spend ceilings survive restarts.",
+            err=True,
+        )
+
+    set_assistant_ctx(pc.name, pc.default_role)
+
+    click.echo(f"Persona:  {pc.display_name}")
+    click.echo(f"Harness:  {harness}")
+    click.echo(f"Jobs:     {', '.join(job.name for job in enabled)}")
+
+    try:
+        asyncio.run(
+            _run_daemon(
+                persona_reg, role_reg, pc, harness, with_server, host, port
+            )
+        )
+    except KeyboardInterrupt:
+        pass
+
+
+async def _run_daemon(
+    persona_reg: PersonaRegistry,
+    role_reg: RoleRegistry,
+    pc,
+    harness_name: str,
+    with_server: bool,
+    host: str,
+    port: int,
+) -> None:
+    """Async body of the daemon command.
+
+    Mirrors ``_run_repl``'s structure: the HTTP-tool discovery client
+    stays open for the daemon's lifetime (registered tools hold it),
+    and extension ``shutdown()`` hooks run in the outer ``finally``
+    (P10 extension-lifecycle).
+    """
+    try:
+        if _has_configured_tool_sources(pc):
+            async with _make_discovery_client() as client:
+                registry = await discover_tools(
+                    pc.tool_sources,
+                    client=client,
+                    credentials=getattr(pc, "credentials", None),
+                )
+                await _run_daemon_with_registry(
+                    persona_reg, role_reg, pc, harness_name, registry,
+                    with_server, host, port,
+                )
+        else:
+            await _run_daemon_with_registry(
+                persona_reg, role_reg, pc, harness_name, HttpToolRegistry(),
+                with_server, host, port,
+            )
+    finally:
+        await persona_reg.shutdown_extensions()
+
+
+async def _run_daemon_with_registry(
+    persona_reg: PersonaRegistry,
+    role_reg: RoleRegistry,
+    pc,
+    harness_name: str,
+    registry: HttpToolRegistry,
+    with_server: bool,
+    host: str,
+    port: int,
+) -> None:
+    import signal as _signal
+
+    from assistant.core.scheduler import (
+        AssistantScheduler,
+        CalendarTriggerSource,
+        HarnessJobRunner,
+    )
+
+    # P20 local-inference-node: pre-warm endpoint health state so the
+    # first scheduled runs skip a known-dead local entry. No-op when no
+    # registry entry declares `health:`; failures never block startup.
+    try:
+        from assistant.core.capabilities.health import default_health_monitor
+
+        registry_models = getattr(pc, "models", None)
+        health_refs = [
+            ref
+            for ref in getattr(registry_models, "entries", {}).values()
+            if ref.health is not None and ref.endpoint
+        ]
+        if health_refs:
+            verdicts = await default_health_monitor().refresh(health_refs)
+            for entry_name, ok in sorted(verdicts.items()):
+                click.echo(
+                    f"Endpoint health: {entry_name}: "
+                    f"{'healthy' if ok else 'UNHEALTHY'}"
+                )
+    except Exception:  # pragma: no cover — defensive; never block startup
+        logger.warning("endpoint health pre-warm failed", exc_info=True)
+
+    extensions = await persona_reg.load_extensions_async(pc)
+    runner = HarnessJobRunner(
+        pc,
+        harness_name=harness_name,
+        role_registry=role_reg,
+        http_tool_registry=registry,
+        extensions=extensions,
+        create_harness_fn=_create_harness,
+    )
+    calendar_sources = [
+        ext for ext in extensions if isinstance(ext, CalendarTriggerSource)
+    ]
+    scheduler = AssistantScheduler(
+        pc,
+        pc.schedules,
+        job_runner=runner,
+        calendar_sources=calendar_sources,
+    )
+
+    server = None
+    server_task: asyncio.Task | None = None
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (_signal.SIGINT, _signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop.set)
+        except (NotImplementedError, RuntimeError):  # pragma: no cover
+            # Platforms/loops without signal handler support fall back
+            # to the KeyboardInterrupt path in the click command.
+            pass
+
+    try:
+        scheduler.start()
+        if with_server:
+            import uvicorn
+
+            from assistant.web.app import make_app
+
+            if host != "127.0.0.1" and not host.startswith("127."):
+                click.echo(
+                    f"Warning: binding to non-loopback host '{host}'. "
+                    "This exposes the server beyond localhost.",
+                    err=True,
+                )
+            # P11 harness-routing: make_app needs a concrete harness;
+            # resolve 'auto' against the persona's default role.
+            server_harness = harness_name
+            if server_harness == "auto":
+                rc_default = role_reg.load(pc.default_role, pc)
+                server_harness = _select_harness(pc, rc_default)
+            app = make_app(pc.name, pc.default_role, server_harness)
+            server = uvicorn.Server(
+                uvicorn.Config(app, host=host, port=port)
+            )
+            server_task = loop.create_task(server.serve())
+            click.echo(f"AG-UI server: http://{host}:{port}")
+        click.echo("Scheduler running. Ctrl-C to stop.")
+        await stop.wait()
+    finally:
+        if server is not None:
+            server.should_exit = True
+        if server_task is not None:
+            await server_task
+        await scheduler.stop()
 
 
 def _load_persona_or_fail(
@@ -431,7 +840,11 @@ async def _print_tool_catalog(pc) -> int:
     discovery_logger.addHandler(handler)
     try:
         async with _make_discovery_client() as client:
-            registry = await discover_tools(pc.tool_sources, client=client)
+            registry = await discover_tools(
+                pc.tool_sources,
+                client=client,
+                credentials=getattr(pc, "credentials", None),
+            )
     finally:
         discovery_logger.removeHandler(handler)
 
@@ -446,11 +859,13 @@ async def _print_tool_catalog(pc) -> int:
         for tool in tools:
             desc = (tool.description or "").split("\n", 1)[0]
             click.echo(f"  {tool.name}  — {desc}")
-            args_schema = tool.args_schema
-            if args_schema is not None and hasattr(args_schema, "model_fields"):
-                field_names = sorted(args_schema.model_fields.keys())
-                if field_names:
-                    click.echo(f"    args: {', '.join(field_names)}")
+            # ToolSpec input_schema is a JSON-Schema object; its
+            # ``properties`` keys are the argument names (P17
+            # tool-spec migration replaced the Pydantic args_schema).
+            properties = (tool.input_schema or {}).get("properties", {})
+            field_names = sorted(properties.keys())
+            if field_names:
+                click.echo(f"    args: {', '.join(field_names)}")
 
     if failed_sources:
         click.echo("\nFailures:", err=True)
@@ -478,18 +893,28 @@ async def _run_repl(
     click.echo(f"Role:     {rc.display_name}")
     click.echo(f"Harness:  {harness_name}")
 
-    if _has_configured_tool_sources(pc):
-        async with _make_discovery_client() as client:
-            registry = await discover_tools(pc.tool_sources, client=client)
+    try:
+        if _has_configured_tool_sources(pc):
+            async with _make_discovery_client() as client:
+                registry = await discover_tools(
+                    pc.tool_sources,
+                    client=client,
+                    credentials=getattr(pc, "credentials", None),
+                )
+                await _run_repl_with_registry(
+                    persona_reg, role_reg, pc, rc, harness_name, adapter,
+                    registry, method,
+                )
+        else:
             await _run_repl_with_registry(
                 persona_reg, role_reg, pc, rc, harness_name, adapter,
-                registry, method,
+                HttpToolRegistry(), method,
             )
-    else:
-        await _run_repl_with_registry(
-            persona_reg, role_reg, pc, rc, harness_name, adapter,
-            HttpToolRegistry(), method,
-        )
+    finally:
+        # P10 extension-lifecycle: run extension shutdown() hooks on
+        # REPL exit (including sys.exit / Ctrl-C paths). Idempotent —
+        # the atexit handler that also covers this is then a no-op.
+        await persona_reg.shutdown_extensions()
 
 
 async def _run_repl_with_registry(
@@ -506,7 +931,10 @@ async def _run_repl_with_registry(
 
     click.echo(f"  HTTP tools: {len(registry)}")
 
-    extensions = persona_reg.load_extensions(pc)
+    # Async variant: the REPL runs inside the event loop, and the
+    # extensions' initialize() hooks must be awaited (P10
+    # extension-lifecycle). Shutdown is owned by _run_repl's finally.
+    extensions = await persona_reg.load_extensions_async(pc)
     ext_names = [getattr(e, "name", "?") for e in extensions]
     click.echo(
         f"  Extensions: {len(extensions)}"
@@ -523,10 +951,20 @@ async def _run_repl_with_registry(
         pc, rc, loaded_extensions=extensions,
     )
 
+    from assistant.core.capabilities.approvals import (
+        ApprovalDeniedError,
+        PendingApprovalError,
+    )
+
     try:
         agent = await adapter.create_agent(tools=authorized, extensions=extensions)
     except NotImplementedError as e:
         click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    except PendingApprovalError as e:
+        # P30 durable-sessions: the model-call guardrail suspended agent
+        # construction awaiting a human decision.
+        click.echo(f"Suspended: {e}", err=True)
         sys.exit(1)
 
     # Teacher-role-only state. ``active_method`` tracks the currently
@@ -650,6 +1088,32 @@ async def _run_repl_with_registry(
             click.echo(f"→ {rc.display_name}\n")
             continue
 
+        if user_input.startswith("/feedback"):
+            # P28 continual-learning: explicit human feedback capture.
+            from assistant.core import learning as lrn
+
+            feedback_text = user_input[len("/feedback"):].strip()
+            if not feedback_text:
+                click.echo("Usage: /feedback <text>\n")
+                continue
+            try:
+                lrn.require_learning(pc)
+                manager = lrn._learning_memory_manager(pc)
+                await lrn.record_feedback(
+                    pc,
+                    manager,
+                    lrn.FeedbackEvent(
+                        source="human",
+                        subject=f"role:{rc.name}",
+                        signal=feedback_text,
+                        context="repl",
+                    ),
+                )
+                click.echo("Feedback recorded.\n")
+            except lrn.LearningError as e:
+                click.echo(f"Error: {e}\n")
+            continue
+
         if user_input.startswith("/delegate"):
             parts = user_input.split(" ", 2)
             if len(parts) < 3:
@@ -682,6 +1146,15 @@ async def _run_repl_with_registry(
         except NotImplementedError as e:
             click.echo(f"Error: {e}\n", err=True)
             break
+        except PendingApprovalError as e:
+            # P30 durable-sessions: suspended awaiting approval — keep
+            # the REPL alive; the operator decides in another shell and
+            # retries the turn.
+            click.echo(f"\nSuspended: {e}\n")
+            continue
+        except ApprovalDeniedError as e:
+            click.echo(f"\nDenied: {e}\n")
+            continue
 
         if rc.name == "teacher" and active_method is not None:
             prefix = f"{rc.display_name}:{active_method}"
@@ -690,14 +1163,889 @@ async def _run_repl_with_registry(
         click.echo(f"\n[{prefix}]> {response}\n")
 
 
+@main.group(name="persona")
+def persona_group() -> None:
+    """Persona maintenance commands."""
+
+
+@persona_group.command("hash-extensions")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+def hash_extensions(persona: str) -> None:
+    """Generate/update the extension integrity manifest for a persona.
+
+    Hashes every ``*.py`` file in the persona's extensions directory
+    (SHA-256) and writes ``manifest.yaml`` next to them. The persona
+    registry verifies private extensions against this manifest before
+    executing them (P13 security-hardening); rerun this command after
+    every intentional extension edit.
+    """
+    from assistant.core.extension_integrity import (
+        MANIFEST_FILENAME,
+        generate_manifest,
+    )
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+
+    extensions_dir = pc.extensions_dir
+    if not extensions_dir.is_dir():
+        click.echo(
+            f"Error: extensions directory does not exist: {extensions_dir}",
+            err=True,
+        )
+        sys.exit(1)
+
+    hashes = generate_manifest(extensions_dir)
+    if not hashes:
+        click.echo(
+            f"No *.py extension files found in {extensions_dir}; wrote an "
+            f"empty {MANIFEST_FILENAME}."
+        )
+        return
+    click.echo(f"Wrote {extensions_dir / MANIFEST_FILENAME}:")
+    for filename, digest in sorted(hashes.items()):
+        click.echo(f"  {filename}  {digest}")
+
+
+@main.group(name="models")
+def models_group() -> None:
+    """Model registry maintenance commands (P20 local-inference-node)."""
+
+
+@models_group.command("sync-catalog")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.option(
+    "--url",
+    type=str,
+    default=None,
+    help="Catalog endpoint override (default: OpenRouter /models).",
+)
+def sync_catalog(persona: str, url: str | None) -> None:
+    """Sync the OpenRouter model catalog into the persona's cache.
+
+    Fetches the OpenRouter ``/models`` catalog (API key: persona-scoped
+    credential ``OPENROUTER_API_KEY``, optional) and writes the
+    git-ignored persona-local cache file
+    (``<persona_dir>/.cache/models/catalog.json``). On the next persona
+    load, registry entries whose ``id`` matches a cached row inherit
+    pricing / context_length / modalities for fields they left empty —
+    declared values always win. Offline-safe: without network this
+    command errors clearly and nothing else breaks.
+    """
+    from assistant.core.capabilities.catalog import (
+        OPENROUTER_KEY_REF,
+        OPENROUTER_MODELS_URL,
+        CatalogSyncError,
+        fetch_catalog,
+        write_catalog_cache,
+    )
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    catalog_url = url or OPENROUTER_MODELS_URL
+    api_key = pc.credentials.get_credential(OPENROUTER_KEY_REF)
+
+    try:
+        models = asyncio.run(fetch_catalog(catalog_url, api_key=api_key))
+    except CatalogSyncError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    persona_dir = persona_reg.personas_dir / persona
+    path = write_catalog_cache(persona_dir, models, url=catalog_url)
+    click.echo(f"Synced {len(models)} catalog models to {path}")
+    click.echo(
+        "Registry entries with a matching `id` and empty pricing/"
+        "context_length/modalities inherit the catalog values on the "
+        "next persona load."
+    )
+
+
+@models_group.command("check-health")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+def check_health(persona: str) -> None:
+    """Probe every health-declaring registry entry and report verdicts.
+
+    The documented verification command for a local inference node
+    (GX10 / vLLM / Ollama / NIM — see docs/deployment/gx10-node.md).
+    Also warms this process's shared health cache. Exits 1 when any
+    probed endpoint is unhealthy.
+    """
+    from assistant.core.capabilities.health import (
+        default_health_monitor,
+        probe_url,
+    )
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    refs = [
+        ref
+        for ref in pc.models.entries.values()
+        if ref.health is not None and ref.endpoint
+    ]
+    if not refs:
+        click.echo(
+            f"No models: entries of persona '{persona}' declare health "
+            "checks — nothing to probe."
+        )
+        return
+
+    monitor = default_health_monitor()
+    verdicts = asyncio.run(monitor.refresh(refs))
+    for ref in refs:
+        ok = verdicts.get(ref.name, False)
+        status = "healthy" if ok else "UNHEALTHY"
+        click.echo(f"{ref.name}: {status} ({probe_url(ref)})")
+    if not all(verdicts.values()):
+        sys.exit(1)
+
+
+@main.group(name="cleanroom")
+def cleanroom_group() -> None:
+    """Clean-room knowledge sharing commands (P26 knowledge-clean-room)."""
+
+
+def _cleanroom_manager(pc):
+    """Build a MemoryManager for a clean-room command, or exit.
+
+    Split out so tests can patch one seam instead of the db/graphiti
+    factory stack (docs/gotchas.md G4: patch at the source module).
+    """
+    if not pc.database_url:
+        click.echo(
+            f"Error: persona '{pc.name}' has no database_url configured — "
+            "clean-room commands need the persona's memory database.",
+            err=True,
+        )
+        sys.exit(1)
+
+    from assistant.core.db import async_session_factory, create_async_engine
+    from assistant.core.graphiti import create_graphiti_client
+    from assistant.core.memory import MemoryManager
+
+    engine = create_async_engine(pc)
+    session_fac = async_session_factory(engine)
+    graphiti = create_graphiti_client(pc)
+    return MemoryManager(session_fac, graphiti_client=graphiti)
+
+
+def _cleanroom_identity(pc):
+    from assistant.core.capabilities.identity import AgentIdentity
+
+    return AgentIdentity(persona=pc.name, role=pc.default_role)
+
+
+@cleanroom_group.command("export")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.option(
+    "--to",
+    "audience",
+    type=str,
+    required=True,
+    help="Audience: a consuming persona name, or 'external'.",
+)
+def cleanroom_export(persona: str, audience: str) -> None:
+    """Declassify persona memory into a share bundle for an audience.
+
+    Applies the persona's clean_room share rules, sanitizes every item
+    under the rule's named profile, wraps the result in a provenance
+    envelope, and writes the bundle into the shared space directory
+    (default: .cleanroom/<audience>/, git-ignored). Refuses when the
+    persona declares no clean_room section — total isolation is the
+    default.
+    """
+    from assistant.core import cleanroom as cr
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    manager = _cleanroom_manager(pc)
+    set_assistant_ctx(pc.name, pc.default_role)
+
+    try:
+        result = asyncio.run(
+            cr.export_shared(
+                pc,
+                audience,
+                manager,
+                guardrails=cr.select_guardrails(pc),
+                identity=_cleanroom_identity(pc),
+                approvals=_approval_store_or_none(pc),
+            )
+        )
+    except cr.CleanRoomError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    click.echo(
+        f"Exported {result.item_count} item(s) to {result.path} "
+        f"(bundle {result.bundle_id}, profile {result.profile})."
+    )
+
+
+@cleanroom_group.command("import")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.argument("bundle", type=click.Path(exists=True, dir_okay=False))
+def cleanroom_import(persona: str, bundle: str) -> None:
+    """Ingest a share bundle into the consuming persona's memory.
+
+    Verifies the provenance envelope (hashes, exporter identity),
+    refuses revoked bundles, applies the persona's clean_room accept
+    rules, and stores accepted items as provenance-marked facts under
+    cleanroom/<bundle_id>/ keys.
+    """
+    from assistant.core import cleanroom as cr
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    manager = _cleanroom_manager(pc)
+    set_assistant_ctx(pc.name, pc.default_role)
+
+    try:
+        result = asyncio.run(
+            cr.import_shared(
+                pc,
+                Path(bundle),
+                manager,
+                guardrails=cr.select_guardrails(pc),
+                identity=_cleanroom_identity(pc),
+                approvals=_approval_store_or_none(pc),
+            )
+        )
+    except cr.CleanRoomError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    click.echo(
+        f"Imported {result.imported} item(s) from persona "
+        f"'{result.source_persona}' (bundle {result.bundle_id}; "
+        f"{result.skipped} skipped by accept rules)."
+    )
+
+
+@cleanroom_group.command("revoke")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.argument("bundle_id", type=str)
+def cleanroom_revoke(persona: str, bundle_id: str) -> None:
+    """Revoke a previously exported bundle (source persona only).
+
+    Writes a revocation record into the shared space: imports of the
+    bundle are refused from now on, and consumers drop already-imported
+    items on their next `assistant cleanroom sync`.
+    """
+    from assistant.core import cleanroom as cr
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    set_assistant_ctx(pc.name, pc.default_role)
+
+    try:
+        path = cr.revoke(pc, bundle_id, identity=_cleanroom_identity(pc))
+    except cr.CleanRoomError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    click.echo(f"Revoked bundle {bundle_id} ({path}).")
+
+
+@cleanroom_group.command("sync")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+def cleanroom_sync(persona: str) -> None:
+    """Purge imported items whose source bundle has been revoked."""
+    from assistant.core import cleanroom as cr
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    manager = _cleanroom_manager(pc)
+    set_assistant_ctx(pc.name, pc.default_role)
+
+    try:
+        deleted = asyncio.run(
+            cr.purge_revoked(
+                pc, manager, identity=_cleanroom_identity(pc)
+            )
+        )
+    except cr.CleanRoomError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    click.echo(f"Purged {deleted} imported item(s) from revoked bundles.")
+
+
+# ── Continual learning (P28) ──────────────────────────────────────────
+
+
+def _learning_manager(pc):
+    """Build a MemoryManager for a learning command, or exit.
+
+    Same single-seam pattern as ``_cleanroom_manager`` (docs/gotchas.md
+    G4: tests patch this one symbol instead of the db/graphiti stack).
+    """
+    from assistant.core import learning as lrn
+
+    try:
+        return lrn._learning_memory_manager(pc)
+    except lrn.LearningError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+def _learning_identity(pc):
+    from assistant.core.capabilities.identity import AgentIdentity
+
+    return AgentIdentity(persona=pc.name, role=pc.default_role)
+
+
+def _parse_prefer(prefer: str) -> dict:
+    """Parse ``[category:]key=value`` into a preference payload."""
+    head, sep, value = prefer.partition("=")
+    if not sep or not head:
+        raise click.UsageError(
+            "--prefer expects [category:]key=value (e.g. "
+            "style:tone=concise)."
+        )
+    category, csep, key = head.partition(":")
+    if not csep:
+        category, key = "general", head
+    if not key:
+        raise click.UsageError("--prefer key must be non-empty.")
+    return {"category": category, "key": key, "value": value}
+
+
+@main.command()
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.option("--role", "-r", type=str, default=None, help="Role the feedback is about.")
+@click.option(
+    "--prefer",
+    type=str,
+    default=None,
+    help=(
+        "Distill a preference: [category:]key=value. Becomes a LOW-risk "
+        "preference proposal on the next `assistant learning propose`."
+    ),
+)
+@click.argument("text", required=False)
+def feedback(persona: str, role: str | None, prefer: str | None, text: str | None) -> None:
+    """Record explicit human feedback (P28 continual-learning).
+
+    Stores one feedback event in the persona's memory (interactions
+    table, metadata source=feedback). Requires an enabled learning:
+    section — continual learning is dormant by default.
+    """
+    from assistant.core import learning as lrn
+
+    if not text and not prefer:
+        raise click.UsageError("Provide feedback TEXT and/or --prefer.")
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    set_assistant_ctx(pc.name, role or pc.default_role)
+
+    data: dict = {}
+    if prefer is not None:
+        data["preference"] = _parse_prefer(prefer)
+    event = lrn.FeedbackEvent(
+        source="human",
+        subject=f"role:{role}" if role else pc.name,
+        signal=text or f"prefer {prefer}",
+        context="cli",
+        data=data,
+    )
+    try:
+        lrn.require_learning(pc)
+    except lrn.LearningError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    manager = _learning_manager(pc)
+    try:
+        asyncio.run(
+            lrn.record_feedback(
+                pc, manager, event, identity=_learning_identity(pc)
+            )
+        )
+    except lrn.LearningError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    click.echo(f"Recorded feedback event {event.event_id}.")
+
+
+@main.command()
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+def reflect(persona: str) -> None:
+    """Run one reflection/consolidation pass (P28 continual-learning).
+
+    Summarizes recent interactions into a provenance-stamped
+    learning/reflection/* fact (source=reflection) plus a Graphiti
+    episode where configured. Schedulable via a `kind: reflect` job in
+    the persona's schedules: section.
+    """
+    from assistant.core import cleanroom as cr
+    from assistant.core import learning as lrn
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    set_assistant_ctx(pc.name, pc.default_role)
+
+    try:
+        lrn.require_learning(pc)
+    except lrn.LearningError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    manager = _learning_manager(pc)
+    try:
+        result = asyncio.run(
+            lrn.run_reflection(
+                pc,
+                manager,
+                guardrails=cr.select_guardrails(pc),
+                identity=_learning_identity(pc),
+            )
+        )
+    except lrn.LearningError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    if result is None:
+        click.echo("Nothing new to consolidate.")
+        return
+    click.echo(
+        f"Consolidated {result.interaction_count} interaction(s) into "
+        f"{result.fact_key} "
+        f"({'model-backed' if result.used_model else 'heuristic digest'})."
+    )
+
+
+@main.group(name="learning")
+def learning_group() -> None:
+    """Continual-learning commands (P28 continual-learning)."""
+
+
+@learning_group.command("collect")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.option(
+    "--gate-log",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="A saved evaluation/run-gate.sh output log to mine for eval feedback.",
+)
+@click.option(
+    "--store",
+    is_flag=True,
+    help="Also record the collected events as stored feedback (needs the persona DB).",
+)
+def learning_collect(persona: str, gate_log: str | None, store: bool) -> None:
+    """Run the machine feedback collectors on demand.
+
+    Reads what already exists — eval-gate output, the guardrail spend
+    ledger, circuit-breaker state, model-registry pricing gaps — and
+    prints one feedback event per finding. No new daemons.
+    """
+    from assistant.core import learning as lrn
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    set_assistant_ctx(pc.name, pc.default_role)
+
+    gate_output = (
+        Path(gate_log).read_text(encoding="utf-8") if gate_log else None
+    )
+    try:
+        events = lrn.collect_machine_feedback(pc, gate_output=gate_output)
+    except lrn.LearningError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    if not events:
+        click.echo("No machine feedback signals found.")
+        return
+    for event in events:
+        click.echo(f"[{event.source}] {event.subject}: {event.signal}")
+    if store:
+        manager = _learning_manager(pc)
+
+        async def _store_all() -> None:
+            for event in events:
+                await lrn.record_feedback(
+                    pc, manager, event, identity=_learning_identity(pc)
+                )
+
+        asyncio.run(_store_all())
+        click.echo(f"Stored {len(events)} feedback event(s).")
+
+
+@learning_group.command("propose")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.option(
+    "--gate-log",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="A saved evaluation/run-gate.sh output log to mine for eval feedback.",
+)
+@click.option(
+    "--limit",
+    type=int,
+    default=100,
+    show_default=True,
+    help="Maximum stored feedback events to consider (newest first).",
+)
+def learning_propose(persona: str, gate_log: str | None, limit: int) -> None:
+    """Derive improvement proposals from feedback and write them as files.
+
+    Proposals land under the persona's proposals/ directory as
+    reviewable JSON files — the persona submodule is the approval
+    workflow. Only kind=preference proposals with risk=LOW may
+    auto-apply, and only when learning.auto_apply_low_risk is true
+    (each auto-application still runs the guardrail + eval gate).
+    """
+    from assistant.core import cleanroom as cr
+    from assistant.core import learning as lrn
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    set_assistant_ctx(pc.name, pc.default_role)
+
+    try:
+        lrn.require_learning(pc)
+        proposals_dir = lrn.resolve_proposals_dir(pc)
+    except lrn.LearningError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    events: list = []
+    manager = None
+    if pc.database_url:
+        manager = _learning_manager(pc)
+        events.extend(
+            asyncio.run(lrn.list_feedback(pc, manager, limit=limit))
+        )
+    else:
+        click.echo(
+            "Warning: persona has no database_url — using machine "
+            "feedback only (stored human feedback unavailable).",
+            err=True,
+        )
+    gate_output = (
+        Path(gate_log).read_text(encoding="utf-8") if gate_log else None
+    )
+    events.extend(lrn.collect_machine_feedback(pc, gate_output=gate_output))
+
+    if not events:
+        click.echo("No feedback events — nothing to propose.")
+        return
+
+    proposals = lrn.derive_proposals(
+        pc, events, identity=_learning_identity(pc)
+    )
+    if not proposals:
+        click.echo("Feedback yielded no actionable proposals.")
+        return
+    for proposal in proposals:
+        path = lrn.write_proposal(proposals_dir, proposal)
+        click.echo(
+            f"  wrote {path}  [{proposal.kind}, {proposal.risk}] "
+            f"→ {proposal.target}"
+        )
+
+    applied = asyncio.run(
+        lrn.maybe_auto_apply(
+            pc,
+            proposals,
+            manager,
+            guardrails=cr.select_guardrails(pc),
+            identity=_learning_identity(pc),
+        )
+    )
+    for proposal in proposals:
+        if proposal.proposal_id in applied:
+            lrn.write_proposal(proposals_dir, proposal)
+    if applied:
+        click.echo(f"Auto-applied {len(applied)} LOW-risk preference proposal(s).")
+    click.echo(
+        f"\n{len(proposals)} proposal(s) written to {proposals_dir}. "
+        "Review the diffs; apply with `assistant learning apply`."
+    )
+
+
+@learning_group.command("apply")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.option(
+    "--approved",
+    is_flag=True,
+    help=(
+        "Operator approval for MEDIUM/HIGH-risk proposals (the interim "
+        "human seam until the P30 approval interrupt flow)."
+    ),
+)
+@click.argument("proposal_ref", type=str)
+def learning_apply(persona: str, approved: bool, proposal_ref: str) -> None:
+    """Apply one proposal — eval-gated, guardrail-gated, risk-tiered.
+
+    PROPOSAL_REF is a proposal file path or a proposal id in the
+    persona's proposals/ directory. Refuses unless the P27 eval gate
+    passes (SKIP counts as pass with a warning) and the proposal is
+    LOW risk or --approved is given. routing_config proposals are
+    review-only and always refuse machine application.
+    """
+    from assistant.core import cleanroom as cr
+    from assistant.core import learning as lrn
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    set_assistant_ctx(pc.name, pc.default_role)
+
+    try:
+        lrn.require_learning(pc)
+        proposals_dir = lrn.resolve_proposals_dir(pc)
+    except lrn.LearningError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    path = Path(proposal_ref)
+    if not path.is_file():
+        path = lrn.proposal_path(proposals_dir, proposal_ref)
+    if not path.is_file():
+        click.echo(
+            f"Error: no proposal at {proposal_ref!r} (also tried {path}).",
+            err=True,
+        )
+        sys.exit(1)
+
+    try:
+        proposal = lrn.load_proposal(path)
+    except lrn.LearningError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    manager = (
+        _learning_manager(pc) if proposal.kind == "preference" else None
+    )
+    try:
+        description = asyncio.run(
+            lrn.apply_proposal(
+                pc,
+                proposal,
+                manager,
+                guardrails=cr.select_guardrails(pc),
+                identity=_learning_identity(pc),
+                approved=approved,
+                approvals=_approval_store_or_none(pc),
+            )
+        )
+    except lrn.LearningError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    lrn.write_proposal(path.parent, proposal)
+    click.echo(f"Applied proposal {proposal.proposal_id}: {description}")
+
+
+@learning_group.command("list")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+def learning_list(persona: str) -> None:
+    """List the persona's improvement proposals and their status."""
+    from assistant.core import learning as lrn
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+
+    try:
+        lrn.require_learning(pc)
+        proposals_dir = lrn.resolve_proposals_dir(pc)
+    except lrn.LearningError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    proposals = lrn.list_proposals(proposals_dir)
+    if not proposals:
+        click.echo(f"No proposals in {proposals_dir}.")
+        return
+    for p in proposals:
+        click.echo(
+            f"{p.proposal_id}  [{p.kind}, {p.risk}, {p.status}] "
+            f"→ {p.target}"
+        )
+
+
+# ── Approvals (P30 durable-sessions) ──────────────────────────────────
+
+
+def _approval_store_or_none(pc):
+    """The persona's durable ApprovalStore, or None (deny fallback).
+
+    A durable declaration without a database url is a config error and
+    exits 1 (declared durability must never silently degrade).
+    """
+    from assistant.core.durable import durable_stores_for
+
+    try:
+        stores = durable_stores_for(pc)
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    return stores.approvals if stores is not None else None
+
+
+def _approval_store_or_fail(pc):
+    store = _approval_store_or_none(pc)
+    if store is None:
+        click.echo(
+            f"Error: persona '{pc.name}' has no durable sessions — "
+            "approvals need `sessions: {durable: true}` plus a "
+            "database: {url_env: ...} in the persona config.",
+            err=True,
+        )
+        sys.exit(1)
+    return store
+
+
+def _emit_approval_decision_audit(pc, record, decision: str) -> None:
+    """Identity-stamped span + durable audit row for one CLI decision."""
+    import logging as _logging
+
+    attributes = {
+        "approval_id": record.approval_id,
+        "action_type": record.action.action_type,
+        "resource": record.action.resource,
+        "persona": pc.name,
+        "role": pc.default_role,
+        "decision": decision,
+        "decided_by": record.decided_by,
+        "justification": record.justification,
+    }
+    try:
+        from assistant.telemetry import get_observability_provider
+
+        with get_observability_provider().start_span(
+            "approval.decision", attributes=attributes
+        ):
+            pass
+    except Exception as exc:  # pragma: no cover — defensive
+        _logging.getLogger(__name__).warning(
+            "approval decision span not emitted (%s)", type(exc).__name__
+        )
+    from assistant.core.durable import record_durable_audit
+
+    record_durable_audit(
+        pc.name,
+        "approval.decision",
+        action_type=record.action.action_type,
+        resource=record.action.resource,
+        role=pc.default_role,
+        decision=decision,
+        reason=record.justification,
+        attributes={"approval_id": record.approval_id},
+    )
+
+
+def _decide_approval(
+    persona: str, approval_id: str, *, approve: bool, justification: str
+) -> None:
+    from assistant.core.capabilities.approvals import ApprovalError
+
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    set_assistant_ctx(pc.name, pc.default_role)
+    store = _approval_store_or_fail(pc)
+    try:
+        record = store.decide(
+            approval_id,
+            approved=approve,
+            decided_by=f"cli:{pc.name}",
+            justification=justification,
+        )
+    except ApprovalError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    decision = "approved" if approve else "denied"
+    _emit_approval_decision_audit(pc, record, decision)
+    click.echo(
+        f"Approval {approval_id} {decision}. Retry the suspended "
+        f"operation to {'execute it' if approve else 'surface the denial'} "
+        f"(the decision is consumed exactly once)."
+    )
+
+
+@main.group(name="approvals")
+def approvals_group() -> None:
+    """Approval interrupt/resume commands (P30 durable-sessions).
+
+    A guardrail `require_confirmation` decision on a persona with
+    durable sessions SUSPENDS the operation and files a pending
+    approval. `list` shows them; `approve`/`deny` record the human
+    decision (first decision wins; audited); retrying the operation
+    consumes the decision exactly once.
+    """
+
+
+@approvals_group.command("list")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.option(
+    "--all",
+    "show_all",
+    is_flag=True,
+    help="Include decided/consumed/expired approvals (default: pending only).",
+)
+def approvals_list(persona: str, show_all: bool) -> None:
+    """List approval requests for a persona."""
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+    store = _approval_store_or_fail(pc)
+    records = store.list_requests(
+        pc.name, status=None if show_all else "pending"
+    )
+    if not records:
+        click.echo("No pending approvals." if not show_all else "No approvals.")
+        return
+    for r in records:
+        click.echo(
+            f"{r.approval_id}  [{r.status}, risk={r.risk.name}] "
+            f"{r.action.action_type} on {r.action.resource!r} "
+            f"(requested {r.created_at.isoformat()})"
+        )
+        click.echo(f"    {r.message}")
+
+
+@approvals_group.command("approve")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.option(
+    "--justification", type=str, default="", help="Optional free-text note."
+)
+@click.argument("approval_id", type=str)
+def approvals_approve(persona: str, justification: str, approval_id: str) -> None:
+    """Approve a pending approval (idempotent; first decision wins)."""
+    _decide_approval(
+        persona, approval_id, approve=True, justification=justification
+    )
+
+
+@approvals_group.command("deny")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.option(
+    "--justification", type=str, default="", help="Optional free-text note."
+)
+@click.argument("approval_id", type=str)
+def approvals_deny(persona: str, justification: str, approval_id: str) -> None:
+    """Deny a pending approval (idempotent; first decision wins)."""
+    _decide_approval(
+        persona, approval_id, approve=False, justification=justification
+    )
+
+
 @main.group()
 def db() -> None:
     """Database migration commands."""
 
 
 @db.command()
-def upgrade() -> None:
-    """Run all pending Alembic migrations to head."""
+@click.option(
+    "--persona",
+    "-p",
+    "persona_name",
+    type=str,
+    default=None,
+    help="Also provision the durable checkpointer schema for this "
+    "persona (no-op unless the persona declares sessions: durable).",
+)
+def upgrade(persona_name: str | None) -> None:
+    """Run all pending Alembic migrations to head.
+
+    With -p and a durable-sessions persona, additionally runs the
+    langgraph-checkpoint-postgres ``setup()`` so a single idempotent
+    command provisions BOTH schema owners (alembic owns the
+    assistant's tables; the checkpointer package owns its own — see
+    harnesses/sdk/checkpointer.py).
+    """
     from pathlib import Path
 
     from alembic import command
@@ -713,6 +2061,37 @@ def upgrade() -> None:
         click.echo("Migrations applied successfully.")
     except Exception as e:
         click.echo(f"Error running migrations: {e}", err=True)
+        sys.exit(1)
+
+    if persona_name is None:
+        return
+    persona_reg = PersonaRegistry()
+    persona = _load_persona_or_fail(persona_reg, persona_name)
+    if not persona.sessions:
+        click.echo(
+            f"Persona '{persona_name}' has no durable sessions: section — "
+            "checkpointer schema not required."
+        )
+        return
+    if not persona.database_url:
+        click.echo(
+            f"Error: persona '{persona_name}' declares sessions.durable "
+            "but resolves no database url.",
+            err=True,
+        )
+        sys.exit(1)
+    from assistant.harnesses.sdk.checkpointer import setup_durable_schema
+
+    try:
+        asyncio.run(setup_durable_schema(persona.database_url))
+        click.echo(
+            "Durable checkpointer schema provisioned "
+            "(langgraph-checkpoint-postgres setup())."
+        )
+    except Exception as e:
+        click.echo(
+            f"Error provisioning checkpointer schema: {e}", err=True
+        )
         sys.exit(1)
 
 
@@ -736,6 +2115,156 @@ def downgrade(revision: str) -> None:
     except Exception as e:
         click.echo(f"Error running downgrade: {e}", err=True)
         sys.exit(1)
+
+
+@main.command()
+@click.option(
+    "--fixtures",
+    "-f",
+    type=click.Path(file_okay=False),
+    default="evaluation/simulation/sources",
+    show_default=True,
+    help="Fixtures root: one subdirectory per simulated source, each with "
+    "a routes.yaml manifest (or a single-source dir containing routes.yaml).",
+)
+@click.option("--host", type=str, default="127.0.0.1", help="Bind host (default: 127.0.0.1).")
+@click.option("--port", type=int, default=8901, help="Bind port (default: 8901).")
+def simulate(fixtures: str, host: str, port: int) -> None:
+    """Serve fixture-backed simulated tool APIs (simulation personas).
+
+    Starts a loopback FastAPI server whose per-source /openapi.json
+    endpoints are consumed by the existing http_tools discovery, so a
+    persona whose tool_sources point at the printed URLs runs the real
+    agent stack against deterministic canned responses.
+    """
+    try:
+        import uvicorn
+    except ImportError:
+        click.echo("Error: uvicorn/fastapi not installed. Run `uv sync`.", err=True)
+        sys.exit(1)
+
+    from assistant.simulation.server import (
+        discover_sources,
+        env_var_for_source,
+        make_simulator_app_from_sources,
+    )
+
+    fixtures_root = Path(fixtures)
+    try:
+        sources = discover_sources(fixtures_root)
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
+
+    app = make_simulator_app_from_sources(sources)
+
+    if host != "127.0.0.1" and not host.startswith("127."):
+        click.echo(
+            f"Warning: binding to non-loopback host '{host}'. "
+            "This exposes the simulator beyond localhost.",
+            err=True,
+        )
+
+    base = f"http://{host}:{port}"
+    click.echo(f"Simulator: {base}  (health: {base}/health)")
+    click.echo("Simulated tool sources:")
+    for source in sources:
+        click.echo(
+            f"  export {env_var_for_source(source.name)}={base}/{source.name}"
+            f"    # {len(source.routes)} operation(s)"
+        )
+    personas_dir = fixtures_root.parent / "personas"
+    if personas_dir.is_dir():
+        click.echo(f"  export ASSISTANT_PERSONAS_DIR={personas_dir}")
+        click.echo(
+            "\nThen, from another shell:  uv run assistant -p sim --list-tools"
+        )
+
+    try:
+        uvicorn.run(app, host=host, port=port)
+    except KeyboardInterrupt:
+        pass
+
+
+@main.command("export-eval-dataset")
+@click.option("--persona", "-p", type=str, required=True, help="Persona name.")
+@click.option(
+    "--role",
+    "-r",
+    type=str,
+    default=None,
+    help="Only export interactions recorded under this role.",
+)
+@click.option(
+    "--limit",
+    type=int,
+    default=20,
+    show_default=True,
+    help="Maximum number of interactions to export (newest first).",
+)
+@click.option(
+    "--output-dir",
+    "-o",
+    type=click.Path(file_okay=False),
+    default="evaluation/datasets/exported",
+    show_default=True,
+    help="Directory for the generated scenario stub files (created if "
+    "missing). Deliberately outside the gen-eval scenario_dirs — stubs "
+    "need human completion before promotion into a suite.",
+)
+def export_eval_dataset(
+    persona: str, role: str | None, limit: int, output_dir: str
+) -> None:
+    """Export stored interactions as gen-eval scenario YAML stubs.
+
+    Offline-first trace→eval-dataset export (P27): reads the persona
+    DB's interactions table via MemoryManager and writes one scenario
+    stub per interaction. Production regressions become permanent
+    tests once a human completes the stub's message + expectations.
+    """
+    persona_reg = PersonaRegistry()
+    pc = _load_persona_or_fail(persona_reg, persona)
+
+    if not pc.database_url:
+        click.echo(
+            f"Error: persona '{persona}' has no database_url configured — "
+            "there are no stored interactions to export.",
+            err=True,
+        )
+        sys.exit(1)
+
+    from assistant.core.db import async_session_factory, create_async_engine
+    from assistant.core.graphiti import create_graphiti_client
+    from assistant.core.memory import MemoryManager
+    from assistant.simulation.dataset import (
+        dump_scenario_yaml,
+        interactions_to_scenarios,
+        scenario_filename,
+    )
+
+    engine = create_async_engine(pc)
+    session_fac = async_session_factory(engine)
+    graphiti = create_graphiti_client(pc)
+    mgr = MemoryManager(session_fac, graphiti_client=graphiti)
+
+    interactions = asyncio.run(
+        mgr.list_interactions(pc.name, role=role, limit=limit)
+    )
+    if not interactions:
+        click.echo("No stored interactions matched — nothing to export.")
+        return
+
+    scenarios = interactions_to_scenarios(pc.name, interactions)
+    out_root = Path(output_dir)
+    out_root.mkdir(parents=True, exist_ok=True)
+    for scenario in scenarios:
+        out_path = out_root / scenario_filename(scenario)
+        out_path.write_text(dump_scenario_yaml(scenario), encoding="utf-8")
+        click.echo(f"  wrote {out_path}")
+    click.echo(
+        f"\nExported {len(scenarios)} scenario stub(s) to {out_root}. "
+        "Complete each stub (message + expectations) before promoting it "
+        "into a scenario suite."
+    )
 
 
 @main.command("export-memory")

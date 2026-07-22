@@ -16,19 +16,27 @@ graphiti:
 auth:
   provider: custom                     # microsoft | google | custom
   config: {}
+  # Inbound auth for served surfaces (P25 — agent-iam). Optional:
+  # without it the A2A surface stays loopback-unauthenticated (the
+  # server logs a startup WARNING). `token_env` is a CredentialProvider
+  # ref (env-var name / vault path) — NEVER the token value. The agent
+  # card advertises the scheme under `securitySchemes`; clients send
+  # `Authorization: Bearer <token>`. MCP-surface auth arrives with the
+  # P17 integration follow-up.
+  # a2a:
+  #   type: bearer
+  #   token_env: TEMPLATE_A2A_TOKEN
 
 # ── Harnesses ──
 harnesses:
   deep_agents:
     enabled: true
-    model: "anthropic:claude-sonnet-4-20250514"
     memory_files:
       - "./AGENTS.md"
     skills_dir: "./src/assistant/skills"
 
   ms_agent_framework:
     enabled: false
-    model: "anthropic:claude-sonnet-4-20250514"
     foundry_endpoint_env: ""
     extensions: []
 
@@ -37,6 +45,113 @@ harnesses:
 
   codex:
     enabled: true
+
+  # Optional harness routing rules (P11 — harness-routing), consumed
+  # by `--harness auto` (the CLI default). Ordered, first match wins;
+  # each rule matches on a role-name glob (`role:`) and/or globs over
+  # the role's preferred_tools (`tools:` — patterns with ':' match the
+  # full source:operation string, bare patterns match the source
+  # prefix). Rules only ever select SDK harnesses: a rule naming a
+  # host harness (claude_code) fails — the host/subscription tier is
+  # explicit-only (-H claude_code + `assistant export`). A matching
+  # rule whose target harness is disabled is skipped with a warning.
+  # Without rules, built-in defaults apply: roles preferring MS-source
+  # tools (ms_graph/outlook/teams/sharepoint) route to
+  # ms_agent_framework when enabled; everything else to deep_agents.
+  # routing:
+  #   - tools: ["ms_graph:*", "outlook:*", "teams:*", "sharepoint:*"]
+  #     harness: ms_agent_framework
+  #   - role: "coder"
+  #     harness: deep_agents
+
+# ── Model registry (P19 — model-provider-routing) ──
+# The ONLY model-selection mechanism. Optional: when omitted, SDK
+# harnesses resolve against a registry synthesized from the built-in
+# harness defaults. Shape: `entries:` declares the callable models;
+# `bindings:` maps consumer names (harness names such as deep_agents /
+# ms_agent_framework today; embeddings / memory later) to entry names,
+# with the `default` key covering any consumer without an explicit
+# binding. Each entry becomes a ModelRef:
+#   dialect         one of: openai-compatible | anthropic | gemini |
+#                   bedrock | vertex  (closed wire-protocol vocabulary)
+#   id              wire model identifier (OpenRouter `/models` `id`;
+#                   for local backends, the served model name)
+#   endpoint        base URL — required for local/OpenRouter
+#                   openai-compatible backends, empty for hosted defaults
+#   credential_ref  CredentialProvider lookup key (env-var name today;
+#                   vault path when the OpenBao backend lands) — never
+#                   the secret value itself
+#   tags            capability tags from the shared vocabulary:
+#                   fast | cheap | long-context | coding | vision |
+#                   local-only | private-data-ok
+#   pricing         OpenRouter-mirrored per-token USD rates (verbatim
+#                   key names; omit for local endpoints — cost is then
+#                   omitted from telemetry, never guessed. Cloud entries
+#                   may also omit it and inherit from the catalog cache
+#                   written by `assistant models sync-catalog` when the
+#                   entry `id` matches — declared values always win)
+#   context_length  OpenRouter-mirrored context window size
+#   modalities      OpenRouter-mirrored input/output modalities
+#   fallbacks       ordered list of other entry names tried after this
+#                   one fails (each must still satisfy required tags)
+#   health          optional endpoint health check (P20 — local
+#                   inference nodes; requires `endpoint`):
+#                     path:    probe path (default /models — vLLM,
+#                              Ollama's OpenAI facade, and NIM serve it)
+#                     timeout: probe timeout seconds (default 2.0)
+#                     ttl:     verdict freshness seconds (default 60)
+#                   Resolution skips entries with a fresh UNHEALTHY
+#                   verdict (fallback chain proceeds to cloud) but
+#                   FAILS CLOSED when a required local-only /
+#                   private-data-ok tag has no healthy entry left.
+#                   Probe with: assistant models check-health -p <name>
+#
+# The example below is the fleet story (arch-review §1): a GX10 node
+# (or any OpenAI-compatible host — NIM / vLLM / Ollama) serves the
+# cheap/private tier for background work (scheduler), memory
+# summarization, and embeddings; metered cloud remains the interactive
+# default and the fallback for non-private work when the node is down.
+#
+# models:
+#   entries:
+#     sonnet:
+#       dialect: anthropic
+#       id: claude-sonnet-4-20250514
+#       credential_ref: ANTHROPIC_API_KEY
+#       tags: [coding, long-context]
+#       pricing: {prompt: "0.000003", completion: "0.000015"}
+#       context_length: 200000
+#       modalities: {input: [text, image], output: [text]}
+#       fallbacks: [gx10-chat]
+#     gx10-chat:
+#       dialect: openai-compatible
+#       id: llama-3.1-8b-instruct        # the model name the server exposes
+#       endpoint: "http://gx10.local:8000/v1"
+#       tags: [fast, cheap, local-only, private-data-ok]
+#       health: {path: /models, timeout: 2.0, ttl: 60}
+#       fallbacks: [sonnet]              # cloud fallback for non-private work
+#     gx10-embed:
+#       dialect: openai-compatible
+#       id: nvidia/nv-embedqa-e5-v5      # embedding model served on the node
+#       endpoint: "http://gx10.local:8001/v1"
+#       tags: [cheap, local-only, private-data-ok]
+#       health: {path: /models}
+#   bindings:
+#     default: sonnet                    # interactive tier
+#     deep_agents: sonnet
+#     ms_agent_framework: gx10-chat
+#     scheduler: gx10-chat               # background jobs stay local/cheap
+#     memory: gx10-chat                  # reserved: memory summarization tier
+#     embeddings: gx10-embed             # Graphiti semantic search embeds
+#                                        # locally (explicit binding only —
+#                                        # `default` never spills into
+#                                        # embeddings)
+#     router: gx10-chat                  # P12 delegation router: enables
+#                                        # model-assisted sub-role
+#                                        # classification (explicit binding
+#                                        # only — `default` never enables
+#                                        # it; unbound = deterministic
+#                                        # keyword scoring only)
 
 # ── Default role ──
 default_role: chief_of_staff
@@ -60,3 +175,219 @@ tool_sources:
 #   1. Private: personas/<name>/extensions/<module>.py (if present)
 #   2. Public:  src/assistant/extensions/<module>.py (generic stubs in P1)
 extensions: []
+
+# ── Scheduled jobs (P7 — scheduler) ──
+# Optional. Run with `assistant daemon -p <persona>`. Each named job
+# declares exactly one trigger:
+#   cron: "<5-field expr>"   fires at matching UTC wall-clock times
+#   interval: <seconds>      fires every N seconds (first fire after N)
+#   calendar: <source>       fires lead_minutes before upcoming events
+#                            from a CalendarTriggerSource extension
+#                            (gcal/outlook — lands in a later phase;
+#                            declared jobs are skipped with a warning
+#                            until a matching source is enabled)
+# `consumer` is the models: bindings key the job's harness resolves
+# its chat model under (default: scheduler). Bind `scheduler` to a
+# cheap/local entry so recurring background work never burns the
+# interactive tier (P19 routing).
+# `harness` (optional, P11 harness-routing) pins the job's runs to a
+# specific SDK harness name, or `auto` for deterministic routing
+# against the job's role; omit to inherit the daemon -H value
+# (default: auto).
+#
+# schedules:
+#   morning_briefing:
+#     trigger: {cron: "0 7 * * *"}
+#     role: chief_of_staff
+#     prompt: "Prepare my morning briefing: calendar, urgent email, open tasks."
+#     consumer: scheduler           # optional (default: scheduler)
+#     enabled: true                 # optional (default: true)
+#   email_triage:
+#     trigger: {interval: 900}
+#     role: chief_of_staff
+#     prompt: "Triage new email: flag urgent items, draft suggested replies."
+#     harness: auto                 # optional (default: inherit daemon -H)
+#   pre_meeting_brief:
+#     trigger: {calendar: gcal, lead_minutes: 15}
+#     role: researcher
+#     prompt: "Prepare a one-page brief for the upcoming meeting."
+#
+# DAEMON NOTE: long-running daemons should set
+# guardrails.budgets.model_call.persist: file (below) — the default
+# in-memory spend ledger resets on every restart, silently re-arming
+# daily/monthly ceilings.
+
+# ── Guardrails (P13 — security-hardening) ──
+# Optional. Omit the section entirely to keep allow-all behavior.
+# guardrails:
+#   budgets:
+#     model_call:
+#       daily_usd: 5.0              # 0 / omitted = unlimited (UTC calendar day)
+#       monthly_usd: 50.0           # UTC calendar month
+#       default_call_cost_usd: 0.0  # charged when no pricing metadata resolves
+#       estimate_input_tokens: 2000 # feed compute_cost() when only per-token
+#       estimate_output_tokens: 500 #   pricing is known at check time
+#       persist: memory             # "file" → .cache/guardrails/spend.json
+#                                   # "db"   → guardrail_spend table on the
+#                                   #   persona DB (P30; needs database: url;
+#                                   #   restart- AND fleet-safe)
+#   policies:                       # first match wins, declaration order
+#     - action_type: model_call     # exact action type, or "*"
+#       resource: "expensive-*"     # glob against the action resource
+#       effect: deny                # allow | deny | require_confirmation
+#       reason: "use the local tier for bulk work"
+#   policies:                       # P25 identity-aware dimensions (optional,
+#     - action_type: model_call     #   additive to action_type/resource):
+#       role: "research*"           # glob on the ACTING role (identity.role)
+#       min_chain_depth: 2          # match only >= N delegation hops deep
+#       effect: deny
+#       reason: "deep sub-agents stay on the local tier"
+#   delegation:
+#     denied_sub_roles: []          # globs matched against sub-role names
+#     max_task_chars: 0             # 0 = unlimited
+#     max_chain_depth: 5            # P25: max delegation hops (0 = unlimited;
+#                                   #   default 5, enforced by the spawner)
+#
+# NOTE: with durable sessions configured (see the `sessions:` section
+# below), a require_confirmation decision SUSPENDS the operation into
+# the P30 approval flow (`assistant approvals list/approve/deny`,
+# retry to resume). Without durable sessions it keeps the P13
+# behavior: DENY.
+
+# ── Durable sessions & approvals (P30 — durable-sessions) ──
+# Optional. Omit the section entirely to keep every in-memory default:
+# InMemorySaver conversations, in-process-only session registries, and
+# deny-on-require_confirmation guardrails. `durable: true` requires a
+# database: {url_env: ...} url and switches on, all at once:
+#   - the Postgres LangGraph checkpointer for DeepAgents conversations
+#     (thread_ids survive restarts; the checkpointer manages its OWN
+#     schema via setup() — separate from `assistant db upgrade`, which
+#     owns the four durable-tier tables from migration 002);
+#   - durable session metadata: A2A contextIds / MCP context_ids are
+#     re-bindable after in-process expiry or a restart;
+#   - the approval interrupt/resume flow (suspend instead of deny);
+#   - the durable guardrail/approval audit log (audit_log table).
+# sessions:
+#   durable: true
+#   session_ttl_seconds: 0          # durable re-bind window from last use
+#                                   #   (0 = never lapses)
+#   approval_ttl_seconds: 0         # pending-approval validity window
+#                                   #   (0 = never lapses)
+
+# ── Per-persona credentials (.env — P13) ──
+# This directory may contain a git-ignored `.env` (see .gitignore).
+# Its KEY=VALUE entries form a persona-SCOPED credential namespace:
+# refs resolve against it FIRST, then fall back to the process
+# environment. Values are never exported into os.environ, so two
+# personas can hold different values for the same variable name.
+
+# ── Credential backend (P25 — agent-iam) ──
+# Optional. Omit (or `backend: env`) to keep the P13 env tiers.
+# `backend: openbao` reads credentials from an OpenBao (Vault-
+# compatible) server via AppRole auth: each ref is a KV v2 secret at
+# `<mount>/data/<persona>/<REF>` with the value under data key
+# `value` — the exact vault image of the persona .env namespace
+# (present wins, even empty; absent falls through to .env → process
+# env). The bootstrap refs below resolve through the env tiers.
+# Unconfigured or unreachable OpenBao degrades to env with a WARNING —
+# never fatal, so a fresh clone boots without a vault.
+# credentials:
+#   backend: openbao
+#   url_env: OPENBAO_ADDR            # e.g. https://bao.example.com
+#   role_id_env: OPENBAO_ROLE_ID     # AppRole credentials for THIS
+#   secret_id_env: OPENBAO_SECRET_ID #   persona's agent principal
+#   mount: secret                    # KV v2 mount (default: secret)
+
+# ── Sandbox (P22 — meta-harness-compat) ──
+# Optional. Omit the section entirely to keep the no-isolation
+# PassthroughSandbox. `provider: container` selects the
+# ContainerSandboxProvider, which compiles the three planes below
+# (sandbox-provider spec v2) into a `docker run`/`podman run`
+# invocation enforced at the extension-subprocess seam
+# (SandboxedProcessRunner). See docs/deployment/meta-harness.md §3.
+# sandbox:
+#   provider: container         # passthrough (default) | container
+#   image: python:3.12-slim     # required when provider: container
+#   runtime: docker             # docker | podman (omit = autodetect)
+#   filesystem:
+#     level: workspace-write    # read-only | workspace-write | full-access
+#     mounts:                   # explicit mounts (writable requires a
+#       - host_path: /srv/data  #   non-read-only level)
+#         sandbox_path: /data
+#         writable: false
+#   network:                    # deny-by-default when declared:
+#     allow: []                 #   [] = no network (--network=none);
+#                               #   hosts/CIDRs compile to SANDBOX_NET_ALLOW
+#                               #   env (needs an enforcing proxy/backend —
+#                               #   plain docker can't filter per-host)
+#     proxy: ""                 # optional egress proxy for allowed hosts
+#   credentials:
+#     visible: []               # ONLY these credential refs enter the
+#                               #   container env — no ambient inheritance
+
+# ── Extension integrity manifest (P13) ──
+# `assistant persona hash-extensions -p <name>` writes
+# extensions/manifest.yaml with SHA-256 hashes. When present, private
+# extensions are verified before execution: a hash mismatch disables
+# that extension (no manifest = allowed with a warning). Rerun the
+# command after every intentional extension edit.
+
+# ── Continual learning (P28 — continual-learning) ──
+# Optional. Omit the section entirely to keep continual learning
+# DORMANT: without it the persona records no feedback, never reflects,
+# and neither writes nor applies improvement proposals (clean-room
+# posture — no config, no learning). With it, the FeedbackEvent →
+# ImprovementProposal pipeline activates:
+#   - `assistant feedback` / REPL `/feedback` store human feedback;
+#     `assistant learning collect` runs the machine collectors (eval
+#     gate output, guardrail spend pressure, circuit-breaker state,
+#     model-registry pricing gaps) on demand — no new daemons.
+#   - `assistant reflect` (or a `kind: reflect` schedules: job)
+#     consolidates recent interactions into provenance-stamped
+#     learning/reflection/* facts (+ Graphiti episodes where
+#     configured), summarizing under the `reflection.consumer` models
+#     binding (default: the reserved `memory` key; unbound consumers
+#     fall back to `default`).
+#   - `assistant learning propose` writes risk-tiered proposal FILES
+#     under proposals/ (preference=LOW, prompt_layer=MEDIUM,
+#     routing_config=HIGH) — the persona repo diff IS the approval
+#     workflow; `assistant learning apply` refuses unless the P27 eval
+#     gate passes (SKIP counts as pass with a warning) and the
+#     proposal is LOW risk or explicitly --approved.
+#   - ONLY preference proposals with risk LOW may auto-apply, and only
+#     when auto_apply_low_risk is true; every application is gated
+#     through check_action(action_type="learning_apply") — a
+#     require_confirmation policy suspends into the P30 approval flow
+#     when durable sessions are configured, and DENIES otherwise.
+# learning:
+#   enabled: true                   # optional (default: true when present)
+#   auto_apply_low_risk: false      # opt-in auto-apply for LOW preferences
+#   reflection:
+#     consumer: memory              # models: bindings key for summarization
+#   proposals_dir: proposals        # optional (default: <persona>/proposals)
+
+# ── Clean-room knowledge sharing (P26 — knowledge-clean-room) ──
+# Optional. Omit the section entirely to keep TOTAL persona isolation:
+# without it this persona can neither export nor import shared
+# knowledge. `share:` rules declassify memory OUT (first rule naming
+# the audience wins); `accept:` rules govern what comes IN (first rule
+# matching the source persona wins). Every exported item passes
+# through a named sanitization profile (telemetry secret-redaction
+# chain + PII patterns) and travels in a provenance envelope; bundles
+# land in the git-ignored shared space (default: .cleanroom/).
+# Export/import are guardrail actions (`cleanroom_export` /
+# `cleanroom_import`) — policies can deny or require_confirmation
+# (which DENIES until the approval interrupt flow exists).
+# clean_room:
+#   space_dir: .cleanroom           # shared-space root (git-ignored)
+#   share:
+#     - audience: [work, external]  # persona names and/or `external`
+#       kinds: [facts, preferences] # facts | preferences | interactions
+#       include: ["*"]              # globs on item key OR content
+#       exclude: ["*private*"]      # exclusions win over include
+#       categories: []              # preference categories (empty = all)
+#       profile: standard           # sanitization: standard | secrets
+#   accept:
+#     - from: [personal]            # source-persona globs
+#       kinds: [facts]              # kinds this persona ingests
+#       profiles: [standard]        # trusted profiles (empty = any)

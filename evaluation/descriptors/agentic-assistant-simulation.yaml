@@ -1,0 +1,48 @@
+# Interface descriptor for agentic-assistant SIMULATION runs (P27).
+#
+# Same schema as agentic-assistant.yaml, but the surface under test is
+# the CLI driven against the simulation persona + fixture-backed
+# simulator. Environment contract (evaluation/run-gate.sh owns setup):
+#
+#   ASSISTANT_PERSONAS_DIR=evaluation/simulation/personas
+#   SIM_CONTENT_ANALYZER_URL=http://127.0.0.1:8901/content_analyzer
+#   SIM_CODING_TOOLS_URL=http://127.0.0.1:8901/coding_tools
+#   SIM_MS_GRAPH_URL=http://127.0.0.1:8901/ms_graph
+#
+# gen-eval's CliClient inherits the invoking environment, so exporting
+# these before `gen-eval run` is sufficient.
+#
+# Schema: gen_eval.descriptor.InterfaceDescriptor
+# Spec:   openspec/changes/eval-simulation-loop/specs/simulation/spec.md
+
+project: agentic-assistant-simulation
+version: "0.1.0"
+
+services:
+  # ── CLI surface (simulation persona) ───────────────────────────────
+  - name: cli
+    type: cli
+    # Same wrapper rationale as agentic-assistant.yaml: single argv[0],
+    # deprecation-noise suppression on stderr.
+    command: "evaluation/bin/assistant-quiet"
+    commands:
+      - name: run
+        description: REPL / tool-listing against the sim persona
+        tags: [cli, simulation]
+      - name: export
+        description: Prompt composition per role on the sim persona
+        tags: [cli, simulation, roles]
+
+scenario_dirs:
+  - ../simulation/scenarios/
+
+# Lifecycle for the simulator. Same `> log 2>&1 &` detachment rationale
+# as the serve startup in agentic-assistant.yaml (gen-eval invokes this
+# via subprocess.run(shell=True, capture_output=True) and would block on
+# inherited pipes otherwise).
+startup:
+  command: "uv run assistant simulate --port 8901 > /tmp/agentic-assistant-simulate.log 2>&1 &"
+  health_check: "http://127.0.0.1:8901/health"
+  health_timeout_seconds: 30
+  health_retry_count: 10
+  teardown: "pkill -f 'assistant simulate.*--port 8901' || true"

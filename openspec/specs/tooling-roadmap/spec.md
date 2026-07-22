@@ -1,7 +1,14 @@
 # tooling-roadmap Specification
 
 ## Purpose
-TBD - created by archiving change roadmap-v2-perplexity-integration. Update Purpose after archive.
+Governs roadmap governance for the project: `openspec/roadmap.md` is the
+single authoritative phase registry, each phase moves through a defined
+status lifecycle, inter-phase dependencies are represented as an explicit
+DAG, and externally sourced recommendations carry provenance attribution.
+It exists so phase sequencing, status, and the rationale behind them have
+one auditable source of truth instead of being scattered across proposals
+and session notes. Consumers are planning sessions and skills that sequence
+work, and contributors deciding what to build next.
 ## Requirements
 ### Requirement: Roadmap Document Authoritative
 
@@ -122,8 +129,11 @@ set MUST be a subset of the other phases listed in the roadmap.
 
 Every roadmap phase SHALL include columns or annotations indicating its
 source — the originating document (e.g., bootstrap-v4.1 P-number,
-perplexity feedback § reference, or "new" when neither applies) — so
-that reviewers can trace each phase back to its motivating analysis.
+perplexity feedback § reference, an architecture-review reference under
+`docs/architecture-analysis/`, or "new" when none applies) — so that
+reviewers can trace each phase back to its motivating analysis. Any
+document cited as a provenance source SHALL exist in the repository at
+the cited path.
 
 #### Scenario: Phase sourced from perplexity feedback
 
@@ -133,9 +143,19 @@ that reviewers can trace each phase back to its motivating analysis.
 - **AND** `docs/perplexity-feedback.md` SHALL exist in the repository as
   the canonical reference for those citations
 
+#### Scenario: Phase sourced from an architecture review
+
+- **WHEN** a phase's scope is derived from an architecture review
+  document (a dated file under `docs/architecture-analysis/`)
+- **THEN** the roadmap row SHALL cite that review (and, where
+  applicable, its finding identifier — e.g., "arch-review G-A") in its
+  Source column
+- **AND** the cited review document SHALL exist in the repository as the
+  canonical reference for those citations
+
 #### Scenario: Phase carried forward from prior roadmap
 
-- **WHEN** a phase's scope is carried forward from the pre-v2 roadmap
+- **WHEN** a phase's scope is carried forward from a pre-v3 roadmap
 - **THEN** the roadmap row SHALL cite the original P-number (e.g.,
   "original P4") in its Source column
 

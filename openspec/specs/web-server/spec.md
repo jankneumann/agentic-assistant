@@ -1,7 +1,13 @@
 # web-server Specification
 
 ## Purpose
-TBD - created by archiving change harness-ag-ui-bridge. Update Purpose after archive.
+Governs the FastAPI web server that exposes the assistant over the AG-UI
+protocol: the `POST /chat` SSE endpoint, startup-time persona binding,
+loopback-only binding by default, and the `/health` endpoint. It exists so
+local UI clients can stream assistant runs without the server widening the
+security surface beyond the local machine. It is started via the
+`assistant serve` CLI subcommand and emits events produced by the
+ag-ui-emitter capability.
 ## Requirements
 ### Requirement: SSE Chat Endpoint
 

@@ -21,7 +21,14 @@ jobs:
       # level means any future static-analysis step that inadvertently
       # loads persona configs will see the fixture root, not an empty
       # submodule mount. See docs/gotchas.md G6 (IR-C4).
-      ASSISTANT_PERSONAS_DIR: tests/fixtures/personas
+      #
+      # MUST be absolute. Setting it here makes conftest's
+      # os.environ.setdefault a no-op, so this value is the one tests
+      # actually use. CLI tests invoke commands inside
+      # CliRunner.isolated_filesystem(), which chdirs to a temp dir; a
+      # relative path resolves against that temp cwd, persona discovery
+      # returns empty, and the CLI exits 2. Absolute survives the chdir.
+      ASSISTANT_PERSONAS_DIR: ${{ github.workspace }}/tests/fixtures/personas
     steps:
       - name: Checkout (public repo only — persona submodules are private)
         uses: actions/checkout@v4

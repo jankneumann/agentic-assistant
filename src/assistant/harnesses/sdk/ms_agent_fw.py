@@ -11,8 +11,12 @@ Design references (``openspec/changes/ms-graph-extension``):
         ``OpenAIChatClient`` or ``AzureOpenAIChatClient`` per persona
 - D10 — capability resolver wiring (ToolPolicy + ContextProvider +
         GuardrailProvider + MemoryPolicy minimal injection)
-- D11 — extensions emit MSAF tools via ``as_ms_agent_tools()``; the
-        harness consumes this list, NEVER ``as_langchain_tools()``
+- P17 tool-spec migration — ``create_agent(tools)`` receives the
+        complete, already-aggregated ToolSpec list from
+        ``ToolPolicy.authorized_tools()`` and renders it through the
+        MSAF adapter (``render_msaf_tools`` → ``FunctionTool``); the
+        harness NEVER derives tools from the ``extensions`` argument
+        (replaces the D11 ``as_ms_agent_tools()`` consumption)
 - D27 — minimal MemoryPolicy injection: prepend
         ``MemoryPolicy.get_recent_snippets`` results under a
         ``## Recent context`` heading inside the composed system prompt
@@ -28,6 +32,20 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from assistant.core.capabilities.approvals import (
+    ApprovalDeniedError,
+    PendingApprovalError,
+)
+from assistant.core.capabilities.model_bindings import (
+    ModelCallDeniedError,
+    bind_msaf_chat_client,
+)
+from assistant.core.capabilities.models import (
+    DEFAULT_HARNESS_MODELS,
+    ModelRef,
+    ModelRequest,
+    ModelResolutionError,
+)
 from assistant.core.persona import PersonaConfig
 from assistant.core.role import RoleConfig
 from assistant.harnesses.base import SdkHarnessAdapter
@@ -46,9 +64,12 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from assistant.core.capabilities.context import ContextProvider
+    from assistant.core.capabilities.credentials import CredentialProvider
     from assistant.core.capabilities.guardrails import GuardrailProvider
     from assistant.core.capabilities.memory import MemoryPolicy
+    from assistant.core.capabilities.models import ModelProvider
     from assistant.core.capabilities.tools import ToolPolicy
+    from assistant.delegation.context import DelegationContext
 
 #: Memory snippet limit — D27 sets this at 10. Tests can override via
 #: the ``memory_snippet_limit`` constructor kwarg.
@@ -71,9 +92,10 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
     OAuth + LLM round-trips.
     """
 
-    #: Default chat-client model id surfaced in observability spans
-    #: when the persona omits a harness-level ``model`` override.
-    _DEFAULT_MODEL: str = "openai:gpt-4o"
+    #: Span-default chat-client model id, sourced from the shared
+    #: harness-default table that also seeds the synthesized registry
+    #: (P19 verdict #3 — registry-only).
+    _DEFAULT_MODEL: str = DEFAULT_HARNESS_MODELS["ms_agent_framework"]
 
     def __init__(
         self,
@@ -86,19 +108,40 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         context_provider: ContextProvider | None = None,
         chat_client_factory: Callable[[], Any] | None = None,
         memory_snippet_limit: int = DEFAULT_MEMORY_SNIPPET_LIMIT,
+        model_provider: ModelProvider | None = None,
+        credential_provider: CredentialProvider | None = None,
+        delegation_context: DelegationContext | None = None,
+        approval_store: Any | None = None,
+        thread_id: str | None = None,
     ) -> None:
         super().__init__(persona, role)
+        # P12 delegation-context: set only on sub-harnesses built by
+        # spawn_sub_agent; rendered ahead of the composed instructions.
+        self._delegation_context = delegation_context
         self._tool_policy = tool_policy
         self._memory_policy = memory_policy
         self._guardrail_provider = guardrail_provider
         self._context_provider = context_provider
         self._chat_client_factory = chat_client_factory
         self._memory_snippet_limit = memory_snippet_limit
+        self._model_provider = model_provider
+        self._credential_provider = credential_provider
+        # P30 durable-sessions: injectable ApprovalStore for the
+        # model-call guardrail hook (None = P13 deny fallback). MSAF has
+        # no checkpointer seam yet — durable conversation persistence
+        # for this harness is deferred (no agent-framework injection
+        # point; same posture as the P21 mid-turn retrieval deferral).
+        self._approval_store = approval_store
         self._active_model: str = self._DEFAULT_MODEL
+        # Resolved ModelRef backing ``_active_model`` — read by
+        # ``@traced_harness`` for cost attribution (P19).
+        self._active_model_ref: ModelRef | None = None
         # Stable conversation-thread identifier for transport binding (D4).
         # UUID4 synthesized once at construction; persists for the lifetime of
         # this adapter instance across invoke / astream_invoke calls.
-        self._thread_id: str = str(uuid.uuid4())
+        # P30: an explicit ``thread_id`` keeps the session-registry
+        # re-bind seam uniform across SDK harnesses.
+        self._thread_id: str = thread_id or str(uuid.uuid4())
 
     def name(self) -> str:
         return "ms_agent_framework"
@@ -141,6 +184,19 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         resolver = CapabilityResolver()
         return resolver.resolve(self.persona, "sdk", self.role).guardrails
 
+    def _resolve_approval_store(self) -> Any | None:
+        """Injected ApprovalStore, else the persona's durable store.
+
+        Mirrors ``DeepAgentsHarness._resolve_approval_store`` — ``None``
+        (no durable sessions) preserves P13 deny semantics.
+        """
+        if self._approval_store is not None:
+            return self._approval_store
+        from assistant.core.durable import durable_stores_for
+
+        stores = durable_stores_for(self.persona)
+        return stores.approvals if stores is not None else None
+
     def _resolve_context_provider(self) -> ContextProvider:
         """Return the persona+role's ContextProvider, or the default.
 
@@ -162,6 +218,37 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
             return resolved.context
         return DefaultContextProvider()
 
+    def _resolve_model_provider(self) -> ModelProvider:
+        """Return the injected ModelProvider or resolve slot #6.
+
+        Mirrors ``DeepAgentsHarness._resolve_model_provider``:
+        registry-only (P19 verdict #3) — the resolver hands back a
+        :class:`RegistryModelProvider` (persona-declared or
+        synthesized-default) and this harness selects its model via
+        the ``ModelRequest.consumer`` binding lookup.
+        """
+        if self._model_provider is not None:
+            return self._model_provider
+        from assistant.core.capabilities.resolver import CapabilityResolver
+
+        resolver = CapabilityResolver()
+        provider = resolver.resolve(self.persona, "sdk", self.role).models
+        assert provider is not None  # resolver always fills slot #6
+        return provider
+
+    def _resolve_credential_provider(self) -> CredentialProvider:
+        if self._credential_provider is not None:
+            return self._credential_provider
+        # P13 security-hardening: prefer the persona-scoped provider
+        # built at persona load (persona .env first, process env
+        # fallback) so model credential_refs resolve per-persona.
+        persona_credentials = getattr(self.persona, "credentials", None)
+        if persona_credentials is not None:
+            return persona_credentials
+        from assistant.core.capabilities.credentials import EnvCredentialProvider
+
+        return EnvCredentialProvider()
+
     # ── Chat client construction ──────────────────────────────────
 
     def _build_chat_client(self) -> Any:
@@ -179,10 +266,14 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
 
         cfg = self.persona.harnesses.get("ms_agent_framework", {}) or {}
         chat_client_kind = cfg.get("chat_client", "openai")
-        model = cfg.get("model", self._DEFAULT_MODEL)
-        self._active_model = model
 
         if chat_client_kind == "azure_openai":
+            # Unchanged by model-provider-routing: no Azure OpenAI
+            # connector package ships for agent-framework 1.10.x, so
+            # this branch degrades to its documented install error
+            # (CLAUDE.md "What's Not Yet Wired"). ``_active_model``
+            # keeps its span default — the legacy per-harness ``model``
+            # key is gone (P19 verdict #3, registry-only).
             try:
                 from agent_framework.azure_openai import (  # type: ignore[import-not-found, unused-ignore]
                     AzureOpenAIChatClient,
@@ -193,26 +284,62 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
                 ) from exc
 
             return AzureOpenAIChatClient()
-        try:
-            from agent_framework.openai import (  # type: ignore[import-not-found, unused-ignore]
-                OpenAIChatClient,
-            )
-        except ImportError as exc:
-            raise _agent_framework_install_error(
-                "agent_framework.openai.OpenAIChatClient"
-            ) from exc
 
-        return OpenAIChatClient()
+        # Default (openai) branch flows through the ModelProvider seam
+        # (model-provider-routing, registry-only per P19 verdict #3):
+        # the consumer binding selects a registry entry — persona
+        # ``models:`` when declared, synthesized defaults otherwise. A
+        # guardrail denial is a policy stop and propagates; a binding
+        # failure tries the next ref in the resolved fallback chain.
+        provider = self._resolve_model_provider()
+        refs = provider.resolve(ModelRequest(consumer=self.name()))
+        credentials = self._resolve_credential_provider()
+        guardrails = self._resolve_guardrail_provider()
+
+        approvals = self._resolve_approval_store()
+        last_exc: Exception | None = None
+        for ref in refs:
+            try:
+                client = bind_msaf_chat_client(
+                    ref,
+                    credentials=credentials,
+                    guardrails=guardrails,
+                    persona=self.persona.name,
+                    role=self.role.name,
+                    approvals=approvals,
+                    thread_id=self._thread_id,
+                )
+            except (
+                ModelCallDeniedError,
+                PendingApprovalError,
+                ApprovalDeniedError,
+            ):
+                # Policy stops (P30 approval suspension included) — never
+                # walk the fallback chain past them.
+                raise
+            except Exception as exc:
+                last_exc = exc
+                continue
+            self._active_model = ref.model_id or ref.name
+            self._active_model_ref = ref
+            return client
+        raise ModelResolutionError(
+            f"Every ModelRef in the resolved chain failed to bind: "
+            f"{[r.name for r in refs]}."
+        ) from last_exc
 
     # ── Instruction composition (D27) ─────────────────────────────
 
-    def _compose_instructions(self) -> str:
+    async def _compose_instructions(self) -> str:
         """Compose system prompt + optional memory snippet block.
 
         Per D27: the memory snippets are *prepended* under
         ``## Recent context`` so the agent reads them before the
         composed system-prompt body. An empty snippet list MUST leave
-        the prompt unchanged (no heading injected).
+        the prompt unchanged (no heading injected). Snippet retrieval
+        is awaited directly on the ``create_agent`` event loop
+        (capability-protocols-v2 owner review verdict C8, 2026-07-16 —
+        no sync bridge on the hot path).
 
         The base system prompt is sourced from the persona+role's
         ``ContextProvider`` (resolved via ``CapabilityResolver`` per
@@ -225,16 +352,23 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         )
 
         memory_policy = self._resolve_memory_policy()
-        snippets = memory_policy.get_recent_snippets(
+        snippets = await memory_policy.get_recent_snippets(
             self.persona, self.role, limit=self._memory_snippet_limit
         )
-        if not snippets:
-            return base
-
-        snippet_block = "\n\n".join(snippets)
-        return (
-            f"{_MEMORY_SECTION_HEADING}\n\n{snippet_block}\n\n{base}"
-        )
+        instructions = base
+        if snippets:
+            snippet_block = "\n\n".join(snippets)
+            instructions = (
+                f"{_MEMORY_SECTION_HEADING}\n\n{snippet_block}\n\n{base}"
+            )
+        # P12 delegation-context: the delegation block leads the whole
+        # prompt (identity + constraints before recent context). Absent
+        # context leaves the instructions byte-identical to pre-P12.
+        if self._delegation_context is not None:
+            instructions = (
+                f"{self._delegation_context.render()}\n\n{instructions}"
+            )
+        return instructions
 
     # ── SdkHarnessAdapter contract ────────────────────────────────
 
@@ -244,28 +378,24 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         """Build an ``agent_framework.Agent`` for the persona/role pair.
 
         Steps:
-        1. Filter ``extensions`` through ``ToolPolicy.authorized_extensions``
-           (spec scenario "Authorized extensions are filtered through
-           ToolPolicy"). The harness MUST consult the policy before
-           reading ``as_ms_agent_tools()``.
-        2. Compose tools = ``tools`` + each authorized extension's
-           ``as_ms_agent_tools()`` output. The harness MUST NOT consume
-           ``as_langchain_tools()``.
-        3. Compose instructions via ``_compose_instructions``
+        1. Render ``tools`` — the complete, already-aggregated ToolSpec
+           list produced by ``ToolPolicy.authorized_tools()`` (the tool
+           policy is the SOLE tool aggregator; spec harness-adapter
+           "SdkHarnessAdapter.create_agent consumes the aggregated tool
+           list as-is") — to the MSAF native shape via the per-harness
+           adapter. The harness MUST NOT derive tools from
+           ``extensions`` (that parameter is retained for non-tool
+           concerns only).
+        2. Compose instructions via ``_compose_instructions``
            (system prompt + optional memory snippets per D27).
-        4. Build chat client per persona config.
-        5. Construct ``Agent(client, instructions, tools)``.
+        3. Build chat client per persona config.
+        4. Construct ``Agent(client, instructions, tools)``.
         """
-        tool_policy = self._resolve_tool_policy()
-        authorized = tool_policy.authorized_extensions(
-            self.persona, self.role, loaded_extensions=extensions
-        )
+        from assistant.harnesses.tool_adapters import render_msaf_tools
 
-        ext_tools: list[Any] = []
-        for ext in authorized:
-            ext_tools.extend(ext.as_ms_agent_tools())
+        rendered_tools = render_msaf_tools(tools)
 
-        instructions = self._compose_instructions()
+        instructions = await self._compose_instructions()
         chat_client = self._build_chat_client()
 
         try:
@@ -280,7 +410,7 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         return Agent(
             client=chat_client,
             instructions=instructions,
-            tools=[*tools, *ext_tools],
+            tools=rendered_tools,
         )
 
     @traced_harness
@@ -293,7 +423,11 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         ``trace_llm_call`` whether the call succeeds or raises.
         """
         result = await agent.run(message)
-        return _stringify_run_result(result)
+        response = _stringify_run_result(result)
+        # Post-turn capture (memory-retrieval-activation): best-effort,
+        # error-swallowed — see SdkHarnessAdapter._capture_interaction.
+        await self._capture_interaction(message, response)
+        return response
 
     @traced_harness
     async def astream_invoke(
@@ -332,6 +466,9 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         # IMPL_REVIEW round-1 gemini #2 (single slot) → round-2 cross-vendor
         # (claude-r2-2 + codex-r2-1) upgraded to a deque for parallel orphans.
         pending_orphan_call_ids: deque[str] = deque()
+        # Accumulated assistant text for post-turn memory capture on the
+        # success path (memory-retrieval-activation).
+        captured_text: list[str] = []
         started_at = datetime.now(UTC).isoformat()
         yield RunStarted(run_id=run_id, started_at=started_at)
 
@@ -372,6 +509,7 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
                     if not isinstance(text, str):
                         text = str(getattr(update, "delta", "") or "")
                 if text:
+                    captured_text.append(text)
                     yield TextDelta(message_id=message_id, text=text)
 
                 # --- Tool-call content ---
@@ -453,6 +591,12 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
                 if inspect.iscoroutine(aclose_result):
                     await aclose_result
 
+        # Post-turn capture BEFORE the terminal RunFinished yield: once
+        # the consumer sees RunFinished it may close the generator, and
+        # code after the final yield would be skipped by GeneratorExit.
+        # Success path only — errors and disconnects are not captured.
+        await self._capture_interaction(message, "".join(captured_text))
+
         finished_at = datetime.now(UTC).isoformat()
         yield RunFinished(run_id=run_id, finished_at=finished_at, error=None)
 
@@ -462,6 +606,7 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         task: str,
         tools: list[Any],
         extensions: list[Any],
+        context: DelegationContext | None = None,
     ) -> str:
         """Build a nested harness for ``role`` and invoke it on ``task``.
 
@@ -470,19 +615,33 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
         ``check_action(ActionRequest(kind="delegate", ...))`` BEFORE
         any ``Agent`` construction. A denied decision raises
         ``PermissionError``.
+
+        P12 delegation-context: an optional ``context`` (constructed by
+        the ``DelegationSpawner``) is threaded to the sub-harness, whose
+        instruction composition renders it as a ``## Delegation
+        context`` block. ``None`` preserves pre-P12 behavior exactly.
         """
+        from assistant.core.capabilities.audit import emit_guardrail_audit
+        from assistant.core.capabilities.identity import AgentIdentity
         from assistant.core.capabilities.types import ActionRequest
 
         guardrails = self._resolve_guardrail_provider()
-        decision = guardrails.check_action(
-            ActionRequest(
-                action_type="delegate",
-                resource=role.name,
+        # P25 agent-iam: attach the acting principal so the decision is
+        # attributable (identity-aware policies + audit record).
+        request = ActionRequest(
+            action_type="delegate",
+            resource=role.name,
+            persona=self.persona.name,
+            role=self.role.name,
+            metadata={"task": task},
+            identity=AgentIdentity(
                 persona=self.persona.name,
                 role=self.role.name,
-                metadata={"task": task},
-            )
+                session_id=self.thread_id,
+            ),
         )
+        decision = guardrails.check_action(request)
+        emit_guardrail_audit(request, decision)
         if not decision.allowed:
             raise PermissionError(
                 f"Delegation to role {role.name!r} denied by guardrails: "
@@ -498,6 +657,10 @@ class MSAgentFrameworkHarness(SdkHarnessAdapter):
             context_provider=self._context_provider,
             chat_client_factory=self._chat_client_factory,
             memory_snippet_limit=self._memory_snippet_limit,
+            model_provider=self._model_provider,
+            credential_provider=self._credential_provider,
+            delegation_context=context,
+            approval_store=self._approval_store,
         )
         agent = await sub.create_agent(tools, extensions)
         return await sub.invoke(agent, task)

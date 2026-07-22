@@ -129,6 +129,7 @@ def test_noop_trace_memory_op_accepts_each_op() -> None:
 
     for op in (
         "context",
+        "snippets",
         "fact_write",
         "interaction_write",
         "episode_write",

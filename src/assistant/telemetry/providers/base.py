@@ -33,8 +33,20 @@ _VALID_GRAPH_METHODS: frozenset[str] = frozenset(
 _VALID_OPS: frozenset[str] = frozenset(
     {
         "context",
+        "snippets",
         "fact_write",
+        # knowledge-clean-room (P26): structured reads + prefix delete
+        # backing the declassification gateway (export reads, revocation
+        # purges). Mirrors the interaction_list precedent from P27.
+        "fact_list",
+        "preference_list",
+        "fact_delete",
+        # continual-learning (P28): preference upsert backing applied
+        # `preference` proposals (distillation). Same precedent as the
+        # P26 additions above.
+        "preference_write",
         "interaction_write",
+        "interaction_list",
         "episode_write",
         "search",
         "export",

@@ -95,7 +95,7 @@ class TestBuilderResilience:
         tool, transport, breaker = await self._build_test_tool(
             "backend-success", [503, 503, 200],
         )
-        result = await tool.ainvoke({})
+        result = await tool.handler()
         assert result == {"ok": True}
         assert transport.calls == 3
         assert breaker.state == "closed"
@@ -106,7 +106,7 @@ class TestBuilderResilience:
             "backend-fail", [503, 503, 503],
         )
         with pytest.raises(httpx.HTTPStatusError) as exc_info:
-            await tool.ainvoke({})
+            await tool.handler()
         # Crucial: NOT a tenacity.RetryError.
         import tenacity
 
@@ -128,7 +128,7 @@ class TestBuilderResilience:
         breaker._st.next_probe_at = datetime.now(UTC) + timedelta(seconds=60)
         assert breaker.state == "open"
         with pytest.raises(CircuitBreakerOpenError) as exc_info:
-            await tool.ainvoke({})
+            await tool.handler()
         assert exc_info.value.breaker_key == "http_tools:backend-circuit"
         assert transport.calls == 0  # no HTTP request was sent
 
@@ -138,7 +138,7 @@ class TestBuilderResilience:
             "backend-401", [401],
         )
         with pytest.raises(httpx.HTTPStatusError):
-            await tool.ainvoke({})
+            await tool.handler()
         assert transport.calls == 1
         assert breaker.consecutive_failures == 0
         assert breaker.state == "closed"

@@ -1,0 +1,42 @@
+# Simulated MS Graph tool source (P27 eval-simulation-loop).
+#
+# Seed corpus promoted from tests/fixtures/graph_responses/ms_graph/ —
+# the response files are verbatim copies (synthetic content, sentinel
+# comment line preserved; the simulator strips leading // lines before
+# serving). Consumed by `assistant simulate` via
+# src/assistant/simulation/server.py.
+name: ms_graph
+title: "Simulated Microsoft Graph"
+version: "0.1.0"
+
+routes:
+  - operation_id: get_my_profile
+    method: GET
+    path: /me
+    summary: "Get the signed-in user's profile"
+    description: >-
+      Canned /me profile response (synthetic test account).
+    response_file: responses/get_my_profile.json
+
+  - operation_id: search_messages
+    method: GET
+    path: /me/messages
+    summary: "Search the signed-in user's messages"
+    description: >-
+      Canned message-search response; the query parameter surfaces in
+      the OpenAPI spec but does not affect the canned payload.
+    response_file: responses/search_messages.json
+    parameters:
+      - name: search
+        description: "Free-text search query"
+        required: false
+
+  - operation_id: search_people
+    method: GET
+    path: /me/people
+    summary: "Search people relevant to the signed-in user"
+    response_file: responses/search_people.json
+    parameters:
+      - name: search
+        description: "Free-text people search query"
+        required: false

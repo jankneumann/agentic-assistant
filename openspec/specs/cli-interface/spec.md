@@ -1,7 +1,14 @@
 # cli-interface Specification
 
 ## Purpose
-TBD - created by archiving change bootstrap-vertical-slice. Update Purpose after archive.
+Governs the `assistant` command-line entry point: the click group with its
+`run`, list, `export`, `db`, `export-memory`, and `serve` subcommands,
+persona/role/harness selection flags, and the interactive REPL including
+`/delegate`, teacher-method flags, and tool listing. It exists as the
+primary human interface for composing a persona with a role and running it
+on a chosen harness. The CLI only wires together the core library
+(registries, composition, harness factory) and delegates all agent behavior
+to it.
 ## Requirements
 ### Requirement: CLI Entry Point
 
@@ -91,23 +98,38 @@ personas when `-p/--persona` names a persona that does not exist.
 
 ### Requirement: Harness Selection via -h Flag
 
-The CLI SHALL accept `-H/--harness` to select the harness backend, dispatching
-to the harness factory, and SHALL surface the MS Agent Framework harness's
-`NotImplementedError` to the user as a clear error when selected before P5
-lands.
+The CLI SHALL accept `-H/--harness` to select the harness backend and
+SHALL default it to the `auto` sentinel on the `run`, `serve`, and
+`daemon` subcommands. `auto` SHALL be resolved through
+`select_harness(persona, role)` after the persona and role are
+loaded (explicit `-H` names bypass routing and dispatch directly to
+the harness factory), and the resolved concrete name SHALL be what
+reaches `create_harness` — the factory never receives `auto`. The
+CLI SHALL surface factory validation failures (unknown harness,
+harness not enabled, no enabled SDK harness under `auto`) as usage
+errors.
 
-#### Scenario: Default harness is deep_agents
+#### Scenario: Default harness resolves via auto routing
 
-- **WHEN** `-H/--harness` is omitted
-- **THEN** the harness passed to the factory MUST equal `"deep_agents"`
+- **WHEN** `-H/--harness` is omitted on `assistant run`
+- **AND** the persona enables only `deep_agents` among SDK harnesses
+  and declares no routing rules
+- **THEN** the harness passed to the factory MUST equal
+  `"deep_agents"` (the `auto` resolution result)
 
-#### Scenario: -h ms_agent_framework surfaces the stub error
+#### Scenario: Explicit harness bypasses routing
 
-- **WHEN** `assistant -p personal -h ms_agent_framework` is executed (with the
-  MS AF harness enabled in config)
+- **WHEN** `assistant run -p personal -H deep_agents` is executed
+- **THEN** the harness passed to the factory MUST equal
+  `"deep_agents"` regardless of any `harnesses.routing:` rules
+
+#### Scenario: -h ms_agent_framework surfaces the enablement error
+
+- **WHEN** `assistant -p personal -H ms_agent_framework` is executed
+  with the MS AF harness disabled in the persona config
 - **THEN** the CLI MUST exit non-zero
-- **AND** stderr or stdout MUST contain a message indicating the MS Agent
-  Framework harness is not yet implemented
+- **AND** stderr or stdout MUST contain a message indicating the
+  harness is not enabled for the persona
 
 ### Requirement: Interactive REPL Loop
 
@@ -376,9 +398,20 @@ application binding a single persona and role for the lifetime of the
 server process. The subcommand SHALL accept `-p/--persona` (required),
 `-r/--role` (optional, defaulting to the persona's `default_role`),
 `-H/--harness` (optional, defaulting to `deep_agents`), `--host`
-(optional, defaulting to `127.0.0.1`), and `--port` (optional,
-defaulting to `8765`). The server SHALL block until interrupted; the
-exit code on `Ctrl-C` SHALL be 0.
+(optional, defaulting to `127.0.0.1`), `--port` (optional,
+defaulting to `8765`), `--a2a` (optional flag, default off), and
+`--mcp` (optional flag, default off). The server SHALL block until
+interrupted; the exit code on `Ctrl-C` SHALL be 0. When `--a2a` is
+passed, the app factory MUST be invoked with `enable_a2a=True` and
+`a2a_base_url="http://<host>:<port>"` so the A2A protocol surface
+(agent card + `POST /a2a/v1`) is mounted alongside the AG-UI routes
+on the same server. When `--mcp` is passed, the app factory MUST be
+invoked with `enable_mcp=True` so the MCP streamable-HTTP surface is
+mounted at `/mcp` on the same server, and the startup output MUST
+name the `/mcp` endpoint. The two flags SHALL compose. When neither
+flag is present the app factory MUST be called with the legacy
+`make_app(persona, role, harness)` shape and no A2A or MCP routes
+registered.
 
 #### Scenario: serve binds the supplied persona and role at startup
 
@@ -395,54 +428,419 @@ exit code on `Ctrl-C` SHALL be 0.
 - **THEN** the underlying uvicorn server MUST bind to `127.0.0.1`,
   not `0.0.0.0`
 
-#### Scenario: serve uses persona default_role when -r is omitted
+#### Scenario: serve --a2a mounts the A2A surface
 
-- **WHEN** `assistant serve -p personal` is executed without `-r`
-- **AND** the personal persona's `default_role` is `assistant`
-- **THEN** the constructed harness MUST be initialized with the
-  `assistant` role
+- **WHEN** `assistant serve -p personal --a2a --port 9001` is executed
+- **THEN** the app factory MUST receive `enable_a2a=True` and
+  `a2a_base_url="http://127.0.0.1:9001"`
+- **AND** the startup output MUST name the agent-card URL
 
-#### Scenario: serve rejects unknown personas with non-zero exit
+#### Scenario: serve --mcp mounts the MCP surface
 
-- **WHEN** `assistant serve -p nonexistent` is executed
+- **WHEN** `assistant serve -p personal --mcp --port 9002` is executed
+- **THEN** the app factory MUST receive `enable_mcp=True`
+- **AND** the startup output MUST name the `/mcp` endpoint
+
+#### Scenario: serve --a2a --mcp composes both surfaces
+
+- **WHEN** `assistant serve -p personal --a2a --mcp` is executed
+- **THEN** the app factory MUST receive `enable_a2a=True`,
+  `a2a_base_url`, and `enable_mcp=True` in the same call
+
+#### Scenario: serve without flags keeps the legacy surface
+
+- **WHEN** `assistant serve -p personal -r coder` is executed without
+  `--a2a` or `--mcp`
+- **THEN** the app factory MUST be called without A2A or MCP keyword
+  arguments
+- **AND** requests to `/.well-known/agent-card.json`, `/a2a/v1`, and
+  `/mcp` MUST return 404
+
+### Requirement: Simulate Subcommand
+
+The CLI SHALL provide a `simulate` subcommand that builds the
+fixture-backed simulator app from a fixtures root (option
+`--fixtures`/`-f`, default `evaluation/simulation/sources`) and serves
+it with uvicorn on a configurable host/port (defaults `127.0.0.1` /
+`8901`). Before serving it SHALL print, for every discovered source,
+an `export SIM_<SOURCE>_URL=<base>/<source_name>` line matching the
+simulation persona's `base_url_env` convention, plus an
+`export ASSISTANT_PERSONAS_DIR=...` line when a sibling `personas/`
+directory exists next to the fixtures root. An invalid or empty
+fixtures root SHALL be a usage error; binding a non-loopback host
+SHALL emit a warning (mirroring `serve`).
+
+#### Scenario: Simulate is registered in the CLI group
+
+- **WHEN** the CLI group's command map is inspected
+- **THEN** it MUST contain `simulate`
+- **AND** `assistant simulate --help` MUST exit 0
+
+#### Scenario: Simulate prints the env contract before serving
+
+- **WHEN** `assistant simulate --port 8955` runs against the seed
+  corpus (with the server loop stubbed)
+- **THEN** stdout MUST contain one `export SIM_<SOURCE>_URL=` line per
+  seed source pointing at `http://127.0.0.1:8955/<source_name>`
+- **AND** the server MUST be started on host `127.0.0.1` port `8955`
+
+#### Scenario: Missing fixtures root is a usage error
+
+- **WHEN** `assistant simulate --fixtures /nonexistent` is executed
 - **THEN** the exit code MUST be non-zero
-- **AND** stderr or stdout MUST contain the string `"Available:"`
+- **AND** the output MUST name the missing directory
 
-#### Scenario: serve rejects host harness names
+### Requirement: Export Eval Dataset Subcommand
 
-- **WHEN** `assistant serve -p personal -H claude_code` is executed
+The CLI SHALL provide an `export-eval-dataset` subcommand that reads
+stored interactions for a required persona (`-p`) through
+`MemoryManager.list_interactions` — honoring `--role` and `--limit`
+filters — and writes one gen-eval scenario stub YAML file per
+interaction into `--output-dir` (default
+`evaluation/datasets/exported`, created if missing). A persona without
+a configured `database_url` SHALL exit 1 with an error naming the
+persona; zero matching interactions SHALL print a message and exit 0
+without writing files; on success the command SHALL remind the
+operator that stubs require human completion before promotion into a
+scenario suite.
+
+#### Scenario: Persona without database errors
+
+- **WHEN** `assistant export-eval-dataset -p personal` is executed and
+  the persona resolves no `database_url`
+- **THEN** the exit code MUST be 1
+- **AND** the output MUST mention the missing `database_url`
+
+#### Scenario: One stub file per interaction
+
+- **WHEN** the persona database yields two interactions
+- **THEN** exactly two `.yaml` stub files MUST be written to the
+  output directory
+- **AND** each MUST parse as a scenario with `category: regression`
+
+#### Scenario: Role and limit filters are forwarded
+
+- **WHEN** `assistant export-eval-dataset -p personal -r coder
+  --limit 5` is executed
+- **THEN** `list_interactions` MUST be called with `role="coder"` and
+  `limit=5`
+
+### Requirement: Persona Hash-Extensions Subcommand
+
+The CLI SHALL provide `assistant persona hash-extensions -p
+<persona>` that hashes every `*.py` file in the persona's extensions
+directory (SHA-256) and writes/overwrites the `manifest.yaml`
+integrity manifest next to them, printing each written filename and
+digest. When the extensions directory does not exist the command MUST
+exit non-zero with an error naming the missing path. Regenerating the
+manifest after an intentional extension edit is the documented
+operator flow for the persona registry's verify-before-execute check.
+
+#### Scenario: Manifest is generated for a persona
+
+- **WHEN** `assistant persona hash-extensions -p personal` is
+  executed for a persona whose extensions directory contains
+  `gmail.py`
+- **THEN** `manifest.yaml` MUST be written in that directory with a
+  `hashes:` entry for `gmail.py`
+- **AND** the output MUST list `gmail.py` with its digest
+
+#### Scenario: Missing extensions directory fails
+
+- **WHEN** the persona has no extensions directory on disk
+- **THEN** the command MUST exit with a non-zero status
+- **AND** the error output MUST name the missing directory
+
+### Requirement: CLI daemon Subcommand
+
+The CLI SHALL provide a `daemon` subcommand that runs the persona's
+`schedules:` jobs until interrupted. It SHALL accept `-p/--persona`
+(required), `-H/--harness` (optional, default `auto`, SDK harnesses
+only — `auto` resolves per job through `select_harness` against the
+job's role, and a job's `harness:` override takes precedence over the
+`-H` value), and `--serve` with `--host`/`--port` (defaults
+`127.0.0.1`/`8765`) to co-host the AG-UI SSE server in the same
+process (under `auto`, the served app's harness resolves against the
+persona's `default_role`). Before starting, the command SHALL
+validate that the persona declares at least one enabled scheduled
+job, that every enabled job's `role` loads, and that every enabled
+job's effective harness resolves to an enabled SDK harness — each
+failure exiting non-zero with an actionable message naming the job.
+The daemon SHALL load extensions via `load_extensions_async`, perform
+HTTP-tool discovery once, warn when a `model_call` budget uses the
+in-memory ledger (recommending `persist: file`), stop gracefully on
+SIGINT/SIGTERM, and run extension `shutdown()` hooks on teardown.
+
+#### Scenario: Daemon is registered in the CLI group
+
+- **WHEN** `assistant daemon --help` is executed
+- **THEN** the exit code MUST be 0
+- **AND** the help text MUST mention scheduled jobs
+
+#### Scenario: Persona without schedules is a usage error
+
+- **WHEN** `assistant daemon -p <persona>` is executed for a persona
+  with no `schedules:` section
 - **THEN** the exit code MUST be non-zero
-- **AND** the output MUST indicate that `claude_code` is a host
-  harness and cannot serve over SSE
+- **AND** the output MUST mention the missing `schedules:` section
 
-#### Scenario: Ctrl-C exits with status 0
+#### Scenario: Unknown job role fails at startup
 
-- **WHEN** the running server receives SIGINT
-- **THEN** the lifespan shutdown MUST run cleanly
-- **AND** the process MUST exit with status 0
-
-#### Scenario: serve rejects persona with no default_role when -r is omitted
-
-- **WHEN** `assistant serve -p some-persona` is executed without
-  `-r`
-- **AND** the persona's `default_role` field is missing or empty
+- **WHEN** an enabled job names a role that does not exist
 - **THEN** the exit code MUST be non-zero
-- **AND** stderr or stdout MUST identify the persona name and the
-  missing `default_role` field
+- **AND** the error MUST name the offending job
 
-#### Scenario: serve rejects unknown harness names
+#### Scenario: Host harness is rejected
 
-- **WHEN** `assistant serve -p personal -H nonexistent` is executed
+- **WHEN** `assistant daemon -p <persona> -H claude_code` is executed
 - **THEN** the exit code MUST be non-zero
-- **AND** the error MUST list the available harness names
+- **AND** the output MUST indicate that scheduled jobs require an SDK
+  harness
 
-#### Scenario: serve warns when binding to a non-loopback host
+#### Scenario: Per-job harness override is validated at startup
 
-- **WHEN** `assistant serve -p personal --host 0.0.0.0` is executed
-  (or any non-`127.0.0.1`, non-`localhost` address)
-- **THEN** the CLI MUST emit a clearly-visible warning on stderr
-  before uvicorn starts, identifying that the server will be
-  network-accessible without authentication
-- **AND** the server MUST still start (the warning is informational,
-  not a refusal — single-user, local-trust-mode is the v1 contract)
+- **WHEN** an enabled job declares `harness: claude_code`
+- **AND** `assistant daemon -p <persona>` is executed
+- **THEN** the exit code MUST be non-zero
+- **AND** the error MUST name the offending job
+
+#### Scenario: In-memory budget ledger triggers a warning
+
+- **WHEN** the persona declares a `model_call` budget without
+  `persist: file`
+- **THEN** the daemon MUST emit a warning recommending `persist: file`
+  before starting
+- **AND** the daemon MUST still start
+
+### Requirement: CLI models Command Group
+
+The CLI SHALL provide a `models` command group with two subcommands.
+`assistant models sync-catalog -p <persona> [--url <base>]` SHALL
+fetch the OpenRouter `/models` catalog (default URL
+`https://openrouter.ai/api/v1/models`, overridable) using the
+persona-scoped credential `OPENROUTER_API_KEY` when present, write the
+persona-local catalog cache file, and print the model count and cache
+path; any fetch failure (network unreachable, redirect, oversize
+response, HTTP error) SHALL exit non-zero with an error naming the
+cause. `assistant models check-health -p <persona>` SHALL probe every
+registry entry that declares a `health:` block, print one line per
+entry with its healthy/unhealthy verdict and probe URL, warm the
+process's shared health cache, and exit `0` when all probed entries
+are healthy (or none declare health checks, with a message saying so)
+and `1` when any entry is unhealthy.
+
+#### Scenario: models group is registered
+
+- **WHEN** `assistant models --help` is executed
+- **THEN** the exit code MUST be 0
+- **AND** the output MUST list `sync-catalog` and `check-health`
+
+#### Scenario: sync-catalog writes the persona cache
+
+- **WHEN** `assistant models sync-catalog -p <persona>` runs against
+  a catalog endpoint returning two models
+- **THEN** the persona's `.cache/models/catalog.json` MUST be written
+  containing both model ids
+- **AND** the output MUST name the cache path
+
+#### Scenario: sync-catalog without network errors clearly
+
+- **WHEN** the catalog URL is unreachable
+- **THEN** the exit code MUST be non-zero
+- **AND** the error output MUST name the transport failure
+
+#### Scenario: check-health reports per-entry verdicts
+
+- **WHEN** `assistant models check-health -p <persona>` runs for a
+  persona with one healthy and one unhealthy health-declaring entry
+- **THEN** the output MUST contain one verdict line per entry
+- **AND** the exit code MUST be 1
+
+#### Scenario: check-health with no health-declaring entries
+
+- **WHEN** the persona's registry declares no `health:` blocks
+- **THEN** the command MUST print that no entries declare health
+  checks
+- **AND** exit 0 without issuing any probe
+
+### Requirement: CLI export-omnigent-agent Command
+
+The system SHALL provide an `assistant export-omnigent-agent`
+command (joining the flat export family) that renders the
+Omnigent-shaped agent-definition YAML for a required `-p/--persona`,
+deriving endpoint URLs from `--base-url` (default
+`http://127.0.0.1:8765`), printing to stdout by default and writing
+to a file when `-o/--output` is given.
+
+#### Scenario: Definition prints to stdout
+
+- **WHEN** `assistant export-omnigent-agent -p personal --base-url
+  http://h:1` runs
+- **THEN** stdout MUST be parseable YAML whose A2A RPC endpoint is
+  `http://h:1/a2a/v1`
+
+#### Scenario: Output flag writes a file
+
+- **WHEN** the command runs with `-o agent.yaml`
+- **THEN** the file MUST be written containing the unverified-schema
+  header
+
+#### Scenario: Persona is required
+
+- **WHEN** the command runs without `-p`
+- **THEN** it MUST exit nonzero with a usage error naming the persona
+  option
+
+### Requirement: CLI cleanroom Command Group
+
+The system SHALL provide an `assistant cleanroom` command group with
+four subcommands driving the P26 declassification gateway:
+
+- `cleanroom export -p <persona> --to <audience>` — runs
+  `export_shared` and prints the bundle path, id, item count, and
+  profile.
+- `cleanroom import -p <persona> <bundle>` — runs `import_shared` on
+  a bundle file path and prints the imported/skipped counts and
+  source persona.
+- `cleanroom revoke -p <persona> <bundle-id>` — runs `revoke`
+  (source persona only) and prints the revocation record path.
+- `cleanroom sync -p <persona>` — runs `purge_revoked` and prints the
+  number of purged items.
+
+Commands needing the persona's memory database (`export`, `import`,
+`sync`) MUST fail with exit code 1 and an actionable message when the
+persona has no `database_url`. Guardrail selection MUST mirror the
+capability resolver (truthy `guardrails:` config selects
+`PolicyGuardrails`, else `AllowAllGuardrails`), and each command MUST
+act under a synthesized `AgentIdentity(persona, default_role)`. Every
+clean-room refusal (`CleanRoomError` and subclasses) MUST surface as
+an `Error:` message with exit code 1, never a traceback.
+
+#### Scenario: Export writes a bundle into the shared space
+
+- **WHEN** `assistant cleanroom export -p alpha --to beta` runs for a
+  persona with a matching share rule
+- **THEN** the command exits 0, prints the exported item count, and a
+  bundle file exists under the shared space's `beta/` directory
+
+#### Scenario: Import and sync complete the revocation loop
+
+- **WHEN** a consumer imports a bundle, the source persona revokes
+  it, and the consumer runs `cleanroom sync`
+- **THEN** the sync exits 0 and reports the purged item count
+- **AND** a subsequent import of the same bundle exits 1 naming the
+  revocation
+
+#### Scenario: Missing database_url fails actionably
+
+- **WHEN** `cleanroom export` runs for a persona without a
+  `database_url`
+- **THEN** the command exits 1 with a message naming the missing
+  configuration
+
+### Requirement: CLI feedback Command
+
+The system SHALL provide an `assistant feedback -p <persona> [-r
+<role>] [--prefer [category:]key=value] [TEXT]` command recording one
+human `FeedbackEvent` through the persona's memory (interactions
+table, `metadata.source=feedback`). At least one of `TEXT` or
+`--prefer` MUST be supplied; `--prefer` attaches a structured
+preference payload (`category` defaults to `general`) that later
+distills into a LOW-risk `preference` proposal. The command MUST fail
+with exit code 1 and an actionable message for a persona whose
+learning config is falsy (dormant) or that has no `database_url`.
+
+#### Scenario: Feedback records a labeled event
+
+- **WHEN** `assistant feedback -p learning_lab -r coder "too wordy"`
+  runs
+- **THEN** the command exits 0 and one interaction row is stored with
+  `metadata.source="feedback"` and subject `role:coder`
+
+#### Scenario: Dormant persona refuses feedback
+
+- **WHEN** `assistant feedback -p personal "nice"` runs for a persona
+  without a `learning:` section
+- **THEN** the command exits 1 naming the dormant learning config
+
+### Requirement: CLI reflect Command
+
+The system SHALL provide an `assistant reflect -p <persona>` command
+running one reflection/consolidation pass and printing either the
+consolidated fact key and interaction count or a nothing-new notice.
+It MUST refuse (exit 1, actionable message) for dormant personas and
+personas without a `database_url`.
+
+#### Scenario: Reflect consolidates new interactions
+
+- **WHEN** `assistant reflect -p learning_lab` runs with stored
+  interactions present
+- **THEN** the command exits 0 and reports the consolidated count and
+  the `learning/reflection/*` fact key
+
+### Requirement: CLI learning Command Group
+
+The system SHALL provide an `assistant learning` command group with
+four subcommands driving the P28 pipeline:
+
+- `learning collect -p <persona> [--gate-log <file>] [--store]` —
+  runs the machine collectors on demand, printing one line per event;
+  `--store` additionally records them as stored feedback.
+- `learning propose -p <persona> [--gate-log <file>] [--limit N]` —
+  derives proposals from stored + machine feedback and writes one
+  JSON file per proposal into the persona's proposals directory,
+  then runs the opt-in LOW-preference auto-apply path (persisting any
+  status change). Without a `database_url` it proceeds machine-only
+  with a warning.
+- `learning apply -p <persona> <proposal-ref> [--approved]` —
+  resolves a proposal file path or id, runs the fully gated
+  `apply_proposal`, and persists the applied status back to the
+  proposal file.
+- `learning list -p <persona>` — lists proposals with kind, risk,
+  status, and target.
+
+Every learning refusal (`LearningError` and subclasses) MUST surface
+as an `Error:` message with exit code 1, never a traceback; all
+subcommands MUST refuse dormant personas.
+
+#### Scenario: Propose writes reviewable proposal files
+
+- **WHEN** `assistant learning propose -p learning_lab --gate-log
+  <log with a FAIL line>` runs
+- **THEN** the command exits 0 and a `prompt_layer` proposal JSON
+  file exists in the persona's proposals directory
+
+#### Scenario: Apply is gated
+
+- **WHEN** `assistant learning apply -p learning_lab <low-pref-id>`
+  runs with a passing eval gate
+- **THEN** the command exits 0, stores the preference, and the
+  proposal file's status becomes `applied`
+- **AND** with a failing gate the command exits 1 naming the gate
+
+#### Scenario: MEDIUM risk needs --approved
+
+- **WHEN** a `prompt_layer` proposal is applied without `--approved`
+- **THEN** the command exits 1 naming the approval flag
+
+### Requirement: Feedback REPL Command
+
+The interactive REPL SHALL accept a `/feedback <text>` command
+recording one human feedback event about the active role (subject
+`role:<active-role>`, context `repl`) through the same pipeline as
+`assistant feedback`. A missing argument prints usage; a dormant
+persona or missing database prints an `Error:` line without leaving
+the REPL. The commands help line MUST advertise `/feedback <text>`.
+
+#### Scenario: REPL feedback records and continues
+
+- **WHEN** the user enters `/feedback stop apologising`
+- **THEN** one feedback event is recorded and the REPL prints a
+  confirmation and keeps running
+
+#### Scenario: Dormant persona keeps the REPL alive
+
+- **WHEN** `/feedback x` is entered for a persona without learning
+  config
+- **THEN** the REPL prints an `Error:` line and continues
 

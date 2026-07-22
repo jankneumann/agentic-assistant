@@ -1,0 +1,6 @@
+// FIXTURE_SIM_RESPONSE_v1
+{
+  "pull_requests": [
+    {"number": 10, "title": "Synthetic PR", "state": "open", "draft": false}
+  ]
+}

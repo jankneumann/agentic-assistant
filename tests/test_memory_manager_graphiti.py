@@ -60,6 +60,50 @@ class TestGetContextWithGraphiti:
         assert "Graphiti search failed" in caplog.text
 
 
+class TestGetRecentSnippetsWithGraphiti:
+    @pytest.mark.asyncio
+    async def test_includes_semantic_results(self):
+        session = _empty_session()
+        graphiti = AsyncMock()
+        graphiti.search = AsyncMock(return_value=["Entity: newsletter system"])
+
+        factory = _make_session_factory(session)
+        mgr = MemoryManager(factory, graphiti_client=graphiti)
+        snippets = await mgr.get_recent_snippets("test", "researcher", limit=10)
+
+        assert any("newsletter system" in s for s in snippets)
+        graphiti.search.assert_called_once_with("researcher", num_results=10)
+
+    @pytest.mark.asyncio
+    async def test_degrades_to_postgres_only_on_connection_error(self, caplog):
+        session = AsyncMock()
+        entry = MagicMock()
+        entry.key = "project"
+        entry.value = {"name": "test"}
+        entries_r = MagicMock()
+        entries_r.scalars.return_value = MagicMock(
+            all=MagicMock(return_value=[entry])
+        )
+        prefs_r = MagicMock()
+        prefs_r.scalars.return_value = MagicMock(all=MagicMock(return_value=[]))
+        inters_r = MagicMock()
+        inters_r.scalars.return_value = MagicMock(all=MagicMock(return_value=[]))
+        session.execute = AsyncMock(side_effect=[entries_r, prefs_r, inters_r])
+
+        graphiti = AsyncMock()
+        graphiti.search = AsyncMock(side_effect=ConnectionError("FalkorDB down"))
+
+        factory = _make_session_factory(session)
+        mgr = MemoryManager(factory, graphiti_client=graphiti)
+
+        with caplog.at_level(logging.WARNING):
+            snippets = await mgr.get_recent_snippets("test", "researcher")
+
+        assert any("project" in s for s in snippets)
+        assert "Graphiti search failed" in caplog.text
+        assert "test" in caplog.text
+
+
 class TestStoreEpisode:
     @pytest.mark.asyncio
     async def test_calls_add_episode(self):

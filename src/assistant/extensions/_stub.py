@@ -13,10 +13,16 @@ from assistant.core.resilience import (
     HealthStatus,
     default_health_status_for_unimplemented,
 )
+from assistant.core.toolspec import ToolSpec
+from assistant.extensions.base import ExtensionBase
 
 
-class StubExtension:
-    """Minimal Extension that satisfies the Protocol."""
+class StubExtension(ExtensionBase):
+    """Minimal Extension that satisfies the Protocol.
+
+    Inherits no-op ``initialize``/``shutdown``/``refresh_credentials``
+    lifecycle defaults from ``ExtensionBase`` (P10 extension-lifecycle).
+    """
 
     name: str = "stub"
 
@@ -25,10 +31,7 @@ class StubExtension:
         self.config = config
         self.scopes: list[str] = list(config.get("scopes", []) or [])
 
-    def as_langchain_tools(self) -> list[Any]:
-        return []
-
-    def as_ms_agent_tools(self) -> list[Any]:
+    def tool_specs(self) -> list[ToolSpec]:
         return []
 
     async def health_check(self) -> HealthStatus:

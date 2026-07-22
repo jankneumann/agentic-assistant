@@ -1,20 +1,56 @@
 # memory-policy Specification
 
 ## Purpose
-TBD - created by archiving change capability-protocols. Update Purpose after archive.
+Governs the `MemoryPolicy` protocol with its `MemoryConfig` and
+`MemoryScoping` types, and the persistent memory stack behind it: the
+database engine and async session factories, the Graphiti client factory,
+Alembic migration infrastructure, the memory database schema, the
+`MemoryManager`, and the `FileMemoryPolicy` and `PostgresGraphitiMemoryPolicy`
+implementations. It exists to give each persona isolated, pluggable
+conversation memory backed by its own Postgres database. Harnesses consume
+policies through the capability resolver rather than touching storage
+directly.
 ## Requirements
 ### Requirement: MemoryPolicy Protocol
 
-The system SHALL define a `MemoryPolicy` runtime-checkable Protocol with
-the methods `resolve(persona: PersonaConfig, harness_name: str) →
-MemoryConfig` and `export_memory_context(persona: PersonaConfig) →
-str`.
+The system SHALL define a `MemoryPolicy` runtime-checkable Protocol
+with the methods `resolve(persona: PersonaConfig, harness_name: str) →
+MemoryConfig`, `export_memory_context(persona: PersonaConfig) → str`,
+`async get_recent_snippets(persona, role, *, limit: int = 10) →
+list[str]`, and `async record_interaction(persona, role, *,
+user_message: str, response: str) → None`.
+
+`get_recent_snippets` is async at the protocol level (owner review
+verdict C8, 2026-07-16): consumers on async paths — SDK harness prompt
+composition at `create_agent` time — MUST await it directly on the
+running event loop, and synchronous callers (host-harness export, CLI
+export) MUST bridge at their own edge rather than relying on a
+sync-to-async bridge inside policy implementations. It returns up to
+`limit` short memory snippets for prompt prepend; implementations MUST
+degrade to `[]` on backend failure rather than raising.
+`record_interaction` persists a completed turn to the policy's backend
+(best effort); policies without a per-turn write path MUST implement
+it as a no-op.
 
 #### Scenario: Stub implementation satisfies Protocol
 
-- **WHEN** a class implements `resolve` and `export_memory_context` with
-  the correct signatures
+- **WHEN** a class implements `resolve`, `export_memory_context`,
+  `get_recent_snippets`, and `record_interaction` with the correct
+  signatures
 - **THEN** `isinstance(instance, MemoryPolicy)` MUST return `True`
+
+#### Scenario: Built-in policies satisfy the extended Protocol
+
+- **WHEN** `FileMemoryPolicy`, `PostgresGraphitiMemoryPolicy`, or
+  `HostProvidedMemoryPolicy` is instantiated
+- **THEN** `isinstance(instance, MemoryPolicy)` MUST return `True`
+
+#### Scenario: Snippet retrieval is awaited on the async hot path
+
+- **WHEN** an SDK harness composes its prompt inside async
+  `create_agent`
+- **THEN** `get_recent_snippets` MUST be awaited directly on the
+  running event loop with no intermediate sync-to-async bridge
 
 ### Requirement: MemoryConfig Type
 
@@ -329,4 +365,340 @@ backend.
 - **WHEN** `export_memory_context(persona)` is called
 - **THEN** it MUST return the output of
   `MemoryManager.export_memory(persona)`
+
+### Requirement: MemoryManager Recent Snippets
+
+The system SHALL provide an async
+`MemoryManager.get_recent_snippets(persona, role, limit=10)` method in
+`core/memory.py` returning at most `limit` short strings composed from
+two buckets: *durable* snippets (rows from the `memory` table ordered
+by `updated_at` DESC, then `preferences` rows ordered by `confidence`
+DESC, then Graphiti semantic search results for `role` when a Graphiti
+client is configured) and *recent* snippets (rows from the
+`interactions` table ordered by `created_at` DESC, rendered as
+`[role] summary`). Durable snippets receive the ceiling half of
+`limit`; recent snippets fill the remainder; when either bucket
+under-fills, the other MUST backfill up to `limit`. All three Postgres
+reads MUST be limited to at most `limit` rows. The method MUST be
+instrumented with `trace_memory_op(op="snippets")` and MUST NOT emit a
+separate span for the internal Graphiti call.
+
+#### Scenario: Happy path mixes durable and recent snippets
+
+- **WHEN** `get_recent_snippets(persona, role, limit=10)` is awaited
+  with at least one `memory` row, one `preferences` row, and one
+  `interactions` row present
+- **THEN** the returned list MUST contain a snippet derived from each
+  of the three tables
+- **AND** the list length MUST NOT exceed 10
+
+#### Scenario: Empty database yields empty list
+
+- **WHEN** `get_recent_snippets(persona, role)` is awaited and all
+  three tables have no rows for the persona and Graphiti is not
+  configured
+- **THEN** it MUST return `[]` without raising
+
+#### Scenario: Budget split between durable and recent
+
+- **WHEN** `get_recent_snippets(persona, role, limit=4)` is awaited
+  with 10 `memory` rows and 10 `interactions` rows available
+- **THEN** exactly 2 durable snippets and 2 interaction snippets MUST
+  be returned
+
+#### Scenario: Recent bucket backfills when durable is scarce
+
+- **WHEN** `get_recent_snippets(persona, role, limit=4)` is awaited
+  with no durable rows and 10 `interactions` rows available
+- **THEN** 4 interaction snippets MUST be returned
+
+#### Scenario: Graphiti failure degrades to Postgres-only snippets
+
+- **WHEN** `get_recent_snippets(persona, role)` is awaited, the
+  Graphiti client is non-None, and its `search` call raises a
+  connection error
+- **THEN** the Postgres-derived snippets MUST still be returned
+  without raising
+- **AND** a `logging.WARNING`-level message including the persona name
+  MUST be emitted
+
+### Requirement: PostgresGraphitiMemoryPolicy Live Snippet Retrieval
+
+The system SHALL implement
+`PostgresGraphitiMemoryPolicy.get_recent_snippets(persona, role, *,
+limit=10)` as an async method that awaits
+`MemoryManager.get_recent_snippets` directly on the caller's event
+loop, with no intermediate sync-to-async bridge (owner review verdict
+C8, 2026-07-16). Any retrieval failure MUST degrade to `[]` with a
+`logging.WARNING`-level message including the persona name — a down
+memory backend MUST NOT break agent construction.
+
+#### Scenario: Returns manager snippets
+
+- **WHEN** `get_recent_snippets(persona, role, limit=5)` is awaited
+  and the manager returns `["a", "b"]`
+- **THEN** the call MUST return `["a", "b"]`
+- **AND** the manager MUST be awaited with the persona name, the role
+  name, and `limit=5`
+
+#### Scenario: Backend failure degrades to empty list
+
+- **WHEN** the underlying manager call raises a connection error
+- **THEN** `get_recent_snippets` MUST return `[]`
+- **AND** a `logging.WARNING`-level message including the persona name
+  MUST be emitted
+
+### Requirement: FileMemoryPolicy Recent Snippets
+
+The system SHALL implement
+`FileMemoryPolicy.get_recent_snippets(persona, role, *, limit=10)` as
+an async method returning bounded excerpts of the persona's
+`memory.md` content (`persona.memory_content`). The content MUST be split into `## `
+sections (content before the first heading, or heading-free content,
+forms a single section) and returned most-recent-first, treating later
+sections as more recent. The result MUST contain at most `limit`
+sections and at most 4000 total characters, truncating the section
+that crosses the budget.
+
+#### Scenario: Empty memory content yields empty list
+
+- **WHEN** `persona.memory_content` is empty or missing
+- **THEN** `get_recent_snippets` MUST return `[]`
+
+#### Scenario: Sections returned most recent first
+
+- **WHEN** `memory_content` contains sections `## Oldest`, `## Middle`,
+  `## Newest` in document order
+- **THEN** the first returned snippet MUST be the `## Newest` section
+  and the last MUST be the `## Oldest` section
+
+#### Scenario: Limit and character budget are enforced
+
+- **WHEN** `memory_content` contains more than `limit` sections or
+  more than 4000 characters of section text
+- **THEN** at most `limit` snippets MUST be returned
+- **AND** the total character count across snippets MUST NOT exceed
+  4000
+
+### Requirement: Post-Turn Interaction Capture
+
+The system SHALL implement `record_interaction` on all built-in
+policies. `PostgresGraphitiMemoryPolicy.record_interaction` MUST
+delegate to `MemoryManager.store_interaction` with the persona name,
+the role name, a whitespace-normalized summary of the form
+`user: <excerpt> | assistant: <excerpt>` (each excerpt capped at 240
+characters), and `metadata={"source": "post_turn_capture"}`; backend
+exceptions MUST propagate to the caller (the harness capture helper
+owns swallowing). `FileMemoryPolicy.record_interaction` and
+`HostProvidedMemoryPolicy.record_interaction` MUST be no-ops.
+
+#### Scenario: Postgres policy stores a bounded summary
+
+- **WHEN** `record_interaction(persona, role, user_message=U,
+  response=R)` is awaited on `PostgresGraphitiMemoryPolicy`
+- **THEN** `MemoryManager.store_interaction` MUST be awaited once with
+  the persona name, role name, a summary containing excerpts of both
+  `U` and `R`, and `metadata={"source": "post_turn_capture"}`
+- **AND** the summary MUST NOT exceed the 240-character-per-side cap
+  plus fixed formatting
+
+#### Scenario: Backend errors propagate from the policy
+
+- **WHEN** the underlying `store_interaction` raises a connection error
+- **THEN** `record_interaction` MUST let the exception propagate
+
+#### Scenario: File policy capture is a no-op
+
+- **WHEN** `record_interaction(...)` is awaited on `FileMemoryPolicy`
+- **THEN** it MUST return `None` without writing anywhere
+
+### Requirement: MemoryManager Interaction Listing
+
+The system SHALL provide an async
+`MemoryManager.list_interactions(persona, role=None, limit=50)` method
+in `core/memory.py` returning the persona's stored interactions as
+JSON-safe dicts with keys `id`, `role`, `summary`, `created_at`
+(ISO-8601 string or `None`), and `metadata` (dict, defaulting to
+`{}`), ordered by `created_at` descending and limited to at most
+`limit` rows. When `role` is provided, only interactions recorded
+under that role SHALL be returned. A non-positive `limit` SHALL return
+an empty list without querying the database. The method exists to
+back `assistant export-eval-dataset` (P27 eval-simulation-loop
+trace→dataset export).
+
+#### Scenario: Returns JSON-safe dicts newest first
+
+- **WHEN** `list_interactions("personal", limit=10)` is awaited and
+  the `interactions` table has rows for that persona
+- **THEN** each returned item MUST be a dict with keys `id`, `role`,
+  `summary`, `created_at`, and `metadata`
+- **AND** `created_at` MUST be an ISO-8601 string when the stored
+  value is a datetime
+- **AND** results MUST be ordered by `created_at` DESC and capped at
+  `limit`
+
+#### Scenario: Role filter narrows results
+
+- **WHEN** `list_interactions("personal", role="coder")` is awaited
+- **THEN** the underlying query MUST filter on both persona and role
+
+#### Scenario: Non-positive limit short-circuits
+
+- **WHEN** `list_interactions("personal", limit=0)` is awaited
+- **THEN** it MUST return `[]` without executing a database query
+
+### Requirement: Embeddings Consumer Binding for Graphiti
+
+The system SHALL wire a persona's explicit `models:` `bindings:`
+entry for the `embeddings` consumer into the Graphiti client factory:
+when the binding is declared, `create_graphiti_client(persona)` MUST
+resolve `ModelRequest(consumer="embeddings")` through the registry
+provider (health-aware) and construct the `Graphiti` client with an
+embedder adapter over the raw OpenAI-compatible client binding — the
+first chain member with dialect `openai-compatible` and a non-empty
+endpoint supplies the wire endpoint and model id; credentials resolve
+through the persona-scoped `CredentialProvider` and every embedding
+dispatch is gated by the persona's `GuardrailProvider` `model_call`
+hook. The reserved `default` binding key MUST NOT activate this
+wiring — only an explicit `embeddings` binding does. When no
+`embeddings` binding is declared, the factory MUST construct the
+client exactly as before (graphiti-core default embedder). When the
+binding is declared but cannot be honored (resolution failure, no
+`openai-compatible` chain member with an endpoint), the factory MUST
+return `None` with a `logging.WARNING`-level message naming the
+persona — disabling Graphiti (Postgres-only degradation) rather than
+silently embedding through the default cloud path.
+
+#### Scenario: Declared embeddings binding selects the local embedder
+
+- **WHEN** the persona's registry binds `embeddings` to an
+  `openai-compatible` entry with endpoint
+  `"http://gx10.local:8001/v1"`
+- **AND** `create_graphiti_client(persona)` is called
+- **THEN** the `Graphiti` client MUST be constructed with an
+  `embedder` whose embedding calls POST to
+  `http://gx10.local:8001/v1/embeddings` with the entry's wire
+  `model_id`
+
+#### Scenario: No embeddings binding preserves current behavior
+
+- **WHEN** the persona declares a `models:` registry without an
+  `embeddings` binding (or no registry at all)
+- **AND** `create_graphiti_client(persona)` is called
+- **THEN** the `Graphiti` client MUST be constructed without an
+  `embedder` argument
+
+#### Scenario: Unhonorable binding disables Graphiti instead of cloud fallback
+
+- **WHEN** the persona binds `embeddings` to an entry that is not
+  `openai-compatible` or has no endpoint
+- **AND** `create_graphiti_client(persona)` is called
+- **THEN** the factory MUST return `None`
+- **AND** a `logging.WARNING`-level message naming the persona MUST
+  be emitted
+
+#### Scenario: Embedding dispatch is budget-gated
+
+- **WHEN** the persona's guardrails deny `model_call` for the bound
+  embeddings entry
+- **AND** the embedder adapter's `create` is awaited
+- **THEN** no HTTP request may be issued and the guardrail denial
+  MUST propagate
+
+### Requirement: MemoryManager Structured Fact and Preference Listing
+
+The system SHALL provide async `MemoryManager.list_facts(persona,
+limit=100)` and `MemoryManager.list_preferences(persona, limit=100)`
+methods in `core/memory.py` returning JSON-safe dicts — facts with
+keys `id`, `key`, `value`, `updated_at` (ISO-8601 string or `None`),
+ordered by `updated_at` descending; preferences with keys `id`,
+`category`, `key`, `value`, `confidence`, `updated_at`, ordered by
+`confidence` descending — each limited to at most `limit` rows. A
+non-positive `limit` SHALL return an empty list without querying the
+database. The methods MUST be instrumented with
+`trace_memory_op(op="fact_list")` and
+`trace_memory_op(op="preference_list")` respectively. They exist as
+the structured read surface behind the P26 clean-room export gateway
+(the formatted `get_context` / snippet reads are unsuitable for
+declassification rule evaluation).
+
+#### Scenario: Facts listed as JSON-safe dicts newest first
+
+- **WHEN** `list_facts("personal", limit=10)` is awaited and the
+  `memory` table has rows for that persona
+- **THEN** each item MUST be a dict with keys `id`, `key`, `value`,
+  and `updated_at` (ISO-8601 string when the stored value is a
+  datetime)
+- **AND** results MUST be ordered by `updated_at` DESC and capped at
+  `limit`
+
+#### Scenario: Preferences listed by confidence
+
+- **WHEN** `list_preferences("personal")` is awaited
+- **THEN** each item MUST carry `category`, `key`, `value`, and
+  `confidence`, ordered by `confidence` DESC
+
+#### Scenario: Non-positive limit short-circuits
+
+- **WHEN** `list_facts("personal", limit=0)` is awaited
+- **THEN** it MUST return `[]` without executing a database query
+
+### Requirement: MemoryManager Prefix-Scoped Fact Deletion
+
+The system SHALL provide an async
+`MemoryManager.delete_facts_by_prefix(persona, key_prefix)` method
+that deletes every `memory` row for the persona whose key starts with
+`key_prefix` (LIKE-escaped so `%`/`_` in the prefix match literally)
+and returns the number of deleted rows, instrumented with
+`trace_memory_op(op="fact_delete")`. An empty `key_prefix` MUST be
+refused with a `ValueError` before any database access — the method
+backs P26 clean-room revocation purges (imported items live under
+`cleanroom/<bundle_id>/` keys) and must never be able to wipe a
+persona's whole memory table by accident.
+
+#### Scenario: Prefix delete removes matching rows and reports count
+
+- **WHEN** `delete_facts_by_prefix("personal", "cleanroom/abc/")` is
+  awaited
+- **THEN** the issued statement MUST filter on both persona and the
+  escaped key prefix
+- **AND** the returned value MUST be the deleted row count
+
+#### Scenario: Empty prefix is refused
+
+- **WHEN** `delete_facts_by_prefix("personal", "")` is awaited
+- **THEN** it MUST raise `ValueError` without touching the database
+
+### Requirement: MemoryManager Preference Upsert
+
+The system SHALL provide an async
+`MemoryManager.store_preference(persona, category, key, value,
+confidence=0.5)` method in `core/memory.py` that upserts one
+`preferences` row on the `(persona, category, key)` unique constraint
+(updating `value`, `confidence`, and `updated_at` on conflict —
+mirroring the `store_fact` upsert pattern). The method MUST reject
+non-JSON-serializable values and a `confidence` outside `[0, 1]` with
+a `ValueError`, and MUST be instrumented with
+`trace_memory_op(op="preference_write")` using the preference `key`
+as the span target. It exists as the write surface behind applied
+P28 `preference` proposals (distilled preferences never bypass the
+memory layer).
+
+#### Scenario: Preference upserts on the unique constraint
+
+- **WHEN** `store_preference("personal", "style", "tone", "concise",
+  confidence=0.7)` is awaited twice
+- **THEN** exactly one row exists for `(personal, style, tone)` with
+  the latest value and confidence
+
+#### Scenario: Invalid inputs are rejected
+
+- **WHEN** a non-serializable value or a confidence of `1.5` is given
+- **THEN** a `ValueError` MUST be raised and nothing stored
+
+#### Scenario: Preference write emits its trace op
+
+- **WHEN** `store_preference` is awaited
+- **THEN** `trace_memory_op` MUST be called once with
+  `op="preference_write"` and the preference key as target
 

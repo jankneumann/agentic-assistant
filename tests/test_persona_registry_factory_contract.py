@@ -82,8 +82,7 @@ def test_load_extensions_passes_persona_kwarg(tmp_path: Path) -> None:
 
             class _E:
                 name = "synth_pass"
-                def as_langchain_tools(self): return []
-                def as_ms_agent_tools(self): return []
+                def tool_specs(self): return []
                 async def health_check(self):
                     from assistant.core.resilience import (
                         default_health_status_for_unimplemented,
@@ -161,8 +160,7 @@ def test_legacy_factory_signature_raises_actionable_typeerror(
         def create_extension(config):
             class _E:
                 name = "synth_legacy"
-                def as_langchain_tools(self): return []
-                def as_ms_agent_tools(self): return []
+                def tool_specs(self): return []
                 async def health_check(self):
                     from assistant.core.resilience import (
                         default_health_status_for_unimplemented,

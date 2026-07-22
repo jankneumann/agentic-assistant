@@ -1,7 +1,15 @@
 # error-resilience Specification
 
 ## Purpose
-TBD - created by archiving change error-resilience. Update Purpose after archive.
+Governs the shared resilience primitives in
+`src/assistant/core/resilience.py`: the `RetryPolicy` dataclass, the
+circuit-breaker state machine and per-key breaker registry, the `resilient`
+decorator that composes retry and breaker behavior, sanitized and truncated
+error strings, and the `HealthStatus` type with its default for
+unimplemented stubs. It exists so every outbound integration — HTTP tools,
+the Graph client, extensions — retries safely, fails fast when a dependency
+is down, and reports health in a uniform shape instead of reimplementing
+these concerns locally.
 ## Requirements
 ### Requirement: Retry Policy Data Type
 

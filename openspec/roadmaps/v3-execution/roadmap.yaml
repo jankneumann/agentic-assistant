@@ -1,0 +1,258 @@
+schema_version: 1
+roadmap_id: agentic-assistant-v3
+source_proposal: openspec/roadmap.md
+status: in_progress
+created_at: "2026-07-16T00:00:00+00:00"
+policy:
+  default_action: wait_if_budget_exceeded
+  max_switch_attempts_per_item: 2
+  preferred_vendor: claude
+items:
+  - item_id: X3
+    title: repo-hygiene
+    status: completed
+    priority: 1
+    effort: M
+    change_id: repo-hygiene
+    depends_on: []
+    description: >-
+      Backfill Purpose in all 25 capability specs; seed docs/decisions/ ADRs
+      (SDK/Host split, capability protocols, AG-UI adoption, privacy boundary,
+      model-seam choice, cross-repo reuse policy); fix gen-eval path dependency
+      for standalone clones; pin agent-framework-core directly.
+    acceptance_outcomes:
+      - No spec.md contains a TBD Purpose placeholder
+      - docs/decisions/ exists with numbered ADRs
+      - Fresh clone `uv sync` succeeds without ../agentic-coding-tools present
+      - Quality gates green (pytest, ruff, mypy src tests)
+  - item_id: P24
+    title: capability-protocols-v2
+    status: completed
+    priority: 2
+    effort: M
+    change_id: capability-protocols-v2
+    depends_on: []
+    description: >-
+      Contracts-only pre-phase; seven contracts per roadmap row (ModelProvider
+      slot #6 with ModelRef bindings, MCP-shaped ToolSpec, three-plane
+      SandboxConfig, create_agent cleanup, durable sessions + registry,
+      approval interrupt/resume, CredentialProvider seam).
+    acceptance_outcomes:
+      - Spec deltas validate with openspec --strict
+      - No implementation code; contracts referenced by P19/P13/P22 scopes
+  - item_id: P19
+    title: model-provider-routing
+    status: completed
+    priority: 3
+    effort: L
+    change_id: model-provider-routing
+    depends_on:
+      - id: P24
+        source: explicit
+        rationale: Implements the ModelProvider contract defined in P24
+  - item_id: P21
+    title: memory-retrieval-activation
+    status: completed
+    priority: 4
+    effort: L
+    change_id: memory-retrieval-activation
+    depends_on: []
+  - item_id: P27
+    title: eval-simulation-loop
+    status: completed
+    priority: 5
+    effort: L
+    change_id: eval-simulation-loop
+    depends_on: []
+  - item_id: P10
+    title: extension-lifecycle
+    status: completed
+    priority: 6
+    effort: M
+    change_id: extension-lifecycle
+    depends_on: []
+  - item_id: P13
+    title: security-hardening
+    status: completed
+    priority: 7
+    effort: L
+    change_id: security-hardening
+    depends_on:
+      - id: P10
+        source: explicit
+        rationale: Manifest validation uses lifecycle hooks
+      - id: P24
+        source: explicit
+        rationale: Credential plane + CredentialProvider seam from P24
+  - item_id: P20
+    title: local-inference-node
+    status: completed
+    priority: 8
+    effort: M
+    change_id: local-inference-node
+    depends_on:
+      - id: P19
+        source: explicit
+        rationale: Local endpoints are model-registry entries
+  - item_id: P7
+    title: scheduler
+    status: completed
+    priority: 9
+    effort: L
+    change_id: scheduler
+    depends_on: []
+  - item_id: P6
+    title: a2a-server
+    status: completed
+    priority: 10
+    effort: L
+    change_id: a2a-server
+    depends_on: []
+  - item_id: P17
+    title: mcp-server-exposure
+    status: completed
+    priority: 11
+    effort: M
+    change_id: mcp-server-exposure
+    depends_on:
+      - id: P6
+        source: explicit
+        rationale: Protocol sibling; shares task/serving surface
+  - item_id: P11
+    title: harness-routing
+    status: completed
+    priority: 12
+    effort: M
+    change_id: harness-routing
+    depends_on:
+      - id: P19
+        source: explicit
+        rationale: Consumes P19 capability vocabulary and router
+  - item_id: P22
+    title: meta-harness-compat
+    status: completed
+    priority: 13
+    effort: L
+    change_id: meta-harness-compat
+    depends_on:
+      - id: P24
+        source: explicit
+        rationale: Implements the three-plane SandboxConfig
+      - id: P6
+        source: explicit
+        rationale: Composition surface needs A2A (or MCP) exposed
+  - item_id: P25
+    title: agent-iam
+    status: completed
+    priority: 14
+    effort: L
+    change_id: agent-iam
+    depends_on:
+      - id: P13
+        source: explicit
+        rationale: Extends credential scoping with OpenBao backend
+      - id: P6
+        source: explicit
+        rationale: Inbound auth lands on the interop surface
+  - item_id: P26
+    title: knowledge-clean-room
+    status: completed
+    priority: 15
+    effort: L
+    change_id: knowledge-clean-room
+    depends_on:
+      - id: P25
+        source: explicit
+        rationale: Declassification requires agent identities
+      - id: P21
+        source: explicit
+        rationale: Shares real retrieval paths
+  - item_id: P8
+    title: obsidian-vault
+    status: candidate
+    priority: 16
+    effort: L
+    change_id: obsidian-vault
+    depends_on: []
+  - item_id: P12
+    title: delegation-context
+    status: completed
+    priority: 17
+    effort: L
+    change_id: delegation-context
+    depends_on: []
+  - item_id: P28
+    title: continual-learning
+    status: completed
+    priority: 18
+    effort: L
+    change_id: continual-learning
+    depends_on:
+      - id: P21
+        source: explicit
+        rationale: Learns against activated memory
+      - id: P7
+        source: explicit
+        rationale: Reflection jobs are scheduled
+      - id: P27
+        source: explicit
+        rationale: Eval gate for learned changes
+  - item_id: P29
+    title: multimodal-io
+    status: candidate
+    priority: 19
+    effort: L
+    change_id: multimodal-io
+    depends_on:
+      - id: P20
+        source: explicit
+        rationale: Voice tier uses local ASR/TTS registry entries
+  - item_id: P14
+    title: google-extensions
+    status: candidate
+    priority: 20
+    effort: L
+    change_id: google-extensions
+    depends_on:
+      - id: P10
+        source: explicit
+        rationale: OAuth refresh via lifecycle hooks
+  - item_id: P15
+    title: work-persona-config
+    status: candidate
+    priority: 21
+    effort: M
+    change_id: work-persona-config
+    depends_on: []
+  - item_id: P16
+    title: cli-harness-integrations
+    status: candidate
+    priority: 22
+    effort: M
+    change_id: cli-harness-integrations
+    depends_on: []
+  - item_id: P23
+    title: deployment-topology
+    status: candidate
+    priority: 23
+    effort: L
+    change_id: deployment-topology
+    depends_on:
+      - id: P20
+        source: explicit
+        rationale: Fleet topology serves local inference
+      - id: P7
+        source: explicit
+        rationale: Always-on node runs the daemon
+  - item_id: P30
+    title: durable-sessions
+    status: in_progress
+    priority: 24
+    effort: L
+    change_id: durable-sessions
+    depends_on: []
+    description: >-
+      Postgres-backed checkpointer + durable SessionRegistry; approval
+      interrupt/resume over durable checkpoints (replaces deny-on-
+      require_confirmation); A2A/MCP session re-binding + tasks/get;
+      PostgresBudgetLedger + durable audit store on the persona DB.

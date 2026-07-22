@@ -6,17 +6,31 @@ import json
 from collections.abc import AsyncIterator
 from contextlib import aclosing
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from deepagents import create_deep_agent
 from langchain.chat_models import init_chat_model
-from langgraph.checkpoint.memory import InMemorySaver
 
+from assistant.core.capabilities.approvals import (
+    ApprovalDeniedError,
+    PendingApprovalError,
+)
+from assistant.core.capabilities.model_bindings import (
+    ModelCallDeniedError,
+    bind_langchain,
+)
+from assistant.core.capabilities.models import (
+    DEFAULT_HARNESS_MODELS,
+    ModelRef,
+    ModelRequest,
+    ModelResolutionError,
+)
 from assistant.core.composition import compose_system_prompt
 from assistant.core.persona import PersonaConfig
 from assistant.core.role import RoleConfig
 from assistant.harnesses.base import SdkHarnessAdapter
+from assistant.harnesses.sdk.checkpointer import resolve_checkpointer
 from assistant.harnesses.sdk.events import (
     HarnessEvent,
     RunFinished,
@@ -26,31 +40,231 @@ from assistant.harnesses.sdk.events import (
     ToolCallEnd,
     ToolCallStart,
 )
+from assistant.harnesses.tool_adapters import render_langchain_tools
 from assistant.telemetry.decorators import traced_harness
-from assistant.telemetry.tool_wrap import wrap_extension_tools
+
+if TYPE_CHECKING:
+    from assistant.core.capabilities.credentials import CredentialProvider
+    from assistant.core.capabilities.guardrails import GuardrailProvider
+    from assistant.core.capabilities.memory import MemoryPolicy
+    from assistant.core.capabilities.models import ModelProvider
+    from assistant.delegation.context import DelegationContext
+
+#: Memory snippet limit — mirrors the MSAF harness's D27 default of 10.
+#: Tests can override via the ``memory_snippet_limit`` constructor kwarg.
+DEFAULT_MEMORY_SNIPPET_LIMIT: int = 10
+
+#: Section heading prepended to the composed prompt when memory
+#: snippets are present (memory-retrieval-activation — parity with the
+#: MSAF harness's D27 prepend).
+_MEMORY_SECTION_HEADING: str = "## Recent context"
 
 
 class DeepAgentsHarness(SdkHarnessAdapter):
-    # Class-level default surfaces through ``_resolve_model`` so spans
-    # report the real model id even when the persona omits a harness
-    # ``model`` override (Iter-2 round-2 fix gemini #5). Concrete
-    # ``create_agent`` overrides ``self._active_model`` with the value
-    # that actually drove ``init_chat_model`` so the resolution order
-    # is: instance attr (most specific) → persona config → "unknown".
-    _DEFAULT_MODEL = "anthropic:claude-sonnet-4-20250514"
+    # Span-default model id, sourced from the shared harness-default
+    # table that also seeds the synthesized registry (P19 verdict #3 —
+    # registry-only). ``create_agent`` overrides ``self._active_model``
+    # with the resolved ref's id so spans report what actually drove
+    # ``init_chat_model``.
+    _DEFAULT_MODEL = DEFAULT_HARNESS_MODELS["deep_agents"]
 
-    def __init__(self, persona: PersonaConfig, role: RoleConfig) -> None:
+    def __init__(
+        self,
+        persona: PersonaConfig,
+        role: RoleConfig,
+        *,
+        memory_policy: MemoryPolicy | None = None,
+        memory_snippet_limit: int = DEFAULT_MEMORY_SNIPPET_LIMIT,
+        model_provider: ModelProvider | None = None,
+        credential_provider: CredentialProvider | None = None,
+        guardrail_provider: GuardrailProvider | None = None,
+        delegation_context: DelegationContext | None = None,
+        checkpointer: Any | None = None,
+        approval_store: Any | None = None,
+        thread_id: str | None = None,
+    ) -> None:
         super().__init__(persona, role)
+        self._memory_policy = memory_policy
+        self._memory_snippet_limit = memory_snippet_limit
+        self._model_provider = model_provider
+        self._credential_provider = credential_provider
+        self._guardrail_provider = guardrail_provider
+        # P12 delegation-context: set only on sub-harnesses built by
+        # spawn_sub_agent; rendered ahead of the composed system prompt.
+        self._delegation_context = delegation_context
+        # P30 durable-sessions: injectable LangGraph checkpointer.
+        # ``None`` resolves from persona config in ``create_agent``
+        # (InMemorySaver unless ``sessions: {durable: true}``).
+        self._checkpointer = checkpointer
+        # P30 durable-sessions: injectable ApprovalStore consulted by
+        # the model-call guardrail hook. ``None`` resolves from persona
+        # config (no store unless durable sessions are configured).
+        self._approval_store = approval_store
         self._active_model: str = self._DEFAULT_MODEL
+        # Resolved ModelRef backing ``_active_model`` — read by
+        # ``@traced_harness`` for cost attribution (P19: pricing
+        # metadata rides the existing span labels).
+        self._active_model_ref: ModelRef | None = None
         # Synthesize a UUID at construction so ``thread_id`` is non-empty
         # and STABLE for the lifetime of this adapter instance (spec:
         # "thread_id must persist for the lifetime of the adapter instance
         # across multiple invoke / astream_invoke calls"). ``create_agent``
         # MUST NOT reassign this — IMPL_REVIEW round-1 gemini #5.
-        self._thread_id: str = str(uuid4())
+        # P30 durable-sessions: an EXPLICIT ``thread_id`` re-binds this
+        # harness to an existing durable conversation — the injected /
+        # resolved checkpointer restores the prior turns for that id.
+        self._thread_id: str = thread_id or str(uuid4())
 
     def name(self) -> str:
         return "deep_agents"
+
+    # ── Memory consumption (memory-retrieval-activation) ─────────────
+
+    def _resolve_memory_policy(self) -> MemoryPolicy:
+        """Return the injected MemoryPolicy or resolve via CapabilityResolver.
+
+        Mirrors ``MSAgentFrameworkHarness._resolve_memory_policy`` so
+        both SDK harnesses consume the same persona-selected policy
+        (``PostgresGraphitiMemoryPolicy`` when ``database_url`` is
+        configured, ``FileMemoryPolicy`` otherwise).
+        """
+        injected = getattr(self, "_memory_policy", None)
+        if injected is not None:
+            return injected
+        from assistant.core.capabilities.resolver import CapabilityResolver
+
+        resolver = CapabilityResolver()
+        return resolver.resolve(self.persona, "sdk", self.role).memory
+
+    # ── Model resolution (model-provider-routing) ─────────────────────
+
+    def _resolve_model_provider(self) -> ModelProvider:
+        """Return the injected ModelProvider or resolve slot #6.
+
+        Registry-only (P19 verdict #3): the resolver hands back a
+        :class:`RegistryModelProvider` — persona-declared or
+        synthesized-default — and the harness selects its model via
+        the ``ModelRequest.consumer`` binding lookup; no per-harness
+        re-binding step exists.
+        """
+        if self._model_provider is not None:
+            return self._model_provider
+        from assistant.core.capabilities.resolver import CapabilityResolver
+
+        resolver = CapabilityResolver()
+        provider = resolver.resolve(self.persona, "sdk", self.role).models
+        assert provider is not None  # resolver always fills slot #6
+        return provider
+
+    def _resolve_credential_provider(self) -> CredentialProvider:
+        if self._credential_provider is not None:
+            return self._credential_provider
+        # P13 security-hardening: prefer the persona-scoped provider
+        # built at persona load (persona .env first, process env
+        # fallback) so model credential_refs resolve per-persona.
+        persona_credentials = getattr(self.persona, "credentials", None)
+        if persona_credentials is not None:
+            return persona_credentials
+        from assistant.core.capabilities.credentials import EnvCredentialProvider
+
+        return EnvCredentialProvider()
+
+    def _resolve_guardrail_provider(self) -> GuardrailProvider:
+        if self._guardrail_provider is not None:
+            return self._guardrail_provider
+        from assistant.core.capabilities.resolver import CapabilityResolver
+
+        resolver = CapabilityResolver()
+        return resolver.resolve(self.persona, "sdk", self.role).guardrails
+
+    def _resolve_approval_store(self) -> Any | None:
+        """Injected ApprovalStore, else the persona's durable store.
+
+        ``None`` (no durable sessions) preserves the P13
+        deny-until-interrupt behavior in ``check_model_call``.
+        """
+        if self._approval_store is not None:
+            return self._approval_store
+        from assistant.core.durable import durable_stores_for
+
+        stores = durable_stores_for(self.persona)
+        return stores.approvals if stores is not None else None
+
+    def _build_model(self) -> Any:
+        """Resolve + bind the chat model through the ModelProvider seam.
+
+        Walks the ordered fallback chain: the first ``ModelRef`` whose
+        LangChain binding constructs successfully wins; a guardrail
+        denial (:class:`ModelCallDeniedError`) is a policy stop, not a
+        provider failure, and propagates without trying fallbacks. The
+        module-level ``init_chat_model`` import is passed through so
+        the established test patch point keeps working.
+        """
+        provider = self._resolve_model_provider()
+        refs = provider.resolve(ModelRequest(consumer=self.name()))
+        credentials = self._resolve_credential_provider()
+        guardrails = self._resolve_guardrail_provider()
+
+        approvals = self._resolve_approval_store()
+        last_exc: Exception | None = None
+        for ref in refs:
+            try:
+                model = bind_langchain(
+                    ref,
+                    credentials=credentials,
+                    guardrails=guardrails,
+                    persona=self.persona.name,
+                    role=self.role.name,
+                    init_fn=init_chat_model,
+                    approvals=approvals,
+                    thread_id=self._thread_id,
+                )
+            except (
+                ModelCallDeniedError,
+                PendingApprovalError,
+                ApprovalDeniedError,
+            ):
+                # Policy stops (deny, suspended-awaiting-approval, or a
+                # human deny), not provider failures — never walk the
+                # fallback chain past them.
+                raise
+            except Exception as exc:
+                last_exc = exc
+                continue
+            self._active_model = ref.model_id or ref.name
+            self._active_model_ref = ref
+            return model
+        raise ModelResolutionError(
+            f"Every ModelRef in the resolved chain failed to bind: "
+            f"{[r.name for r in refs]}."
+        ) from last_exc
+
+    async def _compose_system_prompt(self) -> str:
+        """Compose system prompt + optional memory snippet block.
+
+        Parity with the MSAF harness's D27 prepend: snippets from
+        ``MemoryPolicy.get_recent_snippets`` are awaited directly on
+        the ``create_agent`` event loop (capability-protocols-v2 owner
+        review verdict C8, 2026-07-16 — no sync bridge on the hot
+        path) and prepended under ``## Recent context``; an empty
+        snippet list leaves the prompt unchanged (no heading injected).
+        """
+        base = compose_system_prompt(self.persona, self.role)
+        snippets = await self._resolve_memory_policy().get_recent_snippets(
+            self.persona, self.role, limit=self._memory_snippet_limit
+        )
+        prompt = base
+        if snippets:
+            snippet_block = "\n\n".join(snippets)
+            prompt = f"{_MEMORY_SECTION_HEADING}\n\n{snippet_block}\n\n{base}"
+        # P12 delegation-context: the delegation block leads the whole
+        # prompt (identity + constraints before recent context) so a
+        # sub-agent reads who delegated and under what bounds first.
+        # Absent context (the non-delegated case) leaves the prompt
+        # byte-identical to pre-P12 output.
+        if self._delegation_context is not None:
+            prompt = f"{self._delegation_context.render()}\n\n{prompt}"
+        return prompt
 
     @property
     def thread_id(self) -> str:
@@ -67,29 +281,48 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         self, tools: list[Any], extensions: list[Any]
     ) -> Any:
         cfg = self.persona.harnesses.get("deep_agents", {}) or {}
-        model_id = cfg.get("model", self._DEFAULT_MODEL)
-        # Stash so ``_resolve_model`` reports the real id regardless of
-        # whether the persona supplied a ``model`` override.
-        self._active_model = model_id
+        # Model construction flows through the ModelProvider seam
+        # (model-provider-routing, registry-only per P19 verdict #3):
+        # the consumer binding selects a registry entry — persona
+        # ``models:`` when declared, synthesized defaults otherwise.
+        # ``_build_model`` stashes ``_active_model`` /
+        # ``_active_model_ref`` so spans report the real id + pricing
+        # metadata.
+        model = self._build_model()
 
-        ext_tools: list[Any] = []
-        for ext in extensions:
-            # Wrap each extension's StructuredTools so they emit
-            # ``trace_tool_call(tool_kind="extension", ...)`` per spec
-            # capability-resolver "Aggregated Extension Tools Are Traced".
-            ext_tools.extend(wrap_extension_tools(ext))
+        # Spec harness-adapter "create_agent uses only the provided tool
+        # list": ``tools`` is the complete, already-aggregated ToolSpec
+        # list produced by ``ToolPolicy.authorized_tools()`` (extension
+        # + HTTP tools, telemetry-wrapped upstream). The harness renders
+        # it to the LangChain shape via the per-harness adapter and MUST
+        # NOT re-derive, re-aggregate, or re-wrap tools from
+        # ``extensions`` (P17 tool-spec migration removed the former
+        # second aggregation site here).
+        rendered_tools = render_langchain_tools(tools)
 
         skills_dirs: list[str] = ["./src/assistant/skills"]
         if self.role.skills_dir:
             skills_dirs.append(self.role.skills_dir)
 
+        system_prompt = await self._compose_system_prompt()
+
+        # P30 durable-sessions: an injected checkpointer wins; otherwise
+        # resolve from persona config — InMemorySaver unless the persona
+        # declares ``sessions: {durable: true}``, in which case the
+        # process-cached AsyncPostgresSaver makes every thread_id
+        # resumable across restarts.
+        if self._checkpointer is not None:
+            checkpointer = self._checkpointer
+        else:
+            checkpointer = await resolve_checkpointer(self.persona)
+
         return create_deep_agent(
-            model=init_chat_model(model_id),
-            tools=[*tools, *ext_tools],
-            system_prompt=compose_system_prompt(self.persona, self.role),
+            model=model,
+            tools=rendered_tools,
+            system_prompt=system_prompt,
             memory=cfg.get("memory_files") or ["./AGENTS.md"],
             skills=skills_dirs,
-            checkpointer=InMemorySaver(),
+            checkpointer=checkpointer,
         )
 
     @traced_harness
@@ -107,11 +340,16 @@ class DeepAgentsHarness(SdkHarnessAdapter):
             config={"configurable": {"thread_id": self._thread_id}},
         )
         messages = result.get("messages", [])
+        response = ""
         for msg in reversed(messages):
             role = _msg_role(msg)
             if role == "assistant":
-                return _msg_content(msg)
-        return ""
+                response = _msg_content(msg)
+                break
+        # Post-turn capture (memory-retrieval-activation): best-effort,
+        # error-swallowed — see SdkHarnessAdapter._capture_interaction.
+        await self._capture_interaction(message, response)
+        return response
 
     @traced_harness
     async def astream_invoke(
@@ -147,6 +385,9 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         for observability and re-raises so the mapper layer can absorb it.
         """
         run_id = str(uuid4())
+        # Accumulated assistant text for post-turn memory capture on the
+        # success path (memory-retrieval-activation).
+        captured_text: list[str] = []
         # Per-stream mapping from LangGraph upstream run_id → our call_id.
         # Lets on_tool_end correlate with the call_id we emitted on the
         # matching on_tool_start, including when the upstream run_id is
@@ -197,6 +438,7 @@ class DeepAgentsHarness(SdkHarnessAdapter):
                             )
                         else:
                             text = raw_content or ""
+                        captured_text.append(text)
                         yield TextDelta(message_id=message_id, text=text)
 
                     elif event_name == "on_tool_start":
@@ -244,6 +486,12 @@ class DeepAgentsHarness(SdkHarnessAdapter):
             # Phase 2: re-raise so @traced_harness can record the failure.
             raise
 
+        # Post-turn capture BEFORE the terminal RunFinished yield: once
+        # the consumer sees RunFinished it may close the generator, and
+        # code after the final yield would be skipped by GeneratorExit.
+        # Success path only — errors and disconnects are not captured.
+        await self._capture_interaction(message, "".join(captured_text))
+
         yield RunFinished(
             run_id=run_id,
             finished_at=datetime.now(UTC).isoformat(),
@@ -255,8 +503,62 @@ class DeepAgentsHarness(SdkHarnessAdapter):
         task: str,
         tools: list[Any],
         extensions: list[Any],
+        context: DelegationContext | None = None,
     ) -> str:
-        sub = DeepAgentsHarness(self.persona, role)
+        """Build a nested harness for ``role`` and invoke it on ``task``.
+
+        P25 agent-iam: mirrors the MSAF harness — the
+        ``GuardrailProvider`` is consulted via
+        ``check_action(ActionRequest(action_type="delegate", ...))``
+        with the acting :class:`AgentIdentity` attached BEFORE the
+        sub-harness is constructed; a denied decision raises
+        ``PermissionError``, and every decision emits an audit record.
+
+        P12 delegation-context: an optional ``context`` (constructed by
+        the ``DelegationSpawner``) is threaded to the sub-harness, whose
+        prompt composition renders it as a ``## Delegation context``
+        block. ``None`` preserves pre-P12 behavior exactly.
+        """
+        from assistant.core.capabilities.audit import emit_guardrail_audit
+        from assistant.core.capabilities.identity import AgentIdentity
+        from assistant.core.capabilities.types import ActionRequest
+
+        guardrails = self._resolve_guardrail_provider()
+        request = ActionRequest(
+            action_type="delegate",
+            resource=role.name,
+            persona=self.persona.name,
+            role=self.role.name,
+            metadata={"task": task},
+            identity=AgentIdentity(
+                persona=self.persona.name,
+                role=self.role.name,
+                session_id=self.thread_id,
+            ),
+        )
+        decision = guardrails.check_action(request)
+        emit_guardrail_audit(request, decision)
+        if not decision.allowed:
+            raise PermissionError(
+                f"Delegation to role {role.name!r} denied by guardrails: "
+                f"{decision.reason or '<no reason given>'}"
+            )
+
+        sub = DeepAgentsHarness(
+            self.persona,
+            role,
+            memory_policy=self._memory_policy,
+            memory_snippet_limit=self._memory_snippet_limit,
+            model_provider=self._model_provider,
+            credential_provider=self._credential_provider,
+            guardrail_provider=self._guardrail_provider,
+            delegation_context=context,
+            # P30: propagate the parent's injected persistence seams so
+            # sub-harnesses share them (config-resolved defaults are
+            # re-resolved per sub-harness when nothing was injected).
+            checkpointer=self._checkpointer,
+            approval_store=self._approval_store,
+        )
         agent = await sub.create_agent(tools, extensions)
         return await sub.invoke(agent, task)
 

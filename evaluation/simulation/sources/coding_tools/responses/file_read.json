@@ -1,0 +1,5 @@
+// FIXTURE_SIM_RESPONSE_v1
+{
+  "path": "README.md",
+  "content": "# Synthetic repository\n\nPlaceholder file content for simulation runs.\n"
+}

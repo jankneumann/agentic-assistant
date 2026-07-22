@@ -1,7 +1,15 @@
 # persona-registry Specification
 
 ## Purpose
-TBD - created by archiving change bootstrap-vertical-slice. Update Purpose after archive.
+Governs persona discovery and loading: finding personas as subdirectories
+of the configured personas root (mounted private submodules), loading their
+configuration, including persona prompt and memory content, producing a
+helpful error when a submodule is uninitialized, and the extension-loader
+fallback order. It exists because a persona is the execution boundary —
+database, auth, tools, and identity live in private config repos that the
+public code must locate and load without embedding any private content.
+Consumers are the CLI, the web server, prompt composition, and the
+delegation spawner.
 ## Requirements
 ### Requirement: Persona Discovery
 
@@ -30,8 +38,13 @@ starts with an underscore.
 ### Requirement: Persona Loading
 
 The system SHALL load a persona by name into a typed `PersonaConfig`,
-resolving `*_env` references in the YAML against the process environment and
-loading optional `prompt.md` and `memory.md` files from the persona directory.
+resolving `*_env` references in the YAML through the persona-scoped
+`CredentialProvider` (persona `.env` values first, process environment
+fallback — see the credential-provider capability) and loading optional
+`prompt.md` and `memory.md` files from the persona directory. The
+provider is built per persona at load time (or supplied by an injected
+`credential_provider_factory`) and exposed as
+`PersonaConfig.credentials` for downstream consumers.
 
 #### Scenario: Load resolves env var references
 
@@ -39,6 +52,14 @@ loading optional `prompt.md` and `memory.md` files from the persona directory.
 - **AND** the environment sets `PERSONAL_DATABASE_URL=postgresql://localhost/x`
 - **THEN** `PersonaRegistry.load("personal").database_url` MUST equal
   `"postgresql://localhost/x"`
+
+#### Scenario: Persona .env value takes precedence at load
+
+- **WHEN** the persona directory's `.env` sets
+  `PERSONAL_DATABASE_URL=postgresql://localhost/dotenv`
+- **AND** the process environment sets a different value
+- **THEN** the loaded `database_url` MUST equal
+  `"postgresql://localhost/dotenv"`
 
 #### Scenario: Missing env var resolves to empty string, not error
 
@@ -113,4 +134,236 @@ file does not exist.
   exists
 - **THEN** `load_extensions()` MUST NOT raise
 - **AND** the returned list MUST exclude that extension
+
+### Requirement: Extension Initialization and Shutdown Lifecycle
+
+The persona registry SHALL drive the optional extension lifecycle
+hooks around `load_extensions()`:
+
+- **Initialization**: for each extension instance produced during
+  loading, the registry SHALL call the extension's `initialize()`
+  hook (when present and callable) in `PersonaConfig.extensions`
+  declaration order, immediately post-load. The registry SHALL await
+  the hook's result only when it is awaitable, tolerating synchronous
+  hooks on out-of-tree extensions. An extension without the hook is
+  loaded as before.
+- **Failure isolation**: when `initialize()` raises, the registry
+  SHALL log a WARNING identifying the extension and the error,
+  attempt a best-effort `shutdown()` of the failed instance (errors
+  swallowed), exclude that extension from the returned list, and
+  continue loading the remaining extensions. Persona load MUST NOT
+  fail because one extension failed to initialize.
+- **Async variant**: the registry SHALL provide
+  `load_extensions_async(config)` for callers already running inside
+  an event loop. The synchronous `load_extensions(config)` SHALL
+  execute the identical load+initialize pipeline via `asyncio.run()`
+  when no event loop is running, and SHALL raise a `RuntimeError`
+  naming `load_extensions_async` when called while a loop is running.
+- **Shutdown registration**: extensions returned by a load SHALL be
+  tracked as active. The registry SHALL register a process-exit
+  (`atexit`) handler at most once per registry instance, and SHALL
+  provide an explicit async `shutdown_extensions()` that calls each
+  active extension's `shutdown()` hook (when present) in reverse
+  activation order, swallowing and WARNING-logging per-extension
+  errors. `shutdown_extensions()` MUST be idempotent — a second call
+  after a completed shutdown is a no-op.
+
+#### Scenario: initialize called post-load in declaration order
+
+- **WHEN** `load_extensions()` runs for a persona declaring
+  extensions `a` then `b`, both defining `initialize()`
+- **THEN** `a.initialize()` MUST be awaited before `b.initialize()`
+- **AND** both instances MUST appear in the returned list
+
+#### Scenario: failing initialize disables only that extension
+
+- **WHEN** extension `a`'s `initialize()` raises and sibling `b`'s
+  succeeds
+- **THEN** `load_extensions()` MUST NOT raise
+- **AND** the returned list MUST contain `b` but not `a`
+- **AND** a WARNING naming `a` MUST be logged
+
+#### Scenario: extension without hooks loads unchanged
+
+- **WHEN** a loaded extension defines no lifecycle hooks
+- **THEN** `load_extensions()` MUST return it without warnings about
+  missing hooks
+
+#### Scenario: sync load_extensions rejects a running event loop
+
+- **WHEN** `load_extensions()` is called from a coroutine running in
+  an event loop
+- **THEN** a `RuntimeError` MUST be raised
+- **AND** the message MUST name `load_extensions_async`
+
+#### Scenario: shutdown_extensions runs hooks in reverse order and is idempotent
+
+- **WHEN** extensions `a` then `b` were activated and
+  `await shutdown_extensions()` is called
+- **THEN** `b.shutdown()` MUST be awaited before `a.shutdown()`
+- **AND** a second `await shutdown_extensions()` MUST complete
+  without calling any hook again
+
+#### Scenario: shutdown hook failure is contained
+
+- **WHEN** `b.shutdown()` raises during `shutdown_extensions()`
+- **THEN** `a.shutdown()` MUST still be awaited
+- **AND** a WARNING naming `b` MUST be logged
+
+### Requirement: Guardrails Section Parsing
+
+The persona registry SHALL parse and validate an optional
+`guardrails:` section at load time into
+`PersonaConfig.guardrails` (a typed `GuardrailConfig`, falsy when the
+section is absent or empty). Validation failures (unknown keys,
+unknown policy effects, malformed budget numbers) MUST raise a
+`ValueError` naming the persona, the config path, and the offending
+entry — the same actionable-error posture as the `models:` registry.
+
+#### Scenario: Valid guardrails section is parsed
+
+- **WHEN** `persona.yaml` declares
+  `guardrails: {budgets: {model_call: {daily_usd: 5.0}}}`
+- **THEN** the loaded `PersonaConfig.guardrails` MUST carry a
+  model-call budget with `daily_usd == 5.0`
+
+#### Scenario: Invalid guardrails section fails load actionably
+
+- **WHEN** `persona.yaml` declares a policy with an unknown `effect`
+- **THEN** `load()` MUST raise `ValueError`
+- **AND** the message MUST contain `"guardrails"`
+
+### Requirement: Extension Integrity Verification
+
+The persona registry SHALL verify each private extension file against
+an optional `manifest.yaml` in the persona's extensions directory
+BEFORE executing it (i.e., before `spec.loader.exec_module()`). The
+manifest maps extension filenames to SHA-256 digests
+(`sha256:`-prefixed; bare hex accepted). Outcomes:
+
+- **No manifest**: the extension loads, with a WARNING naming the
+  `assistant persona hash-extensions` command (existing personas keep
+  working).
+- **Hash matches**: the extension loads silently.
+- **Hash mismatch, file not listed, or manifest malformed**: the
+  extension MUST NOT be executed and MUST be disabled with an ERROR
+  log identifying the extension and the failure; sibling extensions
+  continue loading (P10 failure isolation). A blocked private file
+  MUST NOT fall back to a same-named public module.
+
+#### Scenario: Verified extension loads silently
+
+- **WHEN** the manifest lists the extension file with its current
+  SHA-256
+- **THEN** `load_extensions()` MUST return the extension
+- **AND** no integrity warning MUST be logged
+
+#### Scenario: Missing manifest loads with warning
+
+- **WHEN** the extensions directory contains no `manifest.yaml`
+- **THEN** `load_extensions()` MUST return the extension
+- **AND** a WARNING naming the hash-generation command MUST be logged
+
+#### Scenario: Mismatched extension is disabled without executing
+
+- **WHEN** the extension file's content no longer matches its
+  manifest digest
+- **THEN** the file MUST NOT be executed
+- **AND** an ERROR naming the extension MUST be logged
+- **AND** the returned list MUST exclude that extension while
+  including unaffected siblings
+
+#### Scenario: Blocked private file does not fall back to a public module
+
+- **WHEN** a private `gmail.py` fails verification
+- **AND** a public `assistant.extensions.gmail` module exists
+- **THEN** the returned list MUST NOT contain any `gmail` extension
+
+#### Scenario: Malformed manifest blocks all private extensions
+
+- **WHEN** `manifest.yaml` exists but is not a mapping with a
+  `hashes:` section
+- **THEN** every private extension in that directory MUST be disabled
+  with an ERROR
+
+### Requirement: Schedules Section Parsing
+
+Persona load SHALL parse and validate an optional `schedules:` section
+into `PersonaConfig.schedules`: a mapping of job name to a job spec
+with a `trigger:` mapping declaring exactly one of `cron:` (validated
+5-field croniter expression), `interval:` (positive seconds), or
+`calendar:` (non-empty source name, optional positive `lead_minutes`),
+plus required non-empty `role:` and `prompt:`, optional `consumer:`
+(non-empty models bindings key, default `scheduler`) and `enabled:`
+(boolean, default true). Unknown job or trigger keys, ambiguous or
+invalid triggers, and malformed fields SHALL fail persona load with an
+actionable error naming the persona, config path, and offending job —
+the same posture as the `models:` and `guardrails:` sections. A
+persona without a `schedules:` section SHALL load with a falsy,
+empty schedule config.
+
+#### Scenario: Valid schedules parse with defaults
+
+- **WHEN** a persona declares a job with
+  `trigger: {cron: "0 7 * * *"}`, a role, and a prompt
+- **THEN** `PersonaConfig.schedules` MUST contain the job with
+  `consumer == "scheduler"` and `enabled == True`
+
+#### Scenario: Invalid schedule fails persona load with context
+
+- **WHEN** a persona declares a job with `trigger: {interval: -1}`
+- **THEN** persona load MUST raise an error containing
+  `"invalid schedules: section"` and the persona name
+
+#### Scenario: Ambiguous trigger is rejected
+
+- **WHEN** a job's trigger declares both `cron:` and `interval:`
+- **THEN** persona load MUST fail with an error naming the job and
+  requiring exactly one trigger kind
+
+#### Scenario: Missing schedules section is falsy
+
+- **WHEN** a persona declares no `schedules:` section
+- **THEN** `PersonaConfig.schedules` MUST be falsy
+
+### Requirement: Harness Routing Rules Parsing
+
+Persona load SHALL parse and validate an optional `harnesses.routing:`
+list into `PersonaConfig.harness_routing` (an ordered tuple of
+routing rules) and SHALL remove the `routing` key from
+`PersonaConfig.harnesses` so that mapping remains strictly
+harness-name → config. Each rule is a mapping with keys `role:`
+(optional non-empty glob on the role name), `tools:` (optional
+non-empty list of non-empty globs matched against role
+`preferred_tools`), and `harness:` (required non-empty target name);
+a rule MUST declare at least one of `role:`/`tools:`. Unknown keys,
+wrong types, empty matchers, and a missing/empty `harness:` SHALL
+fail persona load with an actionable error naming the persona, config
+path, and rule index — the same posture as the `models:` /
+`guardrails:` / `schedules:` sections. Registry-level validation of
+the target name (unknown/host/disabled harness) is owned by
+`select_harness` at selection time, because the persona registry
+cannot import the harness factory (import-direction discipline). A
+persona without a `harnesses.routing:` list SHALL load with an empty
+rule tuple.
+
+#### Scenario: Valid routing rules parse in order
+
+- **WHEN** a persona declares
+  `harnesses.routing: [{tools: ["ms_graph:*"], harness: ms_agent_framework}, {role: "*", harness: deep_agents}]`
+- **THEN** `PersonaConfig.harness_routing` MUST contain the two rules
+  in declaration order
+- **AND** `"routing"` MUST NOT be a key of `PersonaConfig.harnesses`
+
+#### Scenario: Rule without a matcher fails persona load
+
+- **WHEN** a persona declares
+  `harnesses.routing: [{harness: deep_agents}]`
+- **THEN** persona load MUST raise an error containing
+  `"invalid harnesses.routing: section"` and the rule index
+
+#### Scenario: Unknown rule key fails persona load
+
+- **WHEN** a rule declares a `model:` key
+- **THEN** persona load MUST raise an error naming the unknown key
 

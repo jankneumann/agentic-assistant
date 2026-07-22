@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
@@ -10,7 +11,10 @@ from assistant.core.persona import PersonaConfig
 from assistant.core.role import RoleConfig
 
 if TYPE_CHECKING:
+    from assistant.delegation.context import DelegationContext
     from assistant.harnesses.sdk.events import HarnessEvent
+
+logger = logging.getLogger(__name__)
 
 
 class HarnessAdapter(ABC):
@@ -100,7 +104,54 @@ class SdkHarnessAdapter(HarnessAdapter):
         task: str,
         tools: list[Any],
         extensions: list[Any],
-    ) -> str: ...
+        context: DelegationContext | None = None,
+    ) -> str:
+        """Spawn a nested sub-agent for ``role`` and run it on ``task``.
+
+        ``context`` (P12 delegation-context) is an ADDITIVE keyword
+        parameter: ``None`` preserves the pre-P12 behavior exactly.
+        When provided, concrete harnesses MUST render
+        ``context.render()`` as a ``## Delegation context`` block ahead
+        of the sub-agent's composed system prompt (mirroring the D27
+        ``## Recent context`` prepend).
+        """
+        ...
+
+    async def _capture_interaction(
+        self, user_message: str, response: str
+    ) -> None:
+        """Best-effort post-turn memory capture (memory-retrieval-activation).
+
+        Called by concrete harnesses after a *successful* ``invoke`` /
+        ``astream_invoke`` completion. Resolves the harness's
+        ``MemoryPolicy`` (via the concrete class's
+        ``_resolve_memory_policy``, when it defines one) and awaits
+        ``record_interaction``. Every failure — policy resolution,
+        missing method, backend write — is swallowed with a WARNING
+        log: memory failures must never break a conversation.
+        """
+        try:
+            resolve = getattr(self, "_resolve_memory_policy", None)
+            if resolve is None:
+                return
+            policy = resolve()
+            record = getattr(policy, "record_interaction", None)
+            if record is None:
+                return
+            await record(
+                self.persona,
+                self.role,
+                user_message=user_message,
+                response=response,
+            )
+        except Exception:
+            logger.warning(
+                "Post-turn memory capture failed for persona '%s' "
+                "(role '%s'); continuing without capture",
+                getattr(self.persona, "name", "<unknown>"),
+                getattr(self.role, "name", "<unknown>"),
+                exc_info=True,
+            )
 
 
 class HostHarnessAdapter(HarnessAdapter):

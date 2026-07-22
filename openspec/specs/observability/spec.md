@@ -1,7 +1,15 @@
 # observability Specification
 
 ## Purpose
-TBD - created by archiving change observability. Update Purpose after archive.
+Governs the `ObservabilityProvider` protocol (with `noop` and `langfuse`
+implementations) and the tracing woven through the system: harness
+invocations, delegation chains, extension and HTTP tool calls, and
+MemoryManager operations, plus secret sanitization, the flush lifecycle,
+three-level graceful degradation, persona-pattern configuration loading,
+and persona/role context propagation. It exists so every agent action is
+traceable end-to-end without any code path depending on a telemetry backend
+being available — the noop provider is the default. Telemetry is emit-only;
+the module exposes no inbound interfaces.
 ## Requirements
 ### Requirement: Observability Provider Contract
 
@@ -14,7 +22,7 @@ The system SHALL define an `ObservabilityProvider` Protocol at `src/assistant/te
 - `trace_tool_call(*, tool_name, tool_kind, persona, role, duration_ms, error=None, metadata=None)` recording any LangChain StructuredTool or HTTP-discovered tool invocation. The `tool_kind` parameter MUST be one of `"extension"`, `"http"`, or `"graph"`.
 - `trace_graph_call(*, extension_name, method, path, status_code, duration_ms, breaker_key, request_id=None, retry_attempt=0, bytes_streamed=None, error=None, metadata=None)` recording a single outbound HTTP request to a Microsoft Graph endpoint (or any `CloudGraphClient`-shaped backend in P14+). The `method` parameter MUST be one of `"GET"`, `"POST"`, `"PUT"`, `"PATCH"`, `"DELETE"`. The `path` parameter MUST be the request path with sensitive ID values redacted to placeholders (e.g., `/users/<user_id>/messages/<message_id>`). The `breaker_key` parameter is the P9 circuit breaker key (e.g., `"graph:ms_graph"`) and is included so spans can be correlated with breaker state events. The `request_id` parameter is the Microsoft Graph `request-id` response header value, included for correlation with Entra ID and Graph audit logs. The `retry_attempt` parameter is the zero-indexed retry count (0 = original attempt). The `bytes_streamed` parameter is non-None only for `get_bytes` invocations and carries the cumulative byte count read from the streamed body (used by ops dashboards to flag large-download patterns). On failure, `error` MUST be the exception class name (e.g., `"GraphAPIError"`).
 - `trace_extension_init(*, extension_name, persona, success, duration_ms, error=None)` recording extension construction.
-- `trace_memory_op(*, op, target, persona, duration_ms, metadata=None)` recording any `MemoryManager` method call. The `op` parameter MUST be one of `"context"`, `"fact_write"`, `"interaction_write"`, `"episode_write"`, `"search"`, or `"export"` — each corresponding to a `MemoryManager` method on `src/assistant/core/memory.py`.
+- `trace_memory_op(*, op, target, persona, duration_ms, metadata=None)` recording any `MemoryManager` method call. The `op` parameter MUST be one of `"context"`, `"snippets"`, `"fact_write"`, `"fact_list"`, `"preference_list"`, `"fact_delete"`, `"preference_write"`, `"interaction_write"`, `"interaction_list"`, `"episode_write"`, `"search"`, or `"export"` — each corresponding to a `MemoryManager` method on `src/assistant/core/memory.py`. (`fact_list`, `preference_list`, and `fact_delete` were added by knowledge-clean-room (P26) for the declassification gateway's structured reads and revocation purges, following the `interaction_list` precedent from eval-simulation-loop; `preference_write` was added by continual-learning (P28) for `MemoryManager.store_preference`, the write surface behind applied `preference` proposals.)
 - `start_span(name, attributes=None)` returning a context manager for arbitrary named spans that do not fit any first-class method.
 - `set_metadata(*, key, value)` recording metadata on the current trace.
 - `flush()` triggering an immediate send of buffered events.
@@ -42,7 +50,7 @@ The Protocol SHALL be decorated with `@runtime_checkable` so `isinstance(obj, Ob
 
 #### Scenario: Rejects mis-typed op value
 
-- **WHEN** `trace_memory_op(op="CONTEXT", ...)` is invoked on any provider (any value outside the fixed set `{"context", "fact_write", "interaction_write", "episode_write", "search", "export"}`, including wrong-case variants)
+- **WHEN** `trace_memory_op(op="CONTEXT", ...)` is invoked on any provider (any value outside the fixed set `{"context", "snippets", "fact_write", "fact_list", "preference_list", "fact_delete", "preference_write", "interaction_write", "interaction_list", "episode_write", "search", "export"}`, including wrong-case variants)
 - **THEN** a `ValueError` MUST be raised identifying the invalid `op`
 - **AND** no span SHALL be emitted
 
@@ -130,18 +138,23 @@ The `DelegationSpawner.delegate()` call path SHALL invoke `provider.trace_delega
 
 ### Requirement: Tool Call Tracing Across Extensions and HTTP Tools
 
-Every LangChain `StructuredTool` returned by an `Extension.as_langchain_tools()` call and every HTTP tool constructed by `src/assistant/http_tools/builder.py` SHALL be wrapped such that `provider.trace_tool_call(...)` is invoked on each tool invocation. The `tool_kind` argument MUST be `"extension"` for extension tools and `"http"` for HTTP-discovered tools. When the tool raises, the trace call MUST record `error=<exception type name>` before re-raising.
+Every `ToolSpec` returned by an `Extension.tool_specs()` call and every HTTP `ToolSpec` constructed by `src/assistant/http_tools/builder.py` SHALL be wrapped at the ToolSpec layer (`wrap_tool_spec` — handler substitution via `ToolSpec.with_handler`) such that `provider.trace_tool_call(...)` is invoked on each handler invocation, regardless of which per-harness rendering (LangChain, MSAF, or direct MCP dispatch) triggered it. The `tool_kind` argument MUST be `"extension"` for extension tools and `"http"` for HTTP-discovered tools. When the handler raises, the trace call MUST record `error=<exception type name>` before re-raising.
 
 #### Scenario: Extension tool invocation is traced
 
-- **WHEN** an extension tool `gmail.search` is invoked with persona `personal`
+- **WHEN** an extension ToolSpec `gmail.search` has its handler awaited with persona `personal`
 - **THEN** `provider.trace_tool_call` MUST be called once
 - **AND** the call's `tool_name` MUST equal `"gmail.search"` and `tool_kind` MUST equal `"extension"`
 
 #### Scenario: HTTP tool invocation is traced
 
-- **WHEN** an HTTP-discovered tool `linear.listIssues` is invoked
+- **WHEN** an HTTP-discovered ToolSpec `linear:listIssues` has its handler awaited
 - **THEN** `provider.trace_tool_call` MUST be called once with `tool_kind="http"`
+
+#### Scenario: Trace survives per-harness rendering
+
+- **WHEN** a wrapped extension ToolSpec is rendered through the LangChain adapter and the rendered tool is invoked
+- **THEN** `provider.trace_tool_call` MUST be called exactly once (no double wrapping, no lost span)
 
 #### Scenario: Tool error is recorded before propagating
 
@@ -156,8 +169,13 @@ Every public method on `MemoryManager` at `src/assistant/core/memory.py` SHALL i
 | MemoryManager method | op value |
 |---|---|
 | `get_context(persona, ...)` | `"context"` |
+| `get_recent_snippets(persona, role, ...)` | `"snippets"` |
 | `store_fact(persona, key, value)` | `"fact_write"` |
+| `list_facts(persona, ...)` | `"fact_list"` |
+| `list_preferences(persona, ...)` | `"preference_list"` |
+| `delete_facts_by_prefix(persona, key_prefix)` | `"fact_delete"` |
 | `store_interaction(...)` | `"interaction_write"` |
+| `list_interactions(persona, ...)` | `"interaction_list"` |
 | `store_episode(...)` | `"episode_write"` |
 | `search(persona, query, ...)` | `"search"` |
 | `export_memory(persona)` | `"export"` |
@@ -174,11 +192,15 @@ The `target` argument MUST be the operation's key, query string, or persona iden
 - **WHEN** `MemoryManager.search("personal", query="recent decisions")` is awaited
 - **THEN** `provider.trace_memory_op` MUST be called once with `op="search"` and `target="recent decisions"`
 
-#### Scenario: store_episode emits trace_memory_op covering the graphiti call
+#### Scenario: list_interactions emits trace_memory_op with interaction_list
 
-- **WHEN** `MemoryManager.store_episode(...)` is awaited and internally invokes the graphiti client
-- **THEN** exactly one `provider.trace_memory_op` call MUST be emitted with `op="episode_write"`
-- **AND** no second call SHALL be emitted from inside the graphiti client
+- **WHEN** `MemoryManager.list_interactions("personal", limit=10)` is awaited
+- **THEN** `provider.trace_memory_op` MUST be called once with `op="interaction_list"` and a non-negative `duration_ms`
+
+#### Scenario: Clean-room reads and deletes emit their ops
+
+- **WHEN** `MemoryManager.list_facts("personal")`, `MemoryManager.list_preferences("personal")`, and `MemoryManager.delete_facts_by_prefix("personal", "cleanroom/x/")` are awaited
+- **THEN** `provider.trace_memory_op` MUST be called with `op="fact_list"`, `op="preference_list"`, and `op="fact_delete"` respectively
 
 ### Requirement: Secret Sanitization
 

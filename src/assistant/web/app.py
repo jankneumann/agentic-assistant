@@ -20,7 +20,7 @@ they cannot satisfy the streaming contract.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
 import httpx
@@ -75,7 +75,10 @@ async def _default_agent_factory(
     from assistant.http_tools import HttpToolRegistry
     from assistant.http_tools.discovery import discover_tools
 
-    extensions = persona_reg.load_extensions(pc)
+    # Async variant: the lifespan runs inside the event loop, and the
+    # extensions' initialize() hooks must be awaited (P10
+    # extension-lifecycle). Shutdown is owned by the lifespan finally.
+    extensions = await persona_reg.load_extensions_async(pc)
 
     tool_sources = getattr(pc, "tool_sources", None) or {}
     if tool_sources:
@@ -84,7 +87,11 @@ async def _default_agent_factory(
                 "http_client is required when persona declares tool_sources "
                 "(discovered tools close over the caller-owned AsyncClient)"
             )
-        registry = await discover_tools(tool_sources, client=http_client)
+        registry = await discover_tools(
+            tool_sources,
+            client=http_client,
+            credentials=getattr(pc, "credentials", None),
+        )
     else:
         registry = HttpToolRegistry()
 
@@ -102,6 +109,9 @@ def make_app(
     harness_name: str,
     *,
     _agent_factory: AgentFactory = _default_agent_factory,
+    enable_a2a: bool = False,
+    a2a_base_url: str = "http://127.0.0.1:8765",
+    enable_mcp: bool = False,
 ) -> FastAPI:
     """Build and return a configured FastAPI application.
 
@@ -120,6 +130,27 @@ def make_app(
             Tests inject a trivial factory to avoid mocking the full
             discover/resolve/authorize chain. Production callers should
             never pass this.
+        enable_a2a: When True, additionally mounts the A2A protocol
+            surface (P6 a2a-server): agent card at
+            ``/.well-known/agent-card.json`` (+ legacy ``agent.json``)
+            and JSON-RPC ``POST /a2a/v1`` with message/send +
+            message/stream. A2A tasks multiplex over a
+            ``SessionRegistry`` whose session factory runs the SAME
+            harness/agent pipeline as this app's lifespan — one fresh
+            harness (and thread_id) per A2A context.
+        a2a_base_url: Externally reachable base URL advertised in the
+            agent card's ``url`` field (the CLI passes
+            ``http://<host>:<port>``).
+        enable_mcp: When True, additionally mounts the MCP server
+            surface (P17 mcp-server-exposure): a stateless streamable-
+            HTTP transport at ``/mcp`` exposing one ``ask_<role>`` tool
+            per enabled role (plus a generic ``ask`` bound to this
+            app's serving role). MCP tool calls multiplex over per-role
+            ``SessionRegistry`` instances whose session factory runs
+            the SAME harness/agent pipeline as this app's lifespan —
+            one fresh harness (and thread_id ≡ context_id) per
+            conversation. Auth is deferred to P25; keep the bind host
+            loopback-only.
 
     Returns:
         A FastAPI application with ``/chat`` (SSE) and ``/health`` routes,
@@ -167,8 +198,113 @@ def make_app(
             app.state.role = role
             app.state.harness_name = harness_name
             app.state.http_client = http_client
-            yield
+            # P30 durable-sessions: personas with sessions: {durable:
+            # true} get a session-metadata store + re-bind factories so
+            # A2A/MCP contextIds survive in-process expiry and restarts
+            # (the DeepAgents checkpointer restores the conversation).
+            # Personas without the section keep None everywhere — pure
+            # in-memory behavior.
+            from assistant.core.durable import durable_stores_for
+
+            durable = durable_stores_for(pc)
+            session_store = durable.sessions if durable is not None else None
+            if enable_a2a:
+                # P6 a2a-server: sessions are created lazily per A2A
+                # context through the same create_harness + agent
+                # pipeline this lifespan just ran — the AG-UI harness
+                # above stays the single instance for /chat, while A2A
+                # multiplexes fresh instances via the SessionRegistry.
+                from assistant.a2a.server import build_a2a_state
+
+                async def _session_factory():
+                    session_harness = create_harness(pc, rc, harness_name)
+                    session_agent = await _agent_factory(
+                        session_harness, pc, rc, persona_reg, http_client,
+                    )
+                    return session_harness, session_agent
+
+                async def _rebind_factory(thread_id: str):
+                    # Durable re-bind: same pipeline, explicit thread_id
+                    # so the checkpointer restores that conversation.
+                    session_harness = create_harness(
+                        pc, rc, harness_name, thread_id=thread_id
+                    )
+                    session_agent = await _agent_factory(
+                        session_harness, pc, rc, persona_reg, http_client,
+                    )
+                    return session_harness, session_agent
+
+                role_names = role_reg.available_for_persona(pc)
+                role_cfgs = [role_reg.load(n, pc) for n in role_names]
+                app.state.a2a = build_a2a_state(
+                    pc,
+                    role_cfgs,
+                    session_factory=_session_factory,
+                    base_url=a2a_base_url,
+                    session_store=session_store,
+                    rebind_factory=(
+                        _rebind_factory if session_store is not None else None
+                    ),
+                    serving_role=role,
+                    harness_name=harness_name,
+                )
+            async with AsyncExitStack() as stack:
+                if enable_mcp:
+                    # P17 mcp-server-exposure: same mount pattern as
+                    # A2A — per-role sessions run the same
+                    # create_harness + agent pipeline as this lifespan;
+                    # the streamable-HTTP session manager's run()
+                    # context is held open for the app's lifetime.
+                    from assistant.mcp.server import build_mcp_state
+
+                    async def _mcp_session_factory(role_cfg):
+                        session_harness = create_harness(
+                            pc, role_cfg, harness_name
+                        )
+                        session_agent = await _agent_factory(
+                            session_harness, pc, role_cfg,
+                            persona_reg, http_client,
+                        )
+                        return session_harness, session_agent
+
+                    async def _mcp_rebind_factory(role_cfg, thread_id: str):
+                        session_harness = create_harness(
+                            pc, role_cfg, harness_name, thread_id=thread_id
+                        )
+                        session_agent = await _agent_factory(
+                            session_harness, pc, role_cfg,
+                            persona_reg, http_client,
+                        )
+                        return session_harness, session_agent
+
+                    mcp_role_names = role_reg.available_for_persona(pc)
+                    mcp_role_cfgs = [
+                        role_reg.load(n, pc) for n in mcp_role_names
+                    ]
+                    mcp_state = build_mcp_state(
+                        pc,
+                        mcp_role_cfgs,
+                        session_factory=_mcp_session_factory,
+                        default_role=role,
+                        session_store=session_store,
+                        rebind_factory=(
+                            _mcp_rebind_factory
+                            if session_store is not None
+                            else None
+                        ),
+                        harness_name=harness_name,
+                    )
+                    app.state.mcp = mcp_state
+                    await stack.enter_async_context(
+                        mcp_state.session_manager.run()
+                    )
+                yield
         finally:
+            # P10 extension-lifecycle: run extension shutdown() hooks
+            # on server teardown. Idempotent + safe when the injected
+            # _agent_factory never loaded extensions (empty active
+            # list → no-op).
+            await persona_reg.shutdown_extensions()
             if http_client is not None:
                 await http_client.aclose()
 
@@ -184,5 +320,22 @@ def make_app(
 
     from assistant.web.routes import register_routes
     register_routes(app)
+
+    if enable_a2a:
+        from assistant.a2a.server import register_a2a_routes
+        register_a2a_routes(app)
+
+    if enable_mcp:
+        from assistant.mcp.server import MCP_PATH
+
+        async def _mcp_asgi(scope, receive, send) -> None:
+            # The session manager is constructed (and its run() context
+            # entered) by the lifespan above; the mount forwards raw
+            # ASGI so streamable-HTTP semantics stay SDK-owned.
+            await app.state.mcp.session_manager.handle_request(
+                scope, receive, send
+            )
+
+        app.mount(MCP_PATH, _mcp_asgi)
 
     return app

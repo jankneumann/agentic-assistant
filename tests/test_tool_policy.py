@@ -31,8 +31,11 @@ def _make_role(preferred_tools: list | None = None) -> MagicMock:
 
 
 def _make_extension(tools: list) -> MagicMock:
+    # P17 tool-spec migration: extensions expose tool_specs(); the
+    # policy's telemetry wrapper passes non-ToolSpec fakes through
+    # unchanged.
     ext = MagicMock()
-    ext.as_langchain_tools.return_value = tools
+    ext.tool_specs.return_value = tools
     return ext
 
 

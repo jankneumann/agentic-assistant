@@ -19,10 +19,11 @@ auth:
     client_secret_env: PERSONAL_GOOGLE_CLIENT_SECRET
     refresh_token_env: PERSONAL_GOOGLE_REFRESH_TOKEN
 
+# No `models:` registry declared — this persona exercises the
+# synthesized default registry (P19 verdict #3, registry-only).
 harnesses:
   deep_agents:
     enabled: true
-    model: "anthropic:claude-sonnet-4-20250514"
     memory_files:
       - "./AGENTS.md"
       - "./personas/personal/memory.md"

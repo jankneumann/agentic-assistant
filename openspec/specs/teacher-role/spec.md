@@ -1,7 +1,13 @@
 # teacher-role Specification
 
 ## Purpose
-TBD - created by archiving change add-teacher-role. Update Purpose after archive.
+Governs the public `teacher` role: its discovery and loading like any other
+role, first-turn teaching-method negotiation, method persistence across
+turns, the skill-switch transition protocol, and the loop contracts for the
+Feynman and Socratic methods. It exists to encode structured teaching
+workflows as a reusable public role rather than persona-specific prompt
+text. Any persona may use it; the CLI exposes it through the teacher-method
+flag and the `methods`/`method` REPL commands.
 ## Requirements
 ### Requirement: Teacher Role Discovery and Loading
 

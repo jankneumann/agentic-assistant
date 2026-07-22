@@ -53,9 +53,8 @@ class _FakeStreamHarness:
     """Minimal harness shim for async-generator tests."""
 
     def __init__(self, persona_name: str, role_name: str, model: str) -> None:
-        self.persona = type("P", (), {"name": persona_name, "harnesses": {}})()
+        self.persona = type("P", (), {"name": persona_name})()
         self.role = type("R", (), {"name": role_name})()
-        self.persona.harnesses = {"deep_agents": {"model": model}}
         self._active_model = model
 
 

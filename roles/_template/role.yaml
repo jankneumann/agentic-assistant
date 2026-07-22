@@ -8,6 +8,10 @@ delegation:
   can_spawn_sub_agents: false
   max_concurrent: 0
   allowed_sub_roles: []
+  # allow_recursive: false   # P12 delegation-context — cycle detection
+  #                          # denies delegating to a role already in the
+  #                          # delegation chain (incl. self-delegation);
+  #                          # set true to permit recursive delegation.
 
 planning:
   always_plan: false

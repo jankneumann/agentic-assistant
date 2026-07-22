@@ -67,7 +67,6 @@ def _persona() -> PersonaConfig:
             "ms_agent_framework": {
                 "enabled": True,
                 "chat_client": "openai",
-                "model": "openai:gpt-4o-mini",
             }
         },
         tool_sources={},

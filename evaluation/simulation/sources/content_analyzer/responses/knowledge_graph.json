@@ -1,0 +1,10 @@
+// FIXTURE_SIM_RESPONSE_v1
+{
+  "entities": [
+    {"name": "Synthetic Topic A", "type": "topic", "mentions": 12},
+    {"name": "Synthetic Person B", "type": "person", "mentions": 4}
+  ],
+  "edges": [
+    {"from": "Synthetic Topic A", "to": "Synthetic Person B", "relation": "authored_by"}
+  ]
+}

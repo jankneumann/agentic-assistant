@@ -70,15 +70,15 @@ def _reset_breaker_registry(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tool surface (3.1) + dual-format parity
+# Tool surface (3.1) — ToolSpec since the P17 tool-spec migration
 # ---------------------------------------------------------------------------
 
 
-def test_as_langchain_tools_returns_six_tools() -> None:
+def test_tool_specs_returns_six_tools() -> None:
     """Spec: ms-extensions / "Tool list includes read and write tools"."""
     ext = _make_extension()
-    tools = ext.as_langchain_tools()
-    names = [t.name for t in tools]
+    specs = ext.tool_specs()
+    names = [s.name for s in specs]
     expected = {
         "outlook.list_messages",
         "outlook.read_message",
@@ -92,30 +92,12 @@ def test_as_langchain_tools_returns_six_tools() -> None:
     )
 
 
-def test_as_ms_agent_tools_count_matches_langchain() -> None:
-    """Spec: ms-extensions / "Tool counts match across formats"."""
+def test_tool_specs_carry_source_and_json_schema() -> None:
+    """Every spec carries provenance + a JSON-Schema object surface."""
     ext = _make_extension()
-    lc_tools = ext.as_langchain_tools()
-    msaf_tools = ext.as_ms_agent_tools()
-    assert len(lc_tools) == len(msaf_tools)
-
-
-def test_as_ms_agent_tools_names_match_by_index() -> None:
-    """Spec: ms-extensions / "Tool names match by index"."""
-    ext = _make_extension()
-    lc_tools = ext.as_langchain_tools()
-    msaf_tools = ext.as_ms_agent_tools()
-
-    for i, lc_tool in enumerate(lc_tools):
-        msaf_tool = msaf_tools[i]
-        # MSAF tools are wrapped callables; the extension MUST expose a
-        # readable name on each, either via __name__ or an explicit
-        # attribute set by ai_function (or our fallback wrapper).
-        msaf_name = (
-            getattr(msaf_tool, "name", None)
-            or getattr(msaf_tool, "__name__", None)
-        )
-        assert msaf_name == lc_tool.name
+    for spec in ext.tool_specs():
+        assert spec.source == "extension:outlook"
+        assert spec.input_schema.get("type") == "object"
 
 
 # ---------------------------------------------------------------------------

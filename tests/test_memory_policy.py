@@ -49,3 +49,79 @@ def test_export_memory_context_returns_content() -> None:
     policy = FileMemoryPolicy()
     content = policy.export_memory_context(persona)
     assert "## Memory" in content
+
+
+# ── FileMemoryPolicy.get_recent_snippets (memory-retrieval-activation) ──
+
+
+async def test_file_snippets_empty_when_no_memory_content() -> None:
+    from assistant.core.capabilities.memory import FileMemoryPolicy
+
+    persona = _make_persona(memory_content="")
+    snippets = await FileMemoryPolicy().get_recent_snippets(persona, MagicMock())
+    assert snippets == []
+
+
+async def test_file_snippets_return_sections_most_recent_first() -> None:
+    from assistant.core.capabilities.memory import FileMemoryPolicy
+
+    persona = _make_persona(
+        memory_content="## Oldest\nalpha\n\n## Middle\nbeta\n\n## Newest\ngamma"
+    )
+    snippets = await FileMemoryPolicy().get_recent_snippets(persona, MagicMock())
+    assert len(snippets) == 3
+    assert "Newest" in snippets[0]
+    assert "Middle" in snippets[1]
+    assert "Oldest" in snippets[2]
+
+
+async def test_file_snippets_respect_limit() -> None:
+    from assistant.core.capabilities.memory import FileMemoryPolicy
+
+    content = "\n\n".join(f"## Section {i}\nbody {i}" for i in range(8))
+    persona = _make_persona(memory_content=content)
+    snippets = await FileMemoryPolicy().get_recent_snippets(
+        persona, MagicMock(), limit=3
+    )
+    assert len(snippets) == 3
+    assert "Section 7" in snippets[0]
+
+
+async def test_file_snippets_respect_total_char_budget() -> None:
+    from assistant.core.capabilities.memory import (
+        _FILE_SNIPPET_CHAR_BUDGET,
+        FileMemoryPolicy,
+    )
+
+    big = "x" * (_FILE_SNIPPET_CHAR_BUDGET + 500)
+    persona = _make_persona(
+        memory_content=f"## Old\nshould not fit\n\n## New\n{big}"
+    )
+    snippets = await FileMemoryPolicy().get_recent_snippets(persona, MagicMock())
+    total = sum(len(s) for s in snippets)
+    assert total <= _FILE_SNIPPET_CHAR_BUDGET
+    # The newest section consumed the whole budget; the older section
+    # must not appear at all.
+    assert not any("should not fit" in s for s in snippets)
+
+
+async def test_file_snippets_whole_content_when_no_headings() -> None:
+    from assistant.core.capabilities.memory import FileMemoryPolicy
+
+    persona = _make_persona(memory_content="just some prose, no headings")
+    snippets = await FileMemoryPolicy().get_recent_snippets(persona, MagicMock())
+    assert snippets == ["just some prose, no headings"]
+
+
+def test_file_record_interaction_is_noop() -> None:
+    import asyncio
+
+    from assistant.core.capabilities.memory import FileMemoryPolicy
+
+    persona = _make_persona(memory_content="## Memory\ncontext")
+    result = asyncio.run(
+        FileMemoryPolicy().record_interaction(
+            persona, MagicMock(), user_message="hi", response="hello"
+        )
+    )
+    assert result is None
