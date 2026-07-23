@@ -176,7 +176,11 @@ class PostgresGraphitiMemoryPolicy:
         engine = create_async_engine(persona)
         session_fac = async_session_factory(engine)
         graphiti = create_graphiti_client(persona)
-        self._manager = MemoryManager(session_fac, graphiti_client=graphiti)
+        self._manager = MemoryManager(
+            session_fac,
+            graphiti_client=graphiti,
+            persona_name=persona.name,
+        )
         self._persona_name = persona.name
 
     def resolve(self, persona: Any, harness_name: str) -> MemoryConfig:
@@ -187,7 +191,12 @@ class PostgresGraphitiMemoryPolicy:
         )
 
     def export_memory_context(self, persona: Any) -> str:
-        return _run_blocking(self._manager.export_memory(persona.name))
+        # Pass the caller's persona through rather than swallowing it: the
+        # MemoryManager is bound to this policy's persona and raises if the
+        # two disagree, so a caller handing over a *different* persona gets
+        # a loud error, not a silent export of the bound persona's memory.
+        persona_name = getattr(persona, "name", None)
+        return _run_blocking(self._manager.export_memory(persona_name))
 
     async def get_recent_snippets(
         self, persona: Any, role: Any, *, limit: int = 10

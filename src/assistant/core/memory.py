@@ -23,20 +23,42 @@ class MemoryManager:
         self,
         session_factory: async_sessionmaker[AsyncSession],
         graphiti_client: Any | None = None,
+        persona_name: str | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._graphiti = graphiti_client
+        self._persona_name = persona_name
+
+    def _resolve_persona(self, persona: str | None) -> str:
+        bound = self._persona_name
+        if persona and bound and persona != bound:
+            # A manager bound to one persona must never operate on another.
+            # Silently preferring either side could cross the persona
+            # boundary (read/write another persona's memory), so refuse.
+            raise ValueError(
+                f"persona mismatch: MemoryManager is bound to '{bound}' but "
+                f"was called with '{persona}'. A bound manager must not "
+                "operate on a different persona.",
+            )
+        resolved = persona or bound
+        if not resolved:
+            raise ValueError(
+                "persona is required when MemoryManager is not bound at "
+                "construction",
+            )
+        return resolved
 
     @trace_memory_op("context")
     async def get_context(
-        self, persona: str, role: str, limit: int = 50
+        self, persona: str | None, role: str, limit: int = 50
     ) -> str:
+        resolved_persona = self._resolve_persona(persona)
         sections: list[str] = []
 
         async with self._session_factory() as session:
             result = await session.execute(
                 select(MemoryEntry)
-                .where(MemoryEntry.persona == persona)
+                .where(MemoryEntry.persona == resolved_persona)
                 .order_by(MemoryEntry.updated_at.desc())
                 .limit(limit)
             )
@@ -57,7 +79,7 @@ class MemoryManager:
             except Exception:
                 logger.warning(
                     "Graphiti search failed for persona '%s', degrading to Postgres-only",
-                    persona,
+                    resolved_persona,
                 )
 
         return "\n\n".join(sections) + "\n"
@@ -142,7 +164,10 @@ class MemoryManager:
         return head + tail
 
     @trace_memory_op("fact_write")
-    async def store_fact(self, persona: str, key: str, value: Any) -> None:
+    async def store_fact(
+        self, persona: str | None, key: str, value: Any
+    ) -> None:
+        resolved_persona = self._resolve_persona(persona)
         try:
             json.dumps(value)
         except (TypeError, ValueError) as e:
@@ -150,7 +175,7 @@ class MemoryManager:
 
         async with self._session_factory() as session:
             stmt = pg_insert(MemoryEntry).values(
-                persona=persona, key=key, value=value,
+                persona=resolved_persona, key=key, value=value,
             )
             stmt = stmt.on_conflict_do_update(
                 constraint="uq_memory_persona_key",
@@ -206,14 +231,15 @@ class MemoryManager:
     @trace_memory_op("interaction_write")
     async def store_interaction(
         self,
-        persona: str,
+        persona: str | None,
         role: str,
         summary: str,
         metadata: dict[str, Any] | None = None,
     ) -> None:
+        resolved_persona = self._resolve_persona(persona)
         async with self._session_factory() as session:
             interaction = Interaction(
-                persona=persona,
+                persona=resolved_persona,
                 role=role,
                 summary=summary,
                 metadata_=metadata or {},
@@ -349,19 +375,20 @@ class MemoryManager:
 
     @trace_memory_op("episode_write")
     async def store_episode(
-        self, persona: str, content: str, source: str
+        self, persona: str | None, content: str, source: str
     ) -> None:
+        resolved_persona = self._resolve_persona(persona)
         if self._graphiti is None:
             logger.warning(
                 "Graphiti unavailable for persona '%s', discarding episode (source=%s)",
-                persona, source,
+                    resolved_persona, source,
             )
             return
         try:
             from graphiti_core.nodes import EpisodeType
 
             await self._graphiti.add_episode(
-                name=f"{persona}:{source}",
+                name=f"{resolved_persona}:{source}",
                 episode_body=content,
                 source=EpisodeType.text,
                 reference_time=datetime.now(UTC),
@@ -369,13 +396,14 @@ class MemoryManager:
         except Exception:
             logger.warning(
                 "Graphiti add_episode failed for persona '%s' (source=%s), discarding",
-                persona, source,
+                resolved_persona, source,
             )
 
     @trace_memory_op("search")
     async def search(
-        self, persona: str, query: str, num_results: int = 5
+        self, persona: str | None, query: str, num_results: int = 5
     ) -> list[str]:
+        resolved_persona = self._resolve_persona(persona)
         if self._graphiti is None:
             return []
         try:
@@ -383,18 +411,19 @@ class MemoryManager:
             return [_extract_content(r) for r in results]
         except Exception:
             logger.warning(
-                "Graphiti search failed for persona '%s'", persona
+                    "Graphiti search failed for persona '%s'", resolved_persona
             )
             return []
 
     @trace_memory_op("export")
-    async def export_memory(self, persona: str) -> str:
+    async def export_memory(self, persona: str | None = None) -> str:
+        resolved_persona = self._resolve_persona(persona)
         sections: list[str] = []
 
         async with self._session_factory() as session:
             mem_result = await session.execute(
                 select(MemoryEntry)
-                .where(MemoryEntry.persona == persona)
+                .where(MemoryEntry.persona == resolved_persona)
                 .order_by(MemoryEntry.updated_at.desc())
                 .limit(50)
             )
@@ -402,14 +431,14 @@ class MemoryManager:
 
             pref_result = await session.execute(
                 select(Preference)
-                .where(Preference.persona == persona)
+                .where(Preference.persona == resolved_persona)
                 .order_by(Preference.confidence.desc())
             )
             prefs = pref_result.scalars().all()
 
             inter_result = await session.execute(
                 select(Interaction)
-                .where(Interaction.persona == persona)
+                .where(Interaction.persona == resolved_persona)
                 .order_by(Interaction.created_at.desc())
                 .limit(100)
             )
@@ -441,7 +470,7 @@ class MemoryManager:
                     sections.append("## Knowledge Graph Summary\nNo entities found.")
             except Exception:
                 logger.warning(
-                    "Graphiti search failed during export for persona '%s'", persona
+                    "Graphiti search failed during export for persona '%s'", resolved_persona
                 )
 
         return "\n\n".join(sections) + "\n"
