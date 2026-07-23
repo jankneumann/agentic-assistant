@@ -87,12 +87,12 @@ still under design. Stability classification per interface lives in
 
 | Primitive | Interface (repo-owned contract) | Local / OSS providers | Managed providers |
 |---|---|---|---|
-| **Models** (LLMs) | `ChatModel` — init, invoke, stream, tool-calling, vision, thinking budget | Ollama, vLLM, llama.cpp; LiteLLM or Pi-ai as cross-provider façades | Anthropic, OpenAI, Google, Bedrock, Vertex, Azure OpenAI, xAI, Groq, Fireworks, Together |
-| **Harness / Framework** | `HarnessAdapter` (`src/assistant/harnesses/base.py:12`); SDK and Host tiers | DeepAgents/LangGraph (implemented), MSAF (stub → P5), Pi (proposed), Strands, ADK, OpenAI Agents SDK, CrewAI, AutoGen | AgentCore Runtime, Bedrock Agents, OpenAI Assistants, Azure AI Foundry Agents, Vertex Agent Builder, Anthropic managed agents (when shipped) |
+| **Models** (LLMs) | `ModelProvider` / `ModelRef` (`core/capabilities/models.py`, realized P19) — capability-tagged registry → harness-neutral `ModelRef` → per-consumer bindings; budget via `GuardrailProvider`, keys via `CredentialProvider` | Ollama, vLLM, llama.cpp; OpenRouter (OpenAI-compatible `base_url`) as cross-provider façade | Anthropic, OpenAI, Google (`google_genai`/`google_vertexai`), Bedrock (`bedrock_converse`), Azure OpenAI, xAI, Groq, Fireworks, Together |
+| **Harness / Framework** | `HarnessAdapter` (`src/assistant/harnesses/base.py:20`); SDK and Host tiers | DeepAgents/LangGraph (implemented), MSAF (**real**, P5), ClaudeCode (Host tier, P1.8), Pi (proposed), Strands, ADK, OpenAI Agents SDK, CrewAI, AutoGen | AgentCore Runtime, Bedrock Agents, OpenAI Assistants, Azure AI Foundry Agents, Vertex Agent Builder, Anthropic managed agents (when shipped) |
 | **Capability Registry** | `CapabilityRegistry` (proposed) — publish, discover, project; OpenAPI canonical form with streaming and scoping extensions | `HttpToolRegistry` (current, partial); self-hosted MCP gateway projecting OpenAPI; CLI projection | AgentCore Gateway, OpenAI Tools, Azure Foundry Connectors |
-| **Memory** | `MemoryManager` (proposed) — read by query, ingest event, semantic search, forget, per-persona isolation | Postgres + Graphiti (planned), Letta, Zep self-host, mem0 self-host, Cognee, LangGraph `PostgresStore` | AgentCore Memory, OpenAI Threads/Memory, Foundry Memory, Anthropic memory primitives (when shipped) |
+| **Memory** | `MemoryManager` (`core/memory.py:21`, real) — read by query, ingest event, semantic search, per-persona isolation (bound at construction, mismatch-validated) | Postgres + Graphiti (implemented), Letta, Zep self-host, mem0 self-host, Cognee, LangGraph `PostgresStore` | AgentCore Memory, OpenAI Threads/Memory, Foundry Memory, Anthropic memory primitives (when shipped) |
 | **Identity** | `IdentityProvider` (proposed) — credential vault for agent-to-tool/agent-to-service auth, workload identity | OpenBao / HashiCorp Vault (`bao-vault` skill); local OAuth flows | AgentCore Identity, Azure Managed Identity, AWS IAM, Workload Identity Federation, OpenAI service accounts |
-| **Sessions / Checkpointing** | `SessionStore` (proposed) — persist conversation state, fork, branch, resume | LangGraph `InMemorySaver` (current), `SqliteSaver`, `PostgresSaver`, Pi `SessionManager` (JSON-L) | AgentCore session state, OpenAI Threads, Foundry runs |
+| **Sessions / Checkpointing** | `SessionRegistry` (`harnesses/sessions.py:67`, real P30) — create/lookup/resolve/expire by `thread_id`; LangGraph checkpointer binding | LangGraph `InMemorySaver` (default tier) + **Postgres durable tier** (P30), `SqliteSaver`, `PostgresSaver`, Pi `SessionManager` (JSON-L) | AgentCore session state, OpenAI Threads, Foundry runs |
 | **Observability** | OpenTelemetry gen-ai semantic conventions; thin `Tracer` wrapper at boundaries | Langfuse self-hosted (current, see [`observability.md`](../observability.md)), Phoenix, Jaeger | AgentCore Observability, Datadog, Honeycomb, LangSmith |
 | **Sandboxes** (code, browser) | `Sandbox` (proposed) — bounded execution surface, capability-gated | Docker + Playwright, e2b.dev self-host, Pi built-in `bash` | AgentCore Code Interpreter, AgentCore Browser, OpenAI Code Interpreter, e2b.dev managed |
 | **Agent Registry** | `AgentRegistry.spawn(...)` (proposed) — local in-process fast path; A2A for cross-process / cross-runtime | In-process Python registry; A2A bridge for cross-runtime | AgentCore Runtime invocations, OpenAI Assistants handoffs, Foundry agent orchestration |
@@ -156,17 +156,34 @@ Honest accounting of the matrix as of writing:
   `CapabilityRegistry` land (sub-agent spawning and tool wiring move
   out of the adapter). DeepAgents harness implemented; MS Agent
   Framework harness implemented in P5 (archived).
-- `Extension` protocol (`extensions/base.py:15`) — currently leaky:
-  the `as_langchain_tools()` / `as_ms_agent_tools()` dual-surface
-  bakes consumer identity into the protocol. Slated for replacement
-  by a `register(registry, persona)` shape once `CapabilityRegistry`
-  exists. Real MS extensions ship (P5 archived); Google extensions
-  pending (P14).
-- `MemoryManager` (`core/memory.py:20`) — real, archived P2
+- `Extension` protocol (`extensions/base.py:66`) — the leaky
+  `as_langchain_tools()` / `as_ms_agent_tools()` dual-surface was
+  **removed** in P17 `mcp-server-exposure`. Extensions now emit the
+  harness-neutral `ToolSpec` (`core/toolspec.py`) via
+  `tool_specs() -> list[ToolSpec]`, rendered per-harness by
+  `harnesses/tool_adapters.py`. Real MS extensions ship (P5 archived);
+  Google extensions pending (P14/google-extensions).
+- `ToolSpec` (`core/toolspec.py`, P17) — the single internal,
+  harness-neutral tool representation (MCP-shaped: name, description,
+  JSON-Schema `input_schema`, async handler, `source` provenance).
+  `ToolPolicy.authorized_tools()` is the sole aggregator; every tool
+  source (extensions, OpenAPI-derived HTTP tools) compiles into it.
+- `MemoryManager` (`core/memory.py:21`) — real, archived P2
   memory-architecture. Postgres + Graphiti dual-backed; auto-selects
   `PostgresGraphitiMemoryPolicy` when `database_url` configured.
-  Known leak: methods take `persona: str` parameter that should not
-  exist under git-as-multi-tenancy (see "Privacy boundary" above).
+  The former `persona: str` leak is now `persona: str | None`: the
+  manager binds to a persona at construction and **raises on a
+  mismatched explicit persona** (see "A known interface leak" below).
+- `ModelProvider` / `ModelRef` (`core/capabilities/models.py`,
+  `model_bindings.py`) — real, archived P19 model-provider-routing.
+  Capability-tagged per-persona model registry resolving to a
+  harness-neutral `ModelRef` with thin per-consumer bindings; both SDK
+  harnesses and direct calls consume it instead of raw model-id strings.
+- `SessionRegistry` + durable checkpointer
+  (`harnesses/sessions.py`, `harnesses/sdk/checkpointer.py`) — real,
+  archived P30 durable-sessions. LangGraph checkpointer with a Postgres
+  durable tier (`sessions: {durable: true}`); session
+  create/lookup/resolve/expire by `thread_id`.
 - `HttpToolRegistry` + OpenAPI discovery from persona `tool_sources`
   — real, archived P3 http-tools-layer. Substantial precursor to the
   unified `CapabilityRegistry` proposed below. Four open follow-ups
@@ -186,10 +203,6 @@ Honest accounting of the matrix as of writing:
   the proposed `capability-registry` phase.
 - `IdentityProvider` — OpenBao integration exists at the script
   level (`bao-vault` skill) but no agent-facing interface yet.
-- `SessionStore` — LangGraph `InMemorySaver` used directly by the
-  DeepAgents adapter (per archived fix-harness-conversation-memory).
-  Lift to a primitive once a second harness needs the same
-  capability.
 - `Sandbox` — currently per-harness. Lift when sandbox use becomes
   cross-harness.
 - `AgentRegistry` — implicit in `spawn_sub_agent` today; should be
@@ -348,21 +361,29 @@ AgentCore Memory holding `personal` long-term memory violates
 `personal`'s explicit data-sovereignty constraint; the same provider is
 appropriate for `work` if employer policy permits.
 
-### A known interface leak
+### A known interface leak — now largely closed
 
-`MemoryManager` at `src/assistant/core/memory.py:20` currently takes
-`persona: str` as a parameter on methods like `get_context()`,
-`store_fact()`, and similar (e.g. `memory.py:30, 65`). Under
-git-as-multi-tenancy this parameter is **leakage from a defunct
-multi-tenant assumption**: each `MemoryManager` instance is constructed
-inside a process that is already bound to exactly one persona (the
-`session_factory` is per-persona), so the method parameter cannot
-validly differ from the instance's persona. The caller shouldn't have
-to supply information the instance already knows.
+`MemoryManager` at `src/assistant/core/memory.py:21` historically took
+`persona: str` as a required parameter on methods like `get_context()`,
+`store_fact()`, and similar. Under git-as-multi-tenancy that was
+**leakage from a defunct multi-tenant assumption**: each instance is
+constructed inside a process already bound to exactly one persona (the
+`session_factory` is per-persona), so the parameter could not validly
+differ from the instance's persona.
 
-The cleanup is mechanical — drop the parameter, the instance is the
-persona's manager — and folds naturally into the `binding-manifest`
-phase. Tracked as a load-bearing leak in
+This has since been addressed rather than merely tracked. The parameter
+is now `persona: str | None`, the manager **binds to its persona at
+construction** (`persona_name`), and `_resolve_persona`
+(`memory.py:32`) **raises `ValueError` if a caller passes an explicit
+persona that disagrees with the bound one** — a bound manager refuses to
+touch another persona's data instead of silently honouring either side.
+Bound callers pass `None` and the instance supplies the persona it
+already knows. Unbound managers (the CLI/host construction sites) still
+require an explicit persona, so those call sites are unchanged.
+
+Remaining work is cosmetic, not correctness: the parameter is optional
+rather than gone. Fully dropping it folds into the `binding-manifest`
+phase. Tracked in
 [`interface-stability.md`](./interface-stability.md) →
 `MemoryManager`.
 

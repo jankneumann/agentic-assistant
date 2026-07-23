@@ -109,12 +109,21 @@ class TestExportMemoryContext:
         policy._manager.export_memory = AsyncMock(return_value="exported")
 
         assert policy.export_memory_context(mock_persona) == "exported"
-        # Passes None, not the persona name: the MemoryManager is bound to
-        # a persona at construction (persona_name=persona.name), so it
-        # resolves the bound persona itself. A policy built for one persona
-        # therefore cannot export another persona's memory, even if a caller
-        # hands it a different persona object.
-        policy._manager.export_memory.assert_awaited_once_with(None)
+        # The caller's persona name is passed through, not swallowed. The
+        # real MemoryManager (bound to the same persona) then validates that
+        # it matches; passing None would ignore the argument entirely.
+        policy._manager.export_memory.assert_awaited_once_with("test")
+
+    def test_export_rejects_mismatched_persona(self, mock_persona):
+        """A policy bound to one persona must refuse to export another's
+        memory rather than silently returning the bound persona's."""
+        policy = _make_policy(mock_persona)  # bound to "test"
+
+        other = MagicMock()
+        other.name = "someone_else"
+
+        with pytest.raises(ValueError, match="persona mismatch"):
+            policy.export_memory_context(other)
 
     def test_bridges_from_inside_running_event_loop(self, mock_persona):
         """A sync edge invoked from async code must not deadlock —

@@ -30,13 +30,23 @@ class MemoryManager:
         self._persona_name = persona_name
 
     def _resolve_persona(self, persona: str | None) -> str:
-        if persona:
-            return persona
-        if self._persona_name:
-            return self._persona_name
-        raise ValueError(
-            "persona is required when MemoryManager is not bound at construction",
-        )
+        bound = self._persona_name
+        if persona and bound and persona != bound:
+            # A manager bound to one persona must never operate on another.
+            # Silently preferring either side could cross the persona
+            # boundary (read/write another persona's memory), so refuse.
+            raise ValueError(
+                f"persona mismatch: MemoryManager is bound to '{bound}' but "
+                f"was called with '{persona}'. A bound manager must not "
+                "operate on a different persona.",
+            )
+        resolved = persona or bound
+        if not resolved:
+            raise ValueError(
+                "persona is required when MemoryManager is not bound at "
+                "construction",
+            )
+        return resolved
 
     @trace_memory_op("context")
     async def get_context(

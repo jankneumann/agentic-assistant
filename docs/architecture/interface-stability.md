@@ -13,6 +13,39 @@ The ledger changes more often than the primitives document. Treat
 exists, why) and this document as the **status** statement (what's
 solid, what's drifting, what's open).
 
+## Baseline reconciliation (2026-07-22)
+
+This ledger was first written ~2026-05-16 and then stranded for two
+months when a revert removed it from the tree. It has been reconciled
+against everything that landed since (P5 through P30). Material state
+changes folded in:
+
+- **`Extension` protocol** — the `as_langchain_tools()` /
+  `as_ms_agent_tools()` dual surface (the ledger's flagship "leaked
+  interface" example) was **removed** in P17 `mcp-server-exposure` and
+  replaced with `tool_specs() -> list[ToolSpec]`. The leak is resolved,
+  not pending.
+- **`MemoryManager` persona parameter** — no longer "a relic to drop
+  in binding-manifest." Methods now take `persona: str | None`, the
+  manager can be **bound at construction** (`persona_name`), and it
+  **raises on a persona mismatch** rather than silently honouring
+  either side.
+- **`HarnessAdapter`** — streaming is realized (`astream_invoke ->
+  AsyncIterator[HarnessEvent]`, P14a); `spawn_sub_agent` gained the
+  additive `context: DelegationContext | None` parameter (P12); MSAF is
+  a real provider, not a stub (P5).
+- **`ModelProvider` / `ModelRef`** — a new realized interface (P19
+  `model-provider-routing`, seam #6 in P24) that did not exist when the
+  ledger was written. New entry below.
+- **`SessionStore`** — durable sessions landed (P30 `durable-sessions`
+  + the P24 checkpointer contract). Promoted off Pre-interface.
+
+Entries left intentionally untouched (still accurate as
+Pre-interface/proposed): `CapabilityRegistry`, `IdentityProvider`,
+`Sandbox`, `AgentRegistry`, `SkillResolver`. Their open questions are
+unchanged; only `CredentialProvider` progress (P13/P24/P25) is noted
+inline under `IdentityProvider`.
+
 ## Stability levels
 
 | Level | Meaning | When to use it | When to graduate |
@@ -118,83 +151,118 @@ Each entry below follows the same template:
 
 ### `HarnessAdapter` and tier subclasses
 
-- **Code:** `src/assistant/harnesses/base.py:12, 24, 48`
+- **Code:** `src/assistant/harnesses/base.py:20` (`HarnessAdapter`),
+  `:32` (`SdkHarnessAdapter`), `:157` (`HostHarnessAdapter`)
 - **Stability:** **Experimental** (downgrade candidate from earlier
   implicit "Provisional" — design will change as `AgentRegistry` and
   `CapabilityRegistry` land)
 - **Semantic conformance points (currently unspecified — gaps):**
   - What does `invoke()` returning `str` *mean* when the model produced
-    multi-block content (text + citations + tool traces)? Not specified.
+    multi-block content (text + citations + tool traces)? Not specified
+    for the sync path — but `astream_invoke()` (below) now gives the
+    structured alternative for consumers that need it.
   - What guarantees does `spawn_sub_agent()` give about isolation (does
     the child share memory state? identity tokens? span context)? Not
     specified.
   - When does `create_agent` finish — after the LLM is reachable, after
     the first system prompt is loaded, after tools are bound? Not
     specified. Each adapter currently chooses.
-- **Capability semantics needed (not yet declared):**
-  `streaming`, `interrupt_resume`, `multi_agent_native`, `plan_mode`,
+- **Realized capability semantics:**
+  - **`streaming`** — `astream_invoke(agent, message) ->
+    AsyncIterator[HarnessEvent]` (`base.py:72`, P14a
+    `harness-ag-ui-bridge`). Contract: begins with `RunStarted`, yields
+    `TextDelta` / `ToolCall*` events, ends with `RunFinished`
+    (two-phase error contract). No longer an open question — it is
+    implemented and consumed by the AG-UI SSE transport.
+  - **`delegation context`** — `spawn_sub_agent` takes an additive
+    `context: DelegationContext | None = None` (`base.py:101`, P12
+    `delegation-context`); `None` preserves pre-P12 behaviour exactly.
+- **Capability semantics still needed (not yet declared):**
+  `interrupt_resume`, `multi_agent_native`, `plan_mode`,
   `parallel_tool_calls`, `structured_output`.
 - **Providers:**
   - `DeepAgentsHarness` (LangGraph) — `src/assistant/harnesses/sdk/deep_agents.py`
-  - `MSAgentFrameworkHarness` (stub → real in P5) —
-    `src/assistant/harnesses/sdk/ms_agent_fw.py`
+  - `MSAgentFrameworkHarness` (**real**, P5 `ms-graph-extension`
+    archived) — `src/assistant/harnesses/sdk/ms_agent_fw.py`
+  - `ClaudeCodeHarness` (Host tier, P1.8 `capability-protocols`) —
+    exports config rather than executing
   - Pi harness — proposed, not yet implemented
-- **Conformance suite:** not yet — current tests are per-harness, not
-  cross-harness. A `tests/conformance/test_harness_adapter.py` covering
-  `name()`, `harness_type()`, `create_agent()`, `invoke()`, and
-  `spawn_sub_agent()` against a mock persona/role/tool fixture is
-  prerequisite to a second non-stub implementation.
+- **Conformance suite:** **exists** —
+  `tests/conformance/test_harness_adapter.py` covers `name()`,
+  `harness_type()`, `create_agent()`, `invoke()`, and `spawn_sub_agent()`
+  (including the P12 `context` parameter) against fixture persona/role.
+  Cross-provider (DeepAgents vs MSAF) semantic conformance is still
+  per-harness; a shared behavioural suite is the next step toward
+  Provisional.
 - **Known leaks:**
-  - `spawn_sub_agent()` returns a `str` (`base.py:39-45`), assuming a
-    single text reply. Sub-agent results may legitimately be structured
-    (citations, tool traces, plan deltas). Move to a typed result envelope
-    once a second harness exercises this path.
+  - `invoke()` / `spawn_sub_agent()` return a `str`, assuming a single
+    text reply. Sub-agent results may legitimately be structured
+    (citations, tool traces, plan deltas). `astream_invoke` addresses
+    this for the streaming path; the sync path still flattens. Move to a
+    typed result envelope once a second harness exercises the structured
+    path.
   - `create_agent()`'s `tools` and `extensions` arguments are
-    `list[Any]` (`base.py:31-33`) — the protocol doesn't constrain shape.
-    This will tighten once `CapabilityRegistry` is the discovery source.
+    `list[Any]` — the protocol doesn't constrain shape. Note that tools
+    are now the harness-neutral `ToolSpec` (P17) rendered per-harness by
+    `harnesses/tool_adapters.py`; the annotation should tighten to
+    `list[ToolSpec]` when `CapabilityRegistry` becomes the discovery
+    source.
   - `spawn_sub_agent()` lives on the harness at all — should move to
-    `AgentRegistry` once that primitive exists.
+    `AgentRegistry` once that primitive exists. The current
+    implementation constructs a same-type child, blocking cross-harness
+    delegation (see `AgentRegistry` entry).
 - **Open questions:**
-  - Streaming surface: `invoke()` is sync-shaped (`str` return). Should it
-    return `AsyncIterator[Event]` instead? Likely yes; deferred until a
-    consumer needs streaming (the CLI doesn't yet).
   - Cancellation / interrupt: no method today; LangGraph and Pi both
-    support it natively. Add when needed.
-  - Memory wiring: today each adapter wires its own memory (DeepAgents
-    via `InMemorySaver`, MSAF via prepend). After `MemoryManager` lands,
-    adapters consume from it; the interface should declare a `memory`
-    constructor parameter.
+    support it natively. The P24 approval interrupt/resume contract and
+    P30 durable sessions provide the checkpoint substrate; a harness-level
+    cancel/interrupt surface is still unshaped.
+  - Memory wiring: DeepAgents wires session memory via the P30
+    checkpointer (`harnesses/sdk/checkpointer.py`), MSAF via minimal
+    prepend (D27). The interface still does not declare a `memory`
+    constructor parameter; wiring remains per-adapter.
 
 ---
 
 ### `Extension` protocol
 
-- **Code:** `src/assistant/extensions/base.py:15`
-- **Stability:** **Provisional** (with a known deprecation path)
+- **Code:** `src/assistant/extensions/base.py:66` (`tool_specs`), `:68`
+  (`health_check`)
+- **Stability:** **Provisional** (the flagship leak below is now
+  resolved; holding at Provisional pending a conformance suite and a
+  second real provider family — Google — landing)
+- **Protocol shape (P17 `mcp-server-exposure`):** `name` +
+  `tool_specs() -> list[ToolSpec]` + `health_check() -> HealthStatus`.
+  Since P10 `extension-lifecycle`, extensions may also implement optional
+  async hooks `initialize()` / `shutdown()` / `refresh_credentials()` —
+  NOT required Protocol members, so private structural extensions stay
+  compatible; subclass `ExtensionBase` for no-op defaults.
 - **Providers:**
-  - Empty-tool stubs for `ms_graph`, `teams`, `sharepoint`, `outlook`,
-    `gmail`, `gcal`, `gdrive` (`src/assistant/extensions/`)
-  - Real MS extensions arrive in `ms-graph-extension` phase (P5)
-  - Real Google extensions arrive in `google-extensions` phase
+  - Real MS extensions (`ms_graph`, `outlook`, `teams`, `sharepoint`) —
+    shipped, P5 `ms-graph-extension` archived (code only; disabled on
+    `personal` until the work persona lands, P15)
+  - Empty-tool stubs for `gmail`, `gcal`, `gdrive` — real Google
+    extensions arrive in the `google-extensions` phase
 - **Conformance suite:** not yet — extension health checks are
   per-extension. A `tests/conformance/test_extension.py` covering
-  `name`, `health_check()`, and the future `register()` is owed.
-- **Known leaks (load-bearing):**
-  - **Dual-surface methods** `as_langchain_tools()` and
-    `as_ms_agent_tools()` (`base.py:19-21`) bake consumer identity into
-    the protocol. Adding a Pi consumer requires either a third method
-    (`as_pi_tools()`) or a refactor. Refactor is the right move: replace
-    with `register(registry: CapabilityRegistry, persona: PersonaConfig)`
-    once `CapabilityRegistry` exists. This is the cleanest example in the
-    repo of a leaked interface.
+  `name`, `tool_specs()`, and `health_check()` is owed.
+- **Resolved leak (was the repo's flagship example):**
+  - The **dual-surface methods** `as_langchain_tools()` and
+    `as_ms_agent_tools()` that baked consumer identity into the protocol
+    were **REMOVED** in P17 (tool-spec exit criterion, no shim retained).
+    Extensions now emit the harness-neutral, MCP-shaped `ToolSpec`
+    (`core/toolspec.py`); harnesses render it through per-harness
+    adapters in `harnesses/tool_adapters.py` (LangChain `StructuredTool`,
+    MSAF `FunctionTool`, `mcp.types.Tool`) and never derive tools from
+    extensions directly. Adding a Pi consumer is now a new adapter, not a
+    new protocol method.
 - **Open questions:**
-  - What does `register()` accept exactly? OpenAPI specs? Pure JSON
-    Schema + handler references that the registry wraps into OpenAPI?
-    Both? Resolution comes with the `CapabilityRegistry` design.
   - Should extensions declare their persona-affinity (e.g. "this
     extension is only for `work`") at the protocol level, or via
-    persona-side config? Lean toward the latter to keep the protocol
-    persona-agnostic.
+    persona-side config? Currently the latter (activation config lives in
+    private persona repos), keeping the protocol persona-agnostic.
+  - The relationship between `ToolSpec` (per-extension emission) and the
+    unified `CapabilityRegistry` (proposed) — the registry would become
+    the aggregation/projection layer over what extensions already emit.
 
 ---
 
@@ -211,10 +279,12 @@ Each entry below follows the same template:
 - **Providers:**
   - `HttpToolRegistry` — partial implementation, current; four open
     follow-ups (#16–#19 in archived `http-tools-layer`)
-  - Extensions exposed via `as_langchain_tools()` /
-    `as_ms_agent_tools()` — current dual-surface pattern to be
-    replaced
-  - Self-hosted MCP gateway — planned projection target
+  - Extensions exposed via `tool_specs() -> list[ToolSpec]` (P17); the
+    per-harness rendering that used to be the dual-surface pattern now
+    lives in `harnesses/tool_adapters.py`. A unified registry would
+    aggregate these `ToolSpec`s rather than call extensions per consumer.
+  - Self-hosted MCP gateway — planned projection target (P17 already
+    exposes the MCP surface at `/mcp`)
   - CLI projection (`assistant tool …`) — partial today via
     `--list-tools`
   - AgentCore Gateway — slot-compatible if the canonical form is
@@ -264,17 +334,25 @@ Each entry below follows the same template:
 - **Conformance suite:** not yet — `MemoryPolicy` has tests but no
   cross-provider conformance harness exists. Required before lifting
   to Provisional.
-- **Known leaks (load-bearing):**
-  - **Persona parameter on methods.** `get_context(persona, role, …)`,
-    `store_fact(persona, key, value)`, `store_interaction(persona, …)`,
-    and similar methods accept a `persona: str` parameter
-    (`memory.py:30, 65, etc.`). Under git-as-multi-tenancy this is
-    leakage — each instance is already persona-bound at construction
-    via the `session_factory`; the method parameter is a relic of a
-    multi-tenant assumption that doesn't apply (see
-    `primitives-and-providers.md` → "Privacy boundary"). Cleanup
-    folds into the `binding-manifest` phase: drop the parameter, the
-    instance is the persona's manager.
+- **Persona parameter — partially resolved (was a load-bearing leak):**
+  - `get_context`, `store_fact`, `store_interaction`, `store_episode`,
+    `search`, and `export_memory` now take `persona: str | None`
+    (`memory.py:32` `_resolve_persona`). A manager can be **bound at
+    construction** via `persona_name` (as `PostgresGraphitiMemoryPolicy`
+    does), after which callers pass `None` and the instance resolves its
+    own persona. This directly addresses the git-as-multi-tenancy
+    critique: the instance already knows its persona, so the caller need
+    not supply it.
+  - **The binding is now enforced, not just convenient.**
+    `_resolve_persona` **raises** if an explicit persona is passed that
+    differs from the bound one — a bound manager refuses to operate on
+    another persona rather than silently honouring either side. Unbound
+    managers (the CLI/host construction sites) still require an explicit
+    persona, so there is no regression there.
+  - Remaining work: the parameter has not been *dropped* — it is
+    optional. Fully removing it (making the instance the sole source of
+    truth) still folds into the `binding-manifest` phase; the current
+    optional-and-validated shape is the safe intermediate.
   - The MSAF "minimal-prepend" pattern (D27) treats memory as a
     read-only context source. The full interface supports
     write-through and async ingestion; the minimal-prepend pattern is
@@ -307,11 +385,53 @@ Each entry below follows the same template:
 
 ---
 
+### `ModelProvider` / `ModelRef`
+
+- **Code:** `src/assistant/core/capabilities/models.py` (`ModelRef`,
+  registry, capability tags), `capabilities/model_bindings.py`
+  (per-consumer bindings), `capabilities/health.py`. Realized in P19
+  `model-provider-routing`; contracted as capability slot #6 in P24.
+- **Stability:** **Provisional** (real, cross-consumer bindings exist;
+  the seam is exercised by both SDK harnesses plus direct calls)
+- **Providers:** persona-level `models:` registry — named entries with a
+  provider string (`anthropic:`, `openai:`, `google_genai:`,
+  `google_vertexai:`, `bedrock_converse:`, `ollama:`, OpenRouter via an
+  OpenAI-compatible `base_url`), capability tags (`fast`, `cheap`,
+  `long-context`, `coding`, `vision`, `local-only`, `private-data-ok`),
+  and ordered fallback chains.
+- **Shape:** `core/model_router.py` resolves capability requirements to a
+  harness-neutral `ModelRef`; thin per-consumer bindings adapt it
+  (LangChain `init_chat_model` for DeepAgents, `agent-framework` chat
+  clients for MSAF, a raw OpenAI-compatible client for direct calls such
+  as embeddings/summarization). Per-persona API-key resolution goes
+  through the `CredentialProvider` seam; budget enforcement rides
+  `GuardrailProvider` via `ActionRequest(action_type="model_call")`; cost
+  attribution flows through the existing telemetry spans.
+- **Conformance suite:** binding-level tests exist; a cross-provider
+  `tests/conformance/test_model_provider.py` (resolve → ModelRef →
+  per-binding adaptation) would firm up the Provisional claim.
+- **Known leaks:** the catalog format mirrors the OpenRouter `/models`
+  schema so cloud entries sync verbatim and local entries are
+  hand-authored in the same shape — a deliberate coupling to that schema,
+  noted so a future OpenRouter format change is understood as a breaking
+  input.
+- **Open questions:** the catalog schema + pricing data are shared with
+  `agentic-coding-tools`' cost-aware routing as **contracts, not code**
+  (protocol-standards doc Part C); keeping the two in sync without a
+  published package is an open operational question.
+
+---
+
 ### `IdentityProvider` (proposed)
 
-- **Code:** not yet — `bao-vault` skill exists for OpenBao operations
-  but no agent-facing interface
-- **Stability:** **Pre-interface**
+- **Code:** no unified agent-facing interface yet, but the
+  **`CredentialProvider` seam** now exists (P24 contract 7): one lookup
+  interface for secrets/API keys, with the existing `_env()` indirection
+  as the default impl and an OpenBao backend landing in P25. The
+  `bao-vault` skill covers OpenBao operations at the script level.
+- **Stability:** **Pre-interface** for the broad identity concept;
+  the credential-lookup slice is **Experimental** (seam defined, env
+  impl shipping, OpenBao backend in progress)
 - **Providers:**
   - OpenBao / HashiCorp Vault self-host — primary local provider
   - AgentCore Identity — managed, for `work` if employer is AWS
@@ -337,32 +457,48 @@ Each entry below follows the same template:
 
 ---
 
-### `SessionStore` (proposed)
+### `SessionStore` / `SessionRegistry`
 
-- **Code:** not yet — LangGraph `InMemorySaver` used directly in
-  `harnesses/sdk/deep_agents.py:60`
-- **Stability:** **Pre-interface**
+- **Code:** `src/assistant/harnesses/sessions.py:67` (`SessionRegistry`:
+  create/lookup/resolve/expire by `thread_id`), `:56` (`Session`);
+  `harnesses/sdk/checkpointer.py` (LangGraph checkpointer binding).
+  Realized in P30 `durable-sessions`, contracted in P24
+  `capability-protocols-v2` (seam #5).
+- **Stability:** **Experimental** (real implementation exists for the
+  DeepAgents harness; single-provider, no cross-provider conformance
+  harness yet)
 - **Providers:**
-  - LangGraph `InMemorySaver`, `SqliteSaver`, `PostgresSaver`
-  - Pi `SessionManager` (JSON-L) — interesting because it survives
-    process restarts trivially
-  - AgentCore session state — managed
-  - OpenAI Threads — managed
-- **Conformance suite:** not yet.
+  - LangGraph checkpointer — `InMemorySaver` (default tier) and a
+    **Postgres** durable tier (`sessions: {durable: true}` + database
+    URL; migration 002 adds the durable schema)
+  - `SqliteSaver`, `PostgresSaver` — slot-compatible
+  - Pi `SessionManager` (JSON-L) — survives process restarts trivially
+  - AgentCore session state, OpenAI Threads — managed
+- **Conformance suite:** not yet as a cross-provider harness; the
+  durable tier has direct tests. A `tests/conformance/test_session_store.py`
+  covering create/lookup/resolve/expire is the next step toward
+  Provisional.
 - **Known leaks (design-time):**
-  - LangGraph's `thread_id` is a session-identity concept that not all
-    providers expose. The interface should use an opaque `SessionId`
-    type and let providers map.
+  - LangGraph's `thread_id` is the session-identity concept the registry
+    currently exposes directly. It should become an opaque `SessionId`
+    type that providers map, rather than leaking the LangGraph name.
   - Forking and branching: Pi has it natively; LangGraph supports
     time-travel; managed providers vary. Surface as a capability, not
     a required method.
 - **Open questions:**
-  - Lift this primitive now (force the design with one provider) or
-    wait until a second harness needs the same checkpoint behaviour?
-    Lean toward lift-on-second-consumer to avoid premature abstraction.
+  - The `SessionRegistry` lives under `harnesses/` today; whether it
+    should be a top-level capability alongside `MemoryManager` (so the
+    P7 scheduler and P6 A2A server can multiplex sessions without going
+    through a harness) is unsettled.
   - Relationship to `MemoryManager`: session writes feed memory
-    ingestion. Define the write hook so memory ingestion can subscribe
-    to session writes without each harness re-implementing the bridge.
+    ingestion. The write hook so memory ingestion can subscribe to
+    session writes without each harness re-implementing the bridge is
+    still undefined.
+  - Approval interrupt/resume (P24 seam #6) rides on this checkpoint
+    substrate: a guardrail block checkpoints, suspends, and resumes on an
+    approval decision. The suspend/resume contract is defined but its
+    channel-agnostic surface (AG-UI now; email/messaging later) is still
+    settling.
 
 ---
 
@@ -493,11 +629,19 @@ mitigations, in increasing strength:
 2. **CI gate (implemented):** `scripts/check-architecture-ledger-drift.py`
    fails when interface-bearing files change without touching
    `docs/architecture/interface-stability.md` or
-   `docs/architecture/primitives-and-providers.md`.
+   `docs/architecture/primitives-and-providers.md`. It diffs against the
+   merge base with `origin/main` (so it sees the whole PR, not just the
+   tip commit) and needs full history (`fetch-depth: 0`). A change that
+   is genuinely not an interface change may bypass it by declaring
+   `[skip-ledger: <reason>]` in a commit message — a reviewable
+   declaration in history, printed in the CI log, rather than a token
+   whitespace edit. See CLAUDE.md → "Architecture Ledger Drift Gate".
 
 The ledger is meant to be edited frequently. A stale entry is worse
 than a missing one — it silently lies to consumers about what they
-can depend on.
+can depend on. This baseline was reconciled on 2026-07-22 (see the
+banner at the top); the discipline from here is to keep each entry
+honest per PR rather than let a two-month gap reopen.
 
 ## Open meta-questions
 

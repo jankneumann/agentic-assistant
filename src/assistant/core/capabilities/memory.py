@@ -191,10 +191,12 @@ class PostgresGraphitiMemoryPolicy:
         )
 
     def export_memory_context(self, persona: Any) -> str:
-        # persona is bound at construction (persona_name=persona.name), so
-        # passing None makes MemoryManager resolve to that bound persona --
-        # a caller cannot accidentally export a different persona's memory.
-        return _run_blocking(self._manager.export_memory(None))
+        # Pass the caller's persona through rather than swallowing it: the
+        # MemoryManager is bound to this policy's persona and raises if the
+        # two disagree, so a caller handing over a *different* persona gets
+        # a loud error, not a silent export of the bound persona's memory.
+        persona_name = getattr(persona, "name", None)
+        return _run_blocking(self._manager.export_memory(persona_name))
 
     async def get_recent_snippets(
         self, persona: Any, role: Any, *, limit: int = 10
